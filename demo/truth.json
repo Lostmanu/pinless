@@ -1,0 +1,11 @@
+{
+ "home": [
+  40.4005,
+  -3.6955
+ ],
+ "work": [
+  40.4452,
+  -3.6935
+ ],
+ "note": "Synthetic runner. Only for privacy tests. Never ship with the export."
+}
