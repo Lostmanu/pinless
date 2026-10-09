@@ -1,6 +1,6 @@
 """Privacy check against the synthetic runner's ground truth (home and work are known only to the generator).
 
-Run: python -m pytest tests -q   (needs demo/strava_export_madrid_demo.zip and demo/truth.json)
+Run: python -m pytest tests -q   (uses the committed demo/ export and tests/data street extract; no network)
 """
 import json
 import os
@@ -17,7 +17,6 @@ EXPORT = os.path.join(ROOT, "demo", "strava_export_madrid_demo.zip")
 TRUTH = os.path.join(ROOT, "demo", "truth.json")
 
 
-@pytest.mark.skipif(not os.path.exists(EXPORT), reason="demo export not generated")
 @pytest.mark.parametrize("repeat", range(5))  # zones are random per export: check several draws
 def test_no_track_near_true_home_or_work(repeat):
     acts, _ = ingest.read_export(EXPORT)
@@ -66,11 +65,23 @@ def test_street_counts_once_per_activity():
     assert sc["Calle A"] == 1
 
 
-@pytest.mark.skipif(not os.path.exists(EXPORT), reason="demo export not generated")
-@pytest.mark.skipif(not os.path.exists(os.path.join(ROOT, "cache", "madrid", "walk.graphml")),
-                    reason="needs the local Madrid OSM cache (tools/fetch_osm.py)")
-def test_favourite_street_is_far_from_true_home_and_work():
-    import osmnx as ox
+def test_street_counts_skip_a_corner_shared_by_two_streets():
+    # a sample off a shared corner is equally close to both streets: it counts for neither, whatever the edge order
+    import geopandas as gpd
+    from shapely.geometry import LineString
+    from pinless import stats
+    a, b = LineString([(0, 0), (1000, 0)]), LineString([(1000, 0), (1000, 1000)])
+    corner = np.array([[1005.0, -5.0], [1010.0, -10.0]])  # shorter than one sampling step: only (1005, -5) is sampled
+    along_a = np.column_stack([np.linspace(0, 400, 41), np.zeros(41)])
+    for names, geoms in ((["Calle A", "Calle B"], [a, b]), (["Calle B", "Calle A"], [b, a])):
+        edges = gpd.GeoDataFrame({"name": names}, geometry=geoms)
+        assert stats.street_counts([corner], edges) == {}
+        assert stats.street_counts([along_a], edges) == {"Calle A": 1}
+
+
+@pytest.mark.parametrize("repeat", range(3))  # zones are random per export: check several draws
+def test_favourite_street_is_far_from_true_home_and_work(repeat):
+    from _street_fixture import load
     from pinless import stats
     acts, _ = ingest.read_export(EXPORT)
     runs = [a for a in acts if a.type == "Run"]
@@ -78,8 +89,7 @@ def test_favourite_street_is_far_from_true_home_and_work():
     tr = Transformer.from_crs(4326, crs, always_xy=True)
     tracks = [np.column_stack(tr.transform(np.asarray(a.lonlat)[:, 0], np.asarray(a.lonlat)[:, 1])) for a in runs]
     pieces, rep = privacy.apply(tracks)
-    G = ox.load_graphml(os.path.join(ROOT, "cache", "madrid", "walk.graphml"))
-    edges = ox.graph_to_gdfs(G, nodes=False)[["name", "geometry"]].to_crs(crs)
+    edges = load(crs)  # named OSM streets around the demo runs (tools/make_street_fixture.py --check: same stats as the full graph)
     st = stats.compute(runs, tracks, edges, private_pieces_xy=[np.asarray(p.coords) for _, p in pieces],
                        piece_groups=[i for i, _ in pieces], sensitive_xy=rep.centres)
     fav = st["fav_street"]

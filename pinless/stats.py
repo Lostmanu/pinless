@@ -52,9 +52,9 @@ def street_counts(tracks_xy, edges_gdf, step_m=40.0, tol_m=14.0, groups=None):
         for d in np.arange(0, s[-1], step_m):
             k = min(np.searchsorted(s, d), len(xy) - 1)
             p = Point(xy[k])
-            hit = tree.query_nearest(p, max_distance=tol_m)
-            if len(hit):
-                seen.add(names[int(hit[0])])
+            hit = {names[int(h)] for h in tree.query_nearest(p, max_distance=tol_m)}
+            if len(hit) == 1:  # equidistant streets (a sample on a shared corner) say nothing: skip, whatever the edge order
+                seen.add(hit.pop())
     per_street = Counter()
     for seen in per_act.values():
         per_street.update(seen)
