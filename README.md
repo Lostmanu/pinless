@@ -32,6 +32,11 @@ It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros
 
 ## Atlas: every city you ran in
 
+<p align="center">
+  <img src="docs/atlas-huella.jpg" width="60%" alt="Atlas of six cities run in one year: Madrid, Lisbon, Paris, Rome, Valencia and Zurich">
+</p>
+<p align="center"><sub>Demo atlas from the synthetic runner with trips (<code>tools/simulate_trips.py</code>); try it with <code>pinless demo/strava_export_atlas_demo.zip --layout atlas</code>.</sub></p>
+
 ```bash
 pinless export_12345678.zip --layout atlas --name "Lucia" --year 2025 --pdf atlas.pdf
 ```
@@ -46,7 +51,7 @@ A heatmap of your runs shows where you live. Pinless removes that before drawing
 2. It finds every place where your runs often start or end (home, work, the gym) and deletes all points inside an irregular zone around each one, including runs that only pass by. In the atlas this is done city by city, the private places of every city also protect the others (a long run grouped elsewhere can still start at home), and where you ran only a few times a single loop run is enough to hide where it started (a hotel, a family home).
 3. It checks the result. If any line still touches a zone, nothing is exported.
 4. It never prints coordinates, start points, activity names or dates, and nothing outside the visible map is written into the PNG, PDF or SVG. The favourite street is never one within 1 km of a private zone.
-5. Your files never leave your computer. Only the bounding box of the area is sent to OpenStreetMap to fetch the streets and the city name (in the atlas, each city's box and its centre rounded to about 1 km).
+5. Your files never leave your computer. Only the bounding box of the area is sent out: to OpenStreetMap's Nominatim for the city name and to its Overpass service for the streets (in the atlas, each city's box, and its centre rounded to about 1 km for the name). When the main Overpass server is busy, Pinless tries the public mirror overpass.private.coffee; to use another server, set `PINLESS_OVERPASS` to its API address.
 
 A run that starts in one place and ends in another, once, only has its ends trimmed. This reduces the risk; it is not a guarantee of anonymity. A map of where you run still says something about you. Look at the poster before you share it, and hide more places with `--zone LAT,LON,RADIUS_M` (repeatable).
 

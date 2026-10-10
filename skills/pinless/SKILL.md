@@ -9,7 +9,8 @@ description: Make a print-ready poster of a runner's year from their Strava expo
 - Only run the `pinless` command. Do NOT open, read, unzip, summarise or print the export or any GPX/TCX/FIT file:
   they contain the user's exact locations and must stay out of this conversation.
 - Do not upload the export anywhere. Pinless works locally; it only sends the area's bounding box (for the atlas, each
-  city's box and its centre rounded to about 1 km) to OpenStreetMap.
+  city's box and its centre rounded to about 1 km) to OpenStreetMap services, or to a public Overpass mirror when the
+  main server is busy. If it prints `[osm] STOP`, the map servers are busy: suggest running it again later.
 - If the export path is unknown, ask the user for it. Do not search their disk for it.
 
 ## Steps
