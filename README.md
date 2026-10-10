@@ -3,10 +3,10 @@
 **Your year of running as a print-ready poster of your city. From your Strava export, on your own computer, without showing where you live.**
 
 <p align="center">
-  <img src="docs/poster-huella.jpg" width="49%" alt="Poster of a year of runs in Madrid, warm paper style">
-  <img src="docs/poster-carbon.jpg" width="49%" alt="Same poster in the dark carbon style">
+  <img src="docs/wall-huella.jpg" width="49%" alt="The warm paper poster of a year of runs in Madrid, framed in oak and hung above a sideboard">
+  <img src="docs/wall-carbon.jpg" width="49%" alt="The same poster in the dark carbon style, in a black frame">
 </p>
-<p align="center"><sub>Demo posters made from a synthetic runner (<code>tools/simulate_runner.py</code>), not from a real person.</sub></p>
+<p align="center"><sub>A3 prints in standard 40x50 cm frames, drawn to scale (<code>tools/mockup.py</code>). Demo posters made from a synthetic runner (<code>tools/simulate_runner.py</code>), not from a real person.</sub></p>
 
 ```bash
 pip install git+https://github.com/Lostmanu/pinless
@@ -23,6 +23,11 @@ It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros
 
 ## What you get
 
+<p align="center">
+  <img src="docs/poster-huella.jpg" width="49%" alt="Poster of a year of runs in Madrid, warm paper style">
+  <img src="docs/poster-carbon.jpg" width="49%" alt="Same poster in the dark carbon style">
+</p>
+
 - Every run drawn on your city's OpenStreetMap streets, parks, rivers and sea (the sea and estuaries come from the coastline). The routes you repeat get darker and thicker, and a small legend explains it.
 - The numbers: distance, runs, recorded hours, best 5K, best 10K, longest run and how many different streets you ran.
 - Your name as the inscription, or as the headline (`--headline name`) when it is a gift.
@@ -33,7 +38,8 @@ It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros
 ## Atlas: every city you ran in
 
 <p align="center">
-  <img src="docs/atlas-huella.jpg" width="60%" alt="Atlas of six cities run in one year: Madrid, Lisbon, Paris, Rome, Valencia and Zurich">
+  <img src="docs/atlas-huella.jpg" width="40%" alt="Atlas of six cities run in one year: Madrid, Lisbon, Paris, Rome, Valencia and Zurich">
+  <img src="docs/wall-atlas.jpg" width="58%" alt="The atlas framed in oak and hung above a sideboard">
 </p>
 <p align="center"><sub>Demo atlas from the synthetic runner with trips (<code>tools/simulate_trips.py</code>); try it with <code>pinless demo/strava_export_atlas_demo.zip --layout atlas</code>.</sub></p>
 
