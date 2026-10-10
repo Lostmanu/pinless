@@ -44,10 +44,13 @@ def test_load_basemap_adds_the_sea_to_the_water(tmp_path):
     ox.save_graphml(G, str(tmp_path / "walk.graphml"))
     empty = gpd.GeoDataFrame({"name": []}, geometry=[], crs=4326)
     empty.to_file(tmp_path / "green.gpkg")
-    empty.to_file(tmp_path / "water.gpkg")
+    river = LineString([(-0.35, 39.47), (-0.31, 39.47)])  # a river centre line that runs on into the sea
+    gpd.GeoDataFrame({"waterway": ["river"]}, geometry=[river], crs=4326).to_file(tmp_path / "water.gpkg")
     _coast([(-0.33, 39.40), (-0.33, 39.55)]).to_file(tmp_path / "coast.gpkg")
     _, _, water = render.load_basemap(str(tmp_path), BBOX, CRS)
-    assert list(water["natural"]) == ["sea"] and water.crs == CRS
+    assert sorted(water["natural"].fillna("river")) == ["river", "sea"] and water.crs == CRS
+    line = water[water["waterway"] == "river"].geometry.iloc[0]
+    assert line.bounds[2] <= TR.transform(-0.33, 39.47)[0] + 1, "the river line stops at the coast"
 
 
 def _streets(n=400):

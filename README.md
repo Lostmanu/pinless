@@ -23,7 +23,7 @@ It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros
 
 ## What you get
 
-- Every run drawn on your city's OpenStreetMap streets. The routes you repeat get darker and thicker, and a small legend explains it.
+- Every run drawn on your city's OpenStreetMap streets, parks, rivers and sea (the sea and estuaries come from the coastline). The routes you repeat get darker and thicker, and a small legend explains it.
 - The numbers: distance, runs, recorded hours, best 5K, best 10K, longest run and how many different streets you ran.
 - Your name as the inscription, or as the headline (`--headline name`) when it is a gift.
 - PNG at 300 dpi, vector PDF and SVG, at A4, A3 or 50x70 cm. A light JPEG preview with `--preview`.

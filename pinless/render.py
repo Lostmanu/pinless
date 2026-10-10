@@ -63,6 +63,10 @@ def load_basemap(city_dir: str, bbox_ll, crs):
     if os.path.exists(coast_path):  # caches made before the coast layer simply have no sea
         sea = sea_polygons(gpd.read_file(coast_path), bbox_ll, crs)
         if sea:
+            # a river's centre line drawn across an estuary is only noise on the filled water: drop that part
+            lines = water.geometry.type.isin(["LineString", "MultiLineString"])
+            water.loc[lines, "geometry"] = water.loc[lines].geometry.difference(unary_union(sea))
+            water = water[~water.geometry.is_empty]
             water = gpd.GeoDataFrame(pd.concat([water, gpd.GeoDataFrame({"natural": ["sea"] * len(sea)}, geometry=sea,
                                                                          crs=crs)], ignore_index=True), crs=crs)
     return edges, green, water
