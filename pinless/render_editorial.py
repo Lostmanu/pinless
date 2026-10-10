@@ -14,15 +14,18 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.collections import LineCollection
+import pandas as pd
+import shapely
+from matplotlib.path import Path as MPath
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.font_manager import FontProperties
 from matplotlib.patches import PathPatch
 from matplotlib.textpath import TextPath
 from matplotlib.transforms import Affine2D
+from shapely.geometry.polygon import orient
 
 from . import privacy
-from .render import MAJOR, MINOR, MM, SIZES, _hw, _lines, heat_raster
+from .render import MAJOR, MINOR, MM, SIZES, _hw, heat_raster
 from .render_sport import _num
 from .stats import fmt_time
 
@@ -47,6 +50,101 @@ STYLES = {
         "heat": ["#bc875d", "#d19e6d", "#e0b582", "#eed0a8", "#fff2d7"],
     },
 }
+
+
+LEVELS = 32  # route colour and weight steps: finer than the eye separates on paper, one path per step in a PDF/SVG
+PRINT_TOL_MM = 0.04  # geometry is simplified to this, on paper: far below what a print shows
+
+
+def _clip_simplify(geoms, extent, tol):
+    """Cut to the map box and simplify to tol (map units): nothing outside the map is written, nothing visible lost."""
+    x0, x1, y0, y1 = extent
+    g = shapely.simplify(shapely.clip_by_rect(np.asarray(list(geoms), dtype=object), x0, y0, x1, y1), tol)
+    return [x for x in g if x is not None and not x.is_empty]
+
+
+def _parts(g, kinds):
+    for p in getattr(g, "geoms", [g]):
+        if p.geom_type in kinds and not p.is_empty:
+            yield p
+        elif p.geom_type.startswith(("Multi", "Geometry")):
+            yield from _parts(p, kinds)
+
+
+def _line_path(lines):
+    """One compound path for many polylines (arrays or LineStrings): one element in a PDF/SVG instead of one each."""
+    verts, codes = [], []
+    for a in lines:
+        a = np.asarray(a.coords if hasattr(a, "coords") else a)[:, :2]
+        if len(a) < 2:
+            continue
+        c = np.full(len(a), MPath.LINETO, dtype=np.uint8)
+        c[0] = MPath.MOVETO
+        verts.append(a)
+        codes.append(c)
+    return MPath(np.concatenate(verts), np.concatenate(codes)) if verts else None
+
+
+def _poly_path(polys):
+    """One compound filled path; outer rings counterclockwise and holes clockwise, so holes stay empty."""
+    verts, codes = [], []
+    for poly in polys:
+        poly = orient(poly, 1.0)
+        for ring in [poly.exterior, *poly.interiors]:
+            a = np.asarray(ring.coords)[:, :2]
+            if len(a) < 4:
+                continue
+            c = np.full(len(a), MPath.LINETO, dtype=np.uint8)
+            c[0], c[-1] = MPath.MOVETO, MPath.CLOSEPOLY
+            verts.append(a)
+            codes.append(c)
+    return MPath(np.concatenate(verts), np.concatenate(codes)) if verts else None
+
+
+def draw_basemap(ax, basemap, extent, S, k, map_w_mm, sw=1.0):
+    """Green, water (sea included) and streets, as one compound path per kind.
+
+    OSM walk graphs hold every street twice (one per direction), so each geometry is drawn once whatever its
+    direction. Everything is cut to the map and simplified to PRINT_TOL_MM on paper."""
+    edges, green, water = basemap
+    tol = (extent[1] - extent[0]) / map_w_mm * PRINT_TOL_MM
+    for layer, color, z in ((green, S["green"], 1), (water, S["water"], 2)):
+        polys = [p for g in _clip_simplify(layer.geometry[layer.geometry.type.isin(["Polygon", "MultiPolygon"])],
+                                           extent, tol) for p in _parts(g, ("Polygon",))]
+        path = _poly_path(polys)
+        if path is not None:
+            ax.add_patch(PathPatch(path, facecolor=color, edgecolor="none", lw=0, zorder=z))
+    wl = water.geometry[water.geometry.type.isin(["LineString", "MultiLineString"])]
+    path = _line_path(p for g in _clip_simplify(wl, extent, tol) for p in _parts(g, ("LineString",)))
+    if path is not None:
+        ax.add_patch(PathPatch(path, fill=False, edgecolor=S["water_line"], linewidth=0.7 * k * sw, zorder=2))
+    geoms = np.asarray(edges.geometry.values, dtype=object)
+    keep = ~pd.Series(shapely.to_wkb(shapely.normalize(geoms))).duplicated().to_numpy()
+    edges = edges[keep]
+    hw = edges["highway"].map(_hw)
+    for cls, mask in (("path", ~hw.isin(MAJOR | MINOR)), ("minor", hw.isin(MINOR)), ("major", hw.isin(MAJOR))):
+        color, width = S["street"][cls]
+        path = _line_path(p for g in _clip_simplify(edges[mask].geometry, extent, tol)
+                          for p in _parts(g, ("LineString",)))
+        if path is not None:
+            ax.add_patch(PathPatch(path, fill=False, edgecolor=color, linewidth=width * k * sw, capstyle="round",
+                                   joinstyle="round", zorder=3))
+
+
+def draw_routes(ax, segments, counts, cap, cmap, k, base=0.55, gain=0.42, scale=1.0):
+    """Routes coloured and weighted by how often they were run, in LEVELS steps drawn lightest first. Consecutive
+    segments of a step are joined back into polylines; the geometry itself is untouched."""
+    if not len(segments):
+        return
+    strength = np.clip(np.log1p(counts) / math.log1p(cap), 0, 1)
+    level = np.rint(strength * (LEVELS - 1)).astype(int)
+    for lv in np.unique(level):
+        segs = segments[level == lv]
+        breaks = np.nonzero(np.any(segs[1:, 0] != segs[:-1, 1], axis=1))[0] + 1
+        runs = [np.vstack([r[0, 0], r[:, 1]]) for r in np.split(segs, breaks)]
+        s = lv / (LEVELS - 1)
+        ax.add_patch(PathPatch(_line_path(runs), fill=False, edgecolor=cmap(s), linewidth=(base + gain * s) * k * scale,
+                               capstyle="round", joinstyle="round", zorder=5))
 
 
 def _outline(path, trans, step):
@@ -172,23 +270,7 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
     ax.set_ylim(extent[2], extent[3])
     ax.set_aspect("equal")
     ax.axis("off")
-    edges, green, water = basemap
-    gp = green[green.geometry.type.isin(["Polygon", "MultiPolygon"])]
-    if len(gp):
-        gp.plot(ax=ax, color=S["green"], linewidth=0, zorder=1)
-    wp = water[water.geometry.type.isin(["Polygon", "MultiPolygon"])]
-    if len(wp):
-        wp.plot(ax=ax, color=S["water"], linewidth=0, zorder=2)
-    wl = water[water.geometry.type.isin(["LineString", "MultiLineString"])]
-    if len(wl):
-        ax.add_collection(LineCollection(_lines(wl.geometry), colors=S["water_line"], linewidths=0.7 * k, zorder=2))
-    # OSM walk graphs contain reciprocal edges. Draw each geometry only once.
-    edges = edges.loc[~edges.geometry.to_wkb().duplicated()].copy()
-    hw = edges["highway"].map(_hw)
-    for cls, mask in (("path", ~hw.isin(MAJOR | MINOR)), ("minor", hw.isin(MINOR)), ("major", hw.isin(MAJOR))):
-        color, width = S["street"][cls]
-        ax.add_collection(LineCollection(_lines(edges[mask].geometry), colors=color, linewidths=width * k,
-                                         zorder=3, capstyle="round"))
+    draw_basemap(ax, basemap, extent, S, k, map_w)  # map_w: millimetres of paper
 
     # Fixed physical density resolution makes PDF and PNG frequencies independent
     # of export DPI. No blur is added around removed sensitive regions.
@@ -198,12 +280,7 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
     segments, counts = _density_segments(pieces, extent, acc)
     cap = max(3.0, float(np.percentile(counts, 98.5))) if len(counts) else 1
     cmap = LinearSegmentedColormap.from_list("huella", S["heat"])
-    if len(segments):
-        strength = np.clip(np.log1p(counts) / math.log1p(cap), 0, 1)
-        order = np.argsort(strength, kind="stable")
-        widths = (0.55 + 0.42 * strength) * k
-        ax.add_collection(LineCollection(segments[order], colors=cmap(strength[order]), linewidths=widths[order],
-                                         capstyle="round", joinstyle="round", zorder=5))
+    draw_routes(ax, segments, counts, cap, cmap, k)
 
     rule(323)
     km_w, _ = text(18, 331, _num(stats["km"], lang), pt=109, font=DISPLAY, max_w=119, height=28)

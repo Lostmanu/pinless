@@ -139,7 +139,33 @@ def test_a_cached_area_is_found_again_despite_the_rounded_folder_name(tmp_path, 
     folder = os.path.join(tmp_path, "bbox_40.400_m3.710_40.420_m3.680")
     os.makedirs(folder)
     ox.save_graphml(_tiny_graph(), os.path.join(folder, "walk.graphml"))
-    for name in ("green", "water"):
+    for name in ("green", "water", "coast"):
         gpd.GeoDataFrame({"name": []}, geometry=[], crs=4326).to_file(os.path.join(folder, f"{name}.gpkg"))
     assert area._cached_cover(str(tmp_path), bbox) == folder
     assert area.fetch_basemap(bbox, root=str(tmp_path), log=lambda *_: None) == folder  # no download attempted
+
+
+def test_an_older_cache_gets_its_coast_for_its_own_whole_box(tmp_path, monkeypatch):
+    # caches made before the coast layer are completed on first use, for the folder's box (not the smaller request)
+    asked = []
+
+    def features(box_, tags):
+        asked.append((box_, tags))
+        folder = str(ox.settings.cache_folder)  # a real empty answer: osmnx keeps it in its cache
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "answer.json"), "w") as f:
+            f.write('{"elements": []}')
+        raise InsufficientResponseError("no coastline here")
+
+    monkeypatch.delenv("PINLESS_OVERPASS", raising=False)
+    monkeypatch.setattr(socket, "gethostbyname_ex", lambda h: (h, [], ["192.0.2.1"]))
+    monkeypatch.setattr(ox, "features_from_bbox", features)
+    folder = os.path.join(tmp_path, "bbox_40.300_m3.800_40.500_m3.600")
+    os.makedirs(folder)
+    ox.save_graphml(_tiny_graph(), os.path.join(folder, "walk.graphml"))
+    for name in ("green", "water"):
+        gpd.GeoDataFrame({"name": []}, geometry=[], crs=4326).to_file(os.path.join(folder, f"{name}.gpkg"))
+    assert area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lambda *_: None) == folder
+    assert [t for _, t in asked] == [{"natural": "coastline"}]
+    assert asked[0][0] == (-3.8, 40.3, -3.6, 40.5), "the folder's own box (west, south, east, north)"
+    assert len(gpd.read_file(os.path.join(folder, "coast.gpkg"))) == 0

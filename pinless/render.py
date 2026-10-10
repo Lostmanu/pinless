@@ -14,8 +14,12 @@ import osmnx as ox
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap, to_rgb
 from PIL import Image, ImageDraw, ImageFilter
+import pandas as pd
+import shapely
 from pyproj import CRS, Transformer
-from shapely.geometry import box
+from shapely.geometry import LineString, Polygon, box
+from shapely.ops import polygonize, unary_union
+from shapely.strtree import STRtree
 
 MM = 1 / 25.4
 SIZES = {"A4": (210, 297), "A3": (297, 420), "50x70": (500, 700)}
@@ -44,6 +48,7 @@ def utm_crs(lon, lat):
 
 
 def load_basemap(city_dir: str, bbox_ll, crs):
+    """(edges, green, water) for a box, projected to crs. The water includes the sea, built from the coastline."""
     s, w, n, e = bbox_ll
     area = box(w, s, e, n)
     G = ox.load_graphml(os.path.join(city_dir, "walk.graphml"))
@@ -54,7 +59,54 @@ def load_basemap(city_dir: str, bbox_ll, crs):
     green = green[green.intersects(area)].to_crs(crs)
     water = gpd.read_file(os.path.join(city_dir, "water.gpkg"))
     water = water[water.intersects(area)].to_crs(crs)
+    coast_path = os.path.join(city_dir, "coast.gpkg")
+    if os.path.exists(coast_path):  # caches made before the coast layer simply have no sea
+        sea = sea_polygons(gpd.read_file(coast_path), bbox_ll, crs)
+        if sea:
+            water = gpd.GeoDataFrame(pd.concat([water, gpd.GeoDataFrame({"natural": ["sea"] * len(sea)}, geometry=sea,
+                                                                         crs=crs)], ignore_index=True), crs=crs)
     return edges, green, water
+
+
+def sea_polygons(coast, bbox_ll, crs, eps=2.0):
+    """The sea inside the box, from OSM coastline ways (EPSG:4326 lines), as polygons in crs.
+
+    OSM has no sea polygons: every coastline way is drawn with the land on its left and the water on its right. The
+    coastlines split the box into faces; a point just right of each coastline segment votes "sea" for its face and a
+    point just left votes "land", so a face is sea when it gets more sea votes."""
+    lines = [p for g in coast.geometry if g is not None and not g.is_empty for p in getattr(g, "geoms", [g])
+             if p.geom_type == "LineString"]
+    if not lines:
+        return []
+    s, w, n, e = bbox_ll
+    tr = Transformer.from_crs(4326, crs, always_xy=True)
+    t = np.linspace(0, 1, 60)[:-1]
+    ring = np.concatenate([np.column_stack([w + (e - w) * t, np.full_like(t, s)]),
+                           np.column_stack([np.full_like(t, e), s + (n - s) * t]),
+                           np.column_stack([e - (e - w) * t, np.full_like(t, n)]),
+                           np.column_stack([np.full_like(t, w), n - (n - s) * t])])
+    frame = Polygon(np.column_stack(tr.transform(ring[:, 0], ring[:, 1]))).buffer(0)
+    projected = [LineString(np.column_stack(tr.transform(*np.asarray(p.coords)[:, :2].T))) for p in lines]
+    # node the WHOLE coastlines with the frame (a pre-clipped line can stop a hair short of the edge and split nothing);
+    # what lies outside the frame only dangles and makes no face
+    faces = [f for f in polygonize(unary_union([frame.boundary] + projected)) if f.representative_point().within(frame)]
+    if not faces:
+        return []
+    votes = np.zeros(len(faces))
+    tree = STRtree(faces)
+    for line in projected:
+        a = np.asarray(shapely.segmentize(line, 100.0).coords)  # a vote every 100 m at least
+        d = np.diff(a, axis=0)
+        length = np.hypot(d[:, 0], d[:, 1])
+        ok = length > 0
+        if not ok.any():
+            continue
+        mid = ((a[:-1] + a[1:]) / 2)[ok]
+        right = np.column_stack([d[ok, 1], -d[ok, 0]]) / length[ok, None]  # right-hand normal of the way
+        for side, vote in ((1.0, 1.0), (-1.0, -1.0)):
+            _, face = tree.query(shapely.points(mid + side * eps * right), predicate="within")
+            np.add.at(votes, face, vote)
+    return [f for f, v in zip(faces, votes) if v > 0]
 
 
 def _hw(h):

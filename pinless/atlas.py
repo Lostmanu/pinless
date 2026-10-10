@@ -18,14 +18,14 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import PathPatch
 from pyproj import Transformer
 
 from . import area, privacy, render
-from .render import MAJOR, MINOR, MM, SIZES, _hw, _lines, heat_raster
-from .render_editorial import DISPLAY, REGULAR, STYLES, TEXT, _density_segments, place_text
+from .render import MM, SIZES, heat_raster
+from .render_editorial import (DISPLAY, REGULAR, STYLES, TEXT, _density_segments, draw_basemap, draw_routes,
+                               place_text)
 from .render_sport import _num
 
 EARTH_KM = 6371.0088
@@ -276,29 +276,8 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
         ax.axis("off")
         sw = min(1.0, max(0.55, math.sqrt(w / (RIGHT - LEFT))))  # thinner streets in small maps
         if bm is not None:
-            edges, green, water = bm
-            gp = green[green.geometry.type.isin(["Polygon", "MultiPolygon"])]
-            if len(gp):
-                gp.plot(ax=ax, color=S["green"], linewidth=0, zorder=1)
-            wp = water[water.geometry.type.isin(["Polygon", "MultiPolygon"])]
-            if len(wp):
-                wp.plot(ax=ax, color=S["water"], linewidth=0, zorder=2)
-            wl = water[water.geometry.type.isin(["LineString", "MultiLineString"])]
-            if len(wl):
-                ax.add_collection(LineCollection(_lines(wl.geometry), colors=S["water_line"], linewidths=0.7 * k * sw,
-                                                 zorder=2))
-            edges = edges.loc[~edges.geometry.to_wkb().duplicated()]
-            hw = edges["highway"].map(_hw)
-            for cls, mask in (("path", ~hw.isin(MAJOR | MINOR)), ("minor", hw.isin(MINOR)), ("major", hw.isin(MAJOR))):
-                color, width = S["street"][cls]
-                ax.add_collection(LineCollection(_lines(edges[mask].geometry), colors=color, linewidths=width * k * sw,
-                                                 zorder=3, capstyle="round"))
-        if len(segments):
-            strength = np.clip(np.log1p(counts) / math.log1p(cap), 0, 1)
-            order = np.argsort(strength, kind="stable")
-            widths = (0.5 + 0.42 * strength) * k * max(sw, 0.8)
-            ax.add_collection(LineCollection(segments[order], colors=cmap(strength[order]), linewidths=widths[order],
-                                             capstyle="round", joinstyle="round", zorder=5))
+            draw_basemap(ax, bm, ext, S, k, w * k, sw)  # w * k: millimetres of paper
+        draw_routes(ax, segments, counts, cap, cmap, k, base=0.5, scale=max(sw, 0.8))
         # caption
         cy = y + h + 3.0
         T(x, cy + 0.4, f"{i + 1:02d}", pt=14, font=REGULAR, color=S["accent"], height=4.4)

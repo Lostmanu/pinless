@@ -129,17 +129,25 @@ def cache_root() -> str:
     return base
 
 
+def _box_of(name):
+    """(south, west, north, east) of a cache folder named bbox_S_W_N_E (m = minus), or None."""
+    if not name.startswith("bbox_"):
+        return None
+    try:
+        return tuple(float(v[1:]) * -1 if v.startswith("m") else float(v) for v in name[5:].split("_"))
+    except ValueError:
+        return None
+
+
 def _cached_cover(root, bbox):
     """A complete cached folder whose box already contains bbox (the smallest one), or None."""
     s, w, n, e = bbox
     best = None
     for name in os.listdir(root) if os.path.isdir(root) else []:
-        if not name.startswith("bbox_"):
+        box_ = _box_of(name)
+        if box_ is None or len(box_) != 4:
             continue
-        try:
-            cs, cw, cn, ce = (float(v[1:]) * -1 if v.startswith("m") else float(v) for v in name[5:].split("_"))
-        except ValueError:
-            continue
+        cs, cw, cn, ce = box_
         folder = os.path.join(root, name)
         done = all(os.path.exists(os.path.join(folder, f)) for f in ("walk.graphml", "green.gpkg", "water.gpkg"))
         tol = 0.001  # folder names are rounded to 0.001 degrees, so a box can fall short by 0.0005 of what it holds
@@ -226,6 +234,16 @@ def _overpass(call, log, empty_ok=True):
     raise RuntimeError("no OpenStreetMap (Overpass) server answered; try again later") from last
 
 
+LAYERS = (
+    ("green", {"leisure": ["park", "garden", "pitch", "golf_course"], "landuse": ["grass", "forest", "recreation_ground",
+                                                                               "meadow"],
+               "natural": ["wood", "scrub", "grassland"]}),
+    ("water", {"natural": ["water"], "waterway": ["river", "riverbank", "canal"], "water": True}),
+    # OSM has no sea polygons: the sea (and estuaries like the Tagus) is whatever lies on the right of the coastline
+    ("coast", {"natural": "coastline"}),
+)
+
+
 def fetch_basemap(bbox, root=None, log=print):
     """Download (once) and cache the OSM layers for a bbox. Returns the folder that render.load_basemap reads.
     A layer is cached as empty only when OSM answers that there is nothing of that kind in the box; a server error
@@ -233,13 +251,13 @@ def fetch_basemap(bbox, root=None, log=print):
     import osmnx as ox
     from osmnx._errors import InsufficientResponseError
 
-    s, w, n, e = bbox
     root = root or cache_root()
-    reuse = _cached_cover(root, bbox)
-    if reuse:
-        return reuse
-    key = f"bbox_{s:.3f}_{w:.3f}_{n:.3f}_{e:.3f}".replace("-", "m")
-    folder = os.path.join(root, key)
+    folder = _cached_cover(root, bbox)
+    if folder:  # complete a reused folder (a layer added later, like the coast) for ITS whole box
+        s, w, n, e = _box_of(os.path.basename(folder))
+    else:
+        s, w, n, e = bbox
+        folder = os.path.join(root, f"bbox_{s:.3f}_{w:.3f}_{n:.3f}_{e:.3f}".replace("-", "m"))
     os.makedirs(folder, exist_ok=True)
     ox.settings.use_cache = True
     ox.settings.cache_folder = os.path.join(folder, "overpass")
@@ -252,18 +270,15 @@ def fetch_basemap(bbox, root=None, log=print):
         G = _overpass(lambda: ox.graph_from_bbox(box_, network_type="walk", simplify=True, retain_all=True), log,
                       empty_ok=False)
         ox.save_graphml(G, gpath)
-    for nombre, tags in (
-        ("green", {"leisure": ["park", "garden", "pitch", "golf_course"], "landuse": ["grass", "forest", "recreation_ground", "meadow"],
-                   "natural": ["wood", "scrub", "grassland"]}),
-        ("water", {"natural": ["water"], "waterway": ["river", "riverbank", "canal"], "water": True}),
-    ):
+    for nombre, tags in LAYERS:
         path = os.path.join(folder, f"{nombre}.gpkg")
         if os.path.exists(path):
             continue
         log(f"[osm] downloading {nombre} for the area (one time, cached)...")
         try:
             gdf = _overpass(lambda: ox.features_from_bbox(box_, tags=tags), log)
-            gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon", "LineString", "MultiLineString"])]
+            kinds = ["LineString", "MultiLineString"] + ([] if nombre == "coast" else ["Polygon", "MultiPolygon"])
+            gdf = gdf[gdf.geometry.type.isin(kinds)]
             keep = [c for c in ("leisure", "landuse", "natural", "waterway", "water", "name") if c in gdf.columns]
             gdf = gdf[keep + ["geometry"]].reset_index(drop=True)
         except InsufficientResponseError:  # OSM answered: nothing of that kind in the area

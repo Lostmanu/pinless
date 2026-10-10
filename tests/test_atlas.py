@@ -131,7 +131,6 @@ def test_numbers_count_every_city_and_the_maps_skip_the_ones_privacy_empties(mon
 
 
 def test_clip_keeps_only_what_is_inside_the_map():
-    from shapely.geometry import LineString
     pieces = [(1, LineString([(-100, 0), (1100, 0)])), (2, LineString([(2000, 0), (3000, 0)]))]
     out = privacy.clip_to_extent(pieces, (0, 1000, -500, 500))
     assert [i for i, _ in out] == [1]
@@ -148,16 +147,18 @@ def _outside_lines_city():
     return cities
 
 
-def _spy_tracks(monkeypatch, module):
-    # the routes are the LineCollection drawn at zorder 5; record what is handed to the PDF/SVG/PNG writer
-    seen, real = [], module.LineCollection
+def _spy_tracks(monkeypatch):
+    # the routes are the paths drawn at zorder 5 (render_editorial.draw_routes, used by the poster and the atlas);
+    # record every vertex handed to the PDF/SVG/PNG writer
+    from pinless import render_editorial
+    seen, real = [], render_editorial.PathPatch
 
-    def spy(segments, *a, **k):
+    def spy(path, *a, **k):
         if k.get("zorder") == 5:
-            seen.append(np.asarray(segments).reshape(-1, 2))
-        return real(segments, *a, **k)
+            seen.append(np.asarray(path.vertices))
+        return real(path, *a, **k)
 
-    monkeypatch.setattr(module, "LineCollection", spy)
+    monkeypatch.setattr(render_editorial, "PathPatch", spy)
     return seen
 
 
@@ -173,7 +174,7 @@ def test_atlas_writes_no_route_outside_its_map(monkeypatch, tmp_path):
     cells = atlas.layout(1)
     ext = atlas.fit(cities[0], cells[0][2] / cells[0][3])
     assert not _inside(np.concatenate([np.asarray(p.coords) for _, p in cities[0].pieces]), ext), "setup: lines outside"
-    seen = _spy_tracks(monkeypatch, atlas)
+    seen = _spy_tracks(monkeypatch)
     atlas.render_atlas(cities, cells, [ext], [None], str(tmp_path / "a.png"), dpi=20, svg_path=str(tmp_path / "a.svg"))
     assert seen and _inside(np.concatenate(seen), ext)
 
@@ -185,7 +186,7 @@ def test_poster_writes_no_route_outside_its_map(monkeypatch, tmp_path):
     ext = atlas.fit(cities[0], render_editorial.map_aspect("A3"))
     empty = gpd.GeoDataFrame({"highway": [], "name": []}, geometry=[])
     stats = {"km": 1.0, "n": 1, "hours": 1.0, "best5k_s": None, "best10k_s": None, "longest_km": 1.0, "streets": 1}
-    seen = _spy_tracks(monkeypatch, render_editorial)
+    seen = _spy_tracks(monkeypatch)
     render_editorial.render(cities[0].pieces, (empty, empty, empty), ext, stats, str(tmp_path / "p.png"), dpi=20,
                             city="X", year="2025", svg_path=str(tmp_path / "p.svg"))
     assert seen and _inside(np.concatenate(seen), ext)
