@@ -130,3 +130,16 @@ def test_fetch_basemap_caches_an_empty_layer_only_when_osm_says_there_is_none(tm
     monkeypatch.setattr(ox, "features_from_bbox", features)
     folder = area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lambda *_: None)
     assert len(gpd.read_file(os.path.join(folder, "green.gpkg"))) == 0
+
+
+def test_a_cached_area_is_found_again_despite_the_rounded_folder_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(ox, "graph_from_bbox", lambda *a, **k: _tiny_graph())
+    monkeypatch.setattr(ox, "features_from_bbox", lambda *a, **k: (_ for _ in ()).throw(ConnectionError("no network")))
+    bbox = (40.40049, -3.71049, 40.42049, -3.68049)  # rounds to a folder that is 0.0005 short on every side
+    folder = os.path.join(tmp_path, "bbox_40.400_m3.710_40.420_m3.680")
+    os.makedirs(folder)
+    ox.save_graphml(_tiny_graph(), os.path.join(folder, "walk.graphml"))
+    for name in ("green", "water"):
+        gpd.GeoDataFrame({"name": []}, geometry=[], crs=4326).to_file(os.path.join(folder, f"{name}.gpkg"))
+    assert area._cached_cover(str(tmp_path), bbox) == folder
+    assert area.fetch_basemap(bbox, root=str(tmp_path), log=lambda *_: None) == folder  # no download attempted

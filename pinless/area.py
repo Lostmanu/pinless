@@ -142,7 +142,8 @@ def _cached_cover(root, bbox):
             continue
         folder = os.path.join(root, name)
         done = all(os.path.exists(os.path.join(folder, f)) for f in ("walk.graphml", "green.gpkg", "water.gpkg"))
-        if done and cs <= s and cw <= w and cn >= n and ce >= e:
+        tol = 0.001  # folder names are rounded to 0.001 degrees, so a box can fall short by 0.0005 of what it holds
+        if done and cs <= s + tol and cw <= w + tol and cn >= n - tol and ce >= e - tol:
             size = (cn - cs) * (ce - cw)
             if best is None or size < best[0]:
                 best = (size, folder)
