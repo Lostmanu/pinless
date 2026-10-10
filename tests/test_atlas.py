@@ -82,6 +82,133 @@ def test_atlas_demo_keeps_lines_away_from_home_work_and_every_lodging(repeat):
         assert c.report.zones_suggested >= 1 and c.report.leak_check == "passed", key
 
 
+def _from(lat, lon, dx_km, dy_km):
+    return lon + dx_km / (111.32 * np.cos(np.radians(lat))), lat + dy_km / 110.57
+
+
+def test_home_zones_protect_an_activity_grouped_into_another_city():
+    # 20 loops from home, plus one long run that starts at home, passes the door again and ends 100 km away: its
+    # median is ~50 km away, so it belongs to another city, which must still cut it around home
+    H = (40.41, -3.70)
+    t = np.linspace(0, 2 * np.pi, 160)
+    acts = []
+    for i in range(20):
+        r = 1.2 + 0.05 * i
+        acts.append(Activity(id=str(i), type="Run", start=dt.datetime(2025, 1, 1 + i, 8),
+                             lonlat=[_from(*H, r * (np.cos(a) - 1), r * np.sin(a)) for a in t], source="x"))
+    out = [(0.7 * s, 0.0) for s in np.linspace(0, 1, 30)] + [(0.7 - 1.4 * s, 0.05) for s in np.linspace(0, 1, 60)]
+    out += [(-0.7 - 99.3 * s, 0.05) for s in np.linspace(0, 1, 2000)]
+    acts.append(Activity(id="far", type="Run", start=dt.datetime(2025, 3, 1, 8),
+                         lonlat=[_from(*H, dx, dy) for dx, dy in out], source="x"))
+    cities = atlas.prepare(atlas.group_by_city(acts), log=lambda *_: None)
+    assert len(cities) == 2
+    for c in cities:
+        tr = Transformer.from_crs(4326, c.crs, always_xy=True)
+        home = Point(*tr.transform(H[1], H[0]))
+        assert MultiLineString([p for _, p in c.pieces]).distance(home) >= 200
+
+
+def test_numbers_count_every_city_and_the_maps_skip_the_ones_privacy_empties(monkeypatch, tmp_path):
+    import types
+    acts = [_act(i, 40.41, -3.70, dt.date(2025, 1 + i % 12, 3), r=0.01 + 0.001 * i) for i in range(10)]  # home
+    for j, (lat, lon, n) in enumerate(((48.86, 2.35, 4), (41.89, 12.49, 3), (47.37, 8.54, 2))):
+        acts += [_act(100 * (j + 1) + i, lat, lon, dt.date(2025, 3 + j, 1 + i), r=0.012) for i in range(n)]
+    acts += [_act(900, 52.37, 4.90, dt.date(2025, 9, 1), r=0.0008)]  # one tiny loop: its zone swallows it all
+    captured = {}
+    monkeypatch.setattr(atlas.area, "place_names", lambda lat, lon, lang="en": (f"C{lat:.0f}", f"K{lat:.0f}"))
+    monkeypatch.setattr(atlas, "_basemap", lambda c, ext, log: None)
+    monkeypatch.setattr(atlas, "render_atlas", lambda drawn, *a, **k: captured.update(drawn=drawn, **k) or
+                        {"cap": 3.0, "max": 1})
+    args = types.SimpleNamespace(zone=[], trim=300.0, zone_radius=500.0, max_cities=2, lang="en", year=None,
+                                 style=None, size="A3", dpi=40, name="", title="", out=str(tmp_path / "a.png"),
+                                 pdf=None, svg=None, preview=None)
+    assert atlas.run(acts, args, log=lambda *_: None) == 0
+    drawn, s = captured["drawn"], captured["summary"]
+    assert [round(c.lat) for c in drawn] == [40, 49], "home and the biggest other city"
+    assert s["cities"] == 5 and captured["more"] == 3, "the headline counts every city, the note the ones not drawn"
+    assert s["runs"] == len(acts) and s["countries"] == 5
+    assert all(c.pieces for c in drawn)
+
+
+def test_clip_keeps_only_what_is_inside_the_map():
+    from shapely.geometry import LineString
+    pieces = [(1, LineString([(-100, 0), (1100, 0)])), (2, LineString([(2000, 0), (3000, 0)]))]
+    out = privacy.clip_to_extent(pieces, (0, 1000, -500, 500))
+    assert [i for i, _ in out] == [1]
+    x0, _, x1, _ = out[0][1].bounds
+    assert -1e-6 <= x0 and x1 <= 1000 + 1e-6
+
+
+def _outside_lines_city():
+    # a dense home area plus runs 12 km north in the same city: the map shows the dense area, the rest is outside it
+    acts = [_act(i, 40.41, -3.70, dt.date(2025, 1 + i % 12, 3), r=0.018 + 0.001 * i) for i in range(20)]
+    acts += [_act(100 + i, 40.41 + 12 / 110.57, -3.70, dt.date(2025, 5, 1 + i), r=0.014) for i in range(3)]
+    cities = atlas.prepare(atlas.group_by_city(acts), log=lambda *_: None)
+    assert len(cities) == 1
+    return cities
+
+
+def _spy_tracks(monkeypatch, module):
+    # the routes are the LineCollection drawn at zorder 5; record what is handed to the PDF/SVG/PNG writer
+    seen, real = [], module.LineCollection
+
+    def spy(segments, *a, **k):
+        if k.get("zorder") == 5:
+            seen.append(np.asarray(segments).reshape(-1, 2))
+        return real(segments, *a, **k)
+
+    monkeypatch.setattr(module, "LineCollection", spy)
+    return seen
+
+
+def _inside(pts, ext):
+    x0, x1, y0, y1 = ext
+    return bool(((pts[:, 0] >= x0 - 1e-6) & (pts[:, 0] <= x1 + 1e-6) & (pts[:, 1] >= y0 - 1e-6)
+                 & (pts[:, 1] <= y1 + 1e-6)).all())
+
+
+def test_atlas_writes_no_route_outside_its_map(monkeypatch, tmp_path):
+    # a clip path would hide such lines in the PDF/SVG but keep them in the file: they must not be written at all
+    cities = _outside_lines_city()
+    cells = atlas.layout(1)
+    ext = atlas.fit(cities[0], cells[0][2] / cells[0][3])
+    assert not _inside(np.concatenate([np.asarray(p.coords) for _, p in cities[0].pieces]), ext), "setup: lines outside"
+    seen = _spy_tracks(monkeypatch, atlas)
+    atlas.render_atlas(cities, cells, [ext], [None], str(tmp_path / "a.png"), dpi=20, svg_path=str(tmp_path / "a.svg"))
+    assert seen and _inside(np.concatenate(seen), ext)
+
+
+def test_poster_writes_no_route_outside_its_map(monkeypatch, tmp_path):
+    import geopandas as gpd
+    from pinless import render_editorial
+    cities = _outside_lines_city()
+    ext = atlas.fit(cities[0], render_editorial.map_aspect("A3"))
+    empty = gpd.GeoDataFrame({"highway": [], "name": []}, geometry=[])
+    stats = {"km": 1.0, "n": 1, "hours": 1.0, "best5k_s": None, "best10k_s": None, "longest_km": 1.0, "streets": 1}
+    seen = _spy_tracks(monkeypatch, render_editorial)
+    render_editorial.render(cities[0].pieces, (empty, empty, empty), ext, stats, str(tmp_path / "p.png"), dpi=20,
+                            city="X", year="2025", svg_path=str(tmp_path / "p.svg"))
+    assert seen and _inside(np.concatenate(seen), ext)
+
+
+def test_an_accent_under_the_label_does_not_cover_it():
+    import matplotlib.pyplot as plt
+    from pinless.render_editorial import DISPLAY, STYLES
+    fig = plt.figure(figsize=(3, 3))
+    page = atlas._Page(fig, 297, 420, 1.0, STYLES["huella"])
+    from pinless.render_editorial import _outline
+    tops = {}
+    for word in ("ÁVILA", "CÁDIZ"):  # the headline call of render_atlas
+        page.text(18, 22, word, pt=235, font=DISPLAY, max_w=215, height=44, clear=(15, 36, 17.0))
+        patch = page.ax.patches[-1]
+        v = _outline(patch.get_path(), patch.get_transform() + page.ax.transData.inverted(), 0.3)
+        under = (v[:, 0] >= 15) & (v[:, 0] <= 36)  # the PINLESS label is x 18-32.7, y 13-15.2 mm
+        tops[word] = (v[under, 1].min(), v[:, 1].max())
+    plt.close(fig)
+    assert tops["ÁVILA"][0] >= 17.0 - 1e-6, "no part of the accent of a first letter reaches the label"
+    assert abs(tops["CÁDIZ"][1] - (22 + 44)) < 0.5, "CÁDIZ keeps the full capital height (baseline at 66 mm)"
+
+
 def test_an_accent_does_not_shrink_a_name():
     import matplotlib.pyplot as plt
     from pinless.render_editorial import DISPLAY, STYLES

@@ -175,10 +175,27 @@ def _addresses(host):
     return ([good] if good in ips else []) + [ip for ip in ips if ip != good] or [None]
 
 
-def _overpass(call, log):
+def _cache_written_since(t0):
+    """osmnx keeps an Overpass answer in its cache only when it is a real one (HTTP OK and no server "remark" such as
+    a timeout or out of memory). A file written during the call is therefore proof that OSM really answered."""
+    import osmnx as ox
+
+    folder = str(ox.settings.cache_folder)
+    try:
+        return any(f.endswith(".json") and os.path.getmtime(os.path.join(folder, f)) >= t0 - 1
+                   for f in os.listdir(folder))
+    except OSError:
+        return False
+
+
+def _overpass(call, log, empty_ok=True):
     """Run an osmnx download against the Overpass servers in turn (PINLESS_OVERPASS overrides the list), and against
     every address of each server: overpass-api.de is several machines, and one of them can be down while the others
-    answer. "No features of that kind here" is an answer, not a failure, so it is not retried."""
+    answer. "No features of that kind here" is an answer, not a failure, but only when OSM really sent it: a server
+    that times out also answers with no data, and that is retried elsewhere. With empty_ok=False (streets) a real
+    empty answer stops with RuntimeError too, so callers see one kind of failure."""
+    import time
+
     import osmnx as ox
     from osmnx._errors import InsufficientResponseError
 
@@ -188,13 +205,20 @@ def _overpass(call, log):
         host = urllib.parse.urlparse(url).hostname
         for ip in _addresses(host):
             ox.settings.overpass_url = url
+            t0 = time.time()
             try:
                 with _pinned(host, ip) if ip else contextlib.nullcontext():
                     out = call()
                 _answered[host] = ip
                 return out
-            except InsufficientResponseError:
-                raise
+            except InsufficientResponseError as ex:
+                if _cache_written_since(t0):  # OSM really answered: there is nothing of that kind here
+                    _answered[host] = ip
+                    if empty_ok:
+                        raise
+                    raise RuntimeError("OpenStreetMap has no streets in this area") from ex
+                last = ex
+                log(f"[osm] {host}{f' ({ip})' if ip else ''} answered without data (busy?); trying the next one")
             except Exception as ex:  # busy or unreachable machine: try the next one
                 last = ex
                 log(f"[osm] {host}{f' ({ip})' if ip else ''} did not answer ({type(ex).__name__}); trying the next one")
@@ -224,7 +248,8 @@ def fetch_basemap(bbox, root=None, log=print):
     box_ = (w, s, e, n)  # osmnx 2.x: (left, bottom, right, top)
     if not os.path.exists(gpath):
         log("[osm] downloading streets for the area (one time, cached)...")
-        G = _overpass(lambda: ox.graph_from_bbox(box_, network_type="walk", simplify=True, retain_all=True), log)
+        G = _overpass(lambda: ox.graph_from_bbox(box_, network_type="walk", simplify=True, retain_all=True), log,
+                      empty_ok=False)
         ox.save_graphml(G, gpath)
     for nombre, tags in (
         ("green", {"leisure": ["park", "garden", "pitch", "golf_course"], "landuse": ["grass", "forest", "recreation_ground", "meadow"],

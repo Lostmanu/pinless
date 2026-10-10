@@ -21,13 +21,11 @@ import numpy as np
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import PathPatch
-from matplotlib.textpath import TextPath
-from matplotlib.transforms import Affine2D
 from pyproj import Transformer
 
 from . import area, privacy, render
 from .render import MAJOR, MINOR, MM, SIZES, _hw, _lines, heat_raster
-from .render_editorial import DISPLAY, REGULAR, STYLES, TEXT, _density_segments
+from .render_editorial import DISPLAY, REGULAR, STYLES, TEXT, _density_segments, place_text
 from .render_sport import _num
 
 EARTH_KM = 6371.0088
@@ -109,9 +107,12 @@ def group_by_city(activities, link_km=30.0):
 
 
 def prepare(cities, trim_m=300.0, zone_r=500.0, user_zones_ll=(), log=print):
-    """Privacy per city, in place. Raises privacy.PrivacyError if any city fails its leak check (nothing is exported).
-    Cities left with nothing to draw are dropped and reported."""
-    kept = []
+    """Privacy per city, in place, in two passes, and fail closed (privacy.PrivacyError: nothing is exported).
+
+    Pass 1 finds each city's own private places (start/end clusters; with few runs one loop run is enough).
+    Pass 2 cuts every city with its own places AND every other city's places and the user's zones: an activity is
+    grouped by its median, so a long one can belong to another city and still start at home.
+    Every city is kept; those with nothing left to draw have no pieces and are reported."""
     for c in cities:
         c.crs = render.utm_crs(c.lon, c.lat)
         tr = Transformer.from_crs(4326, c.crs, always_xy=True)
@@ -119,18 +120,27 @@ def prepare(cities, trim_m=300.0, zone_r=500.0, user_zones_ll=(), log=print):
         for a in c.acts:
             arr = np.asarray(a.lonlat, dtype=float)
             c.tracks.append(np.column_stack(tr.transform(arr[:, 0], arr[:, 1])))
+    places = []  # (city index, lat, lon) of every city's own private places; in memory only
+    for i, c in enumerate(cities):
+        _, rep = privacy.apply(c.tracks, trim_m=trim_m, zone_r=zone_r, min_pts_floor=2)
+        inv = Transformer.from_crs(c.crs, 4326, always_xy=True)
+        for x, y in rep.centres:
+            lon, lat = inv.transform(x, y)
+            places.append((i, lat, lon))
+    for i, c in enumerate(cities):
+        tr = Transformer.from_crs(4326, c.crs, always_xy=True)
+        shared = [(la, lo, r) for la, lo, r in user_zones_ll] + [(la, lo, zone_r) for j, la, lo in places if j != i]
         zones = []
-        for la, lo, r in user_zones_ll:  # every user zone, in this city's projection (far ones simply never touch)
+        for la, lo, r in shared:  # in this city's projection; far ones simply never touch its tracks
             zx, zy = tr.transform(lo, la)
             if math.isfinite(zx) and math.isfinite(zy):
                 zones.append((zx, zy, r))
         c.pieces, c.report = privacy.apply(c.tracks, trim_m=trim_m, zone_r=zone_r, user_zones_xy=zones,
                                            min_pts_floor=2)
-        if c.pieces:
-            kept.append(c)
-        else:
-            log(f"[atlas] a city with {c.n} runs has nothing left after the privacy cuts: not drawn")
-    return kept
+        if not c.pieces:
+            log(f"[atlas] a city with {c.n} run{'' if c.n == 1 else 's'} has nothing left after the privacy cuts: "
+                f"not drawn")
+    return cities
 
 
 def _rows(m, cols, top, mh):
@@ -201,34 +211,27 @@ class _Page:
         self.ax.set_ylim(hmm, 0)
         self.ax.axis("off")
 
-    def text(self, x, y, value, pt=9, font=TEXT, color=None, align="left", max_w=None, height=None):
+    def text(self, x, y, value, pt=9, font=TEXT, color=None, align="left", max_w=None, height=None, clear=None):
         if not value:
             return (0, 0)
-        k = self.k
-        path = TextPath((0, 0), str(value), size=pt * k, prop=font)
-        b = path.get_extents()
-        # the box runs from the capital height down to the lowest descender (a comma still counts), but anything above
-        # the capitals (an accent) does not: PARÍS gets the same letters as ROMA and the accent sticks out on top
-        top = TextPath((0, 0), "H", size=pt * k, prop=font).get_extents().y1
-        bottom = min(b.y0, 0.0)
-        scale = 25.4 / 72.0
-        if height is not None and top > bottom:
-            scale = min(scale, height * k / (top - bottom))
-        if max_w is not None and b.width * scale > max_w * k:
-            scale = max_w * k / b.width
-        width = b.width * scale
-        anchor = x * k - (width if align == "right" else width / 2 if align == "center" else 0)
-        trans = Affine2D().translate(-b.x0, -top).scale(scale, -scale).translate(anchor, y * k)
+        path, trans, w, h = place_text(value, x, y, self.k, pt, font, align, max_w, height, clear)
         self.ax.add_patch(PathPatch(path, transform=trans + self.ax.transData, color=color or self.S["ink"], lw=0))
-        return width / k, (top - bottom) * scale / k
+        return w, h
 
     def rule(self, y, left=LEFT, right=RIGHT, width=0.45, color=None):
         self.ax.plot([left * self.k, right * self.k], [y * self.k, y * self.k], color=color or self.S["rule"],
                      lw=width * self.k)
 
 
+def totals(cities):
+    """The year's numbers over EVERY city run in, drawn or not."""
+    return {"cities": len(cities), "countries": len({c.country for c in cities if c.country}),
+            "km": sum(c.km for c in cities), "runs": sum(c.n for c in cities), "hours": sum(c.hours for c in cities)}
+
+
 def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", size="A3", dpi=300, name="", title="",
-                 year="", lang="en", more=0, pdf_path=None, svg_path=None, preview_path=None):
+                 year="", lang="en", more=0, pdf_path=None, svg_path=None, preview_path=None, summary=None):
+    """cities: the drawn ones. summary: totals() over every city (defaults to the drawn ones); more: cities not drawn."""
     S = STYLES[style]
     es = lang == "es"
     wmm, hmm = SIZES[size]
@@ -237,8 +240,8 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
     page = _Page(fig, wmm, hmm, k, S)
     T, rule = page.text, page.rule
 
-    n_cities = len(cities) + more
-    countries = {c.country for c in cities if c.country}
+    tot = summary or totals(cities)
+    n_cities = tot["cities"]
     T(18, 13, "P I N L E S S", pt=8.4)
     T(279, 13, "ATLAS DE RUNNING" if es else "RUNNING ATLAS", pt=6.6, align="right", color=S["sub"])
     if title:
@@ -247,7 +250,7 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
         head = cities[0].name or "ATLAS"
     else:
         head = f"{n_cities} CIUDADES" if es else f"{n_cities} CITIES"
-    T(18, 22, head.upper(), pt=235, font=DISPLAY, max_w=215, height=44)
+    T(18, 22, head.upper(), pt=235, font=DISPLAY, max_w=215, height=44, clear=(15, 36, 17.0))  # accents clear PINLESS
     T(279, 25, str(year), pt=43, font=REGULAR, color=S["accent"], align="right", max_w=39)
     T(279, 45, "TEMPORADA" if es else "SEASON", pt=6.0, align="right", color=S["sub"])
     T(18, 73, "UN AÑO EN MOVIMIENTO" if es else "A YEAR IN MOTION", pt=7.2, color=S["sub"])
@@ -258,9 +261,10 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
     cmap = LinearSegmentedColormap.from_list("huella", S["heat"])
     dens = []
     for c, (x, y, w, h), ext in zip(cities, cells, extents):
+        pieces = privacy.clip_to_extent(c.pieces, ext)  # only what is drawn is written (no hidden PDF/SVG lines)
         W, H = int(round(w * k * MM * 220)), int(round(h * k * MM * 220))
-        acc = heat_raster(c.pieces, ext, W, H, max(1, int(round(0.22 * 220 / 25.4 * k))))
-        dens.append((acc, *_density_segments(c.pieces, ext, acc)))
+        acc = heat_raster(pieces, ext, W, H, max(1, int(round(0.22 * 220 / 25.4 * k))))
+        dens.append((acc, *_density_segments(pieces, ext, acc)))
     every = np.concatenate([d[2] for d in dens if len(d[2])]) if any(len(d[2]) for d in dens) else np.ones(1)
     cap = max(3.0, float(np.percentile(every, 98.5)))
 
@@ -306,12 +310,11 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
         T(x + w, cy + 8.2, runs, pt=6.2, color=S["sub"], align="right", max_w=w * 0.3)
 
     rule(377)
-    total_km = sum(c.km for c in cities)
     records = (
-        (_num(total_km, lang), "KILÓMETROS" if es else "KILOMETRES"),
-        (str(sum(c.n for c in cities)), "SALIDAS" if es else "RUNS"),
-        (str(len(countries)) if countries else "—", "PAÍSES" if es else "COUNTRIES"),
-        (_num(sum(c.hours for c in cities), lang), "HORAS REGISTRADAS" if es else "RECORDED HOURS"),
+        (_num(tot["km"], lang), "KILÓMETROS" if es else "KILOMETRES"),
+        (str(tot["runs"]), "SALIDAS" if es else "RUNS"),
+        (str(tot["countries"]) if tot["countries"] else "—", "PAÍSES" if es else "COUNTRIES"),
+        (_num(tot["hours"], lang), "HORAS REGISTRADAS" if es else "RECORDED HOURS"),
     )
     for i, (value, label) in enumerate(records):
         xx = 18 + i * 65.25
@@ -326,7 +329,9 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
     T(279, 403, "+", pt=8, align="right", color=S["sub"])
     T(18, 412, "© OpenStreetMap contributors · ODbL · openstreetmap.org/copyright", pt=6.2, color=S["sub"], max_w=200)
     if more:
-        T(279, 412, (f"+{more} CIUDADES MÁS" if es else f"+{more} MORE CITIES"), pt=6.2, color=S["sub"], align="right")
+        note = (f"+{more} CIUDAD{'' if more == 1 else 'ES'} SIN MAPA" if es
+                else f"+{more} MORE {'CITY' if more == 1 else 'CITIES'} NOT DRAWN")
+        T(279, 412, note, pt=6.2, color=S["sub"], align="right")
 
     # No timestamps, activity ids, source paths or author metadata, as on the poster.
     fig.savefig(out_path, dpi=dpi, facecolor=S["bg"], metadata={"Software": "Pinless"})
@@ -349,51 +354,59 @@ def run(sel, a, log=print):
     if not cities:
         log("no activities with GPS to draw")
         return 2
-    more = 0
-    if len(cities) > a.max_cities:  # keep home and the biggest others; say what is left out
-        keep = {id(c) for c in [cities[0]] + sorted(cities[1:], key=lambda c: -c.km)[: a.max_cities - 1]}
-        left = [c for c in cities if id(c) not in keep]
-        more = len(left)
-        cities = [c for c in cities if id(c) in keep]
-        log(f"[atlas] {more} smaller cities left out ({sum(c.n for c in left)} runs, {sum(c.km for c in left):.0f} km);"
-            f" raise --max-cities to show them")
     zones = []
     for z in a.zone:
         la, lo, r = map(float, z.split(","))
         zones.append((la, lo, r))
-    try:
-        cities = prepare(cities, trim_m=a.trim, zone_r=a.zone_radius, user_zones_ll=zones, log=log)
+    try:  # privacy for EVERY city first: their private places protect each other
+        prepare(cities, trim_m=a.trim, zone_r=a.zone_radius, user_zones_ll=zones, log=log)
     except privacy.PrivacyError as ex:
         log(f"[privacy] STOP: {ex}. Nothing was exported.")
         return 3
-    if not cities:
+    drawable = [c for c in cities if c.pieces]
+    if not drawable:
         log("nothing left to draw after the privacy cuts")
         return 2
-    for i, c in enumerate(cities):
+    drawn = drawable
+    if len(drawable) > a.max_cities:  # keep the first (home) and the biggest others, in their order
+        keep = {id(c) for c in [drawable[0]] + sorted(drawable[1:], key=lambda c: -c.km)[: a.max_cities - 1]}
+        drawn = [c for c in drawable if id(c) in keep]
+    more = len(cities) - len(drawn)
+    if more:
+        left = [c for c in cities if c not in drawn]
+        log(f"[atlas] {more} {'city' if more == 1 else 'cities'} not drawn ({sum(c.n for c in left)} runs, "
+            f"{sum(c.km for c in left):.0f} km); they still count in the totals. --max-cities draws up to 12")
+    for c in cities:  # every city, for the country count
         c.name, c.country = area.place_names(round(c.lat, 2), round(c.lon, 2), lang=a.lang)
+    for i, c in enumerate(drawn):
         r = c.report
         log(f"[atlas] {i + 1:02d} {c.name or '(no name found)'}{', ' + c.country if c.country else ''} · "
-            f"{c.n} run{'' if c.n == 1 else 's'} · "
-            f"{c.km:.0f} km · zones {r.zones_suggested} + {r.zones_user} · leak check {r.leak_check}")
+            f"{c.n} run{'' if c.n == 1 else 's'} · {c.km:.0f} km · zones {r.zones_suggested} + {len(zones)} · "
+            f"leak check {r.leak_check}")
     if len(cities) == 1:
         log("[atlas] only one city: the single-city poster (--layout editorial) shows it bigger")
-    cells = layout(len(cities))
-    extents = [fit(c, w / h) for c, (x, y, w, h) in zip(cities, cells)]
+    cells = layout(len(drawn))
+    extents = [fit(c, w / h) for c, (x, y, w, h) in zip(drawn, cells)]
     basemaps = []
-    for c, ext in zip(cities, extents):
-        inv = Transformer.from_crs(c.crs, 4326, always_xy=True)
-        lons, lats = inv.transform([ext[0], ext[1], ext[0], ext[1]], [ext[2], ext[2], ext[3], ext[3]])
-        big = (min(lats) - 0.002, min(lons) - 0.002, max(lats) + 0.002, max(lons) + 0.002)  # ~200 m: streets reach the edge
+    for c, ext in zip(drawn, extents):
         try:
-            folder = area.fetch_basemap(big, log=log)
+            basemaps.append(_basemap(c, ext, log))
         except RuntimeError as ex:  # every OpenStreetMap server busy: stop cleanly, what was downloaded stays cached
             log(f"[osm] STOP: {ex}. Run the same command again later; the cities already downloaded are kept.")
             return 4
-        basemaps.append(render.load_basemap(folder, big, c.crs))
     years = sorted({x.start.year for c in cities for x in c.acts if x.start})
     year = str(a.year) if a.year else (f"{years[0]}–{years[-1]}" if len(years) > 1 else (str(years[0]) if years else ""))
-    info = render_atlas(cities, cells, extents, basemaps, a.out, style=a.style or "huella", size=a.size, dpi=a.dpi,
+    info = render_atlas(drawn, cells, extents, basemaps, a.out, style=a.style or "huella", size=a.size, dpi=a.dpi,
                         name=a.name, title=a.title, year=year, lang=a.lang, more=more, pdf_path=a.pdf,
-                        svg_path=a.svg, preview_path=a.preview)
-    log(f"[render] {a.out} · {len(cities)} cities · heat cap {info['cap']:.0f} · max overlap {info['max']}")
+                        svg_path=a.svg, preview_path=a.preview, summary=totals(cities))
+    log(f"[render] {a.out} · {len(drawn)} of {len(cities)} cities drawn · heat cap {info['cap']:.0f} · "
+        f"max overlap {info['max']}")
     return 0
+
+
+def _basemap(city, ext, log):
+    """OSM layers for a map: its box plus ~200 m so streets reach the edge (cached; RuntimeError if no server answers)."""
+    inv = Transformer.from_crs(city.crs, 4326, always_xy=True)
+    lons, lats = inv.transform([ext[0], ext[1], ext[0], ext[1]], [ext[2], ext[2], ext[3], ext[3]])
+    big = (min(lats) - 0.002, min(lons) - 0.002, max(lats) + 0.002, max(lons) + 0.002)
+    return render.load_basemap(area.fetch_basemap(big, log=log), big, city.crs)

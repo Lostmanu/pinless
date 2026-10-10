@@ -36,16 +36,16 @@ It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros
 pinless export_12345678.zip --layout atlas --name "Lucia" --year 2025 --pdf atlas.pdf
 ```
 
-One small map per city on the same print: the city where you ran most comes first, then the others in the order you first ran there, each with its name, country, kilometres and runs. Line colour means the same in every map, so a street you ran fifty times at home is darker than a one-off loop by the hotel. Up to 9 cities by default (`--max-cities`, at most 12); the smallest are left out and the print says how many.
+One small map per city on the same print: the city where you ran most comes first, then the others in the order you first ran there, each with its name, country, kilometres and runs. Line colour means the same in every map, so a street you ran fifty times at home is darker than a one-off loop by the hotel. Up to 9 maps by default (`--max-cities`, at most 12); the smallest cities are left out of the maps, the print says how many, and the totals still count them.
 
 ## Privacy
 
 A heatmap of your runs shows where you live. Pinless removes that before drawing anything:
 
 1. It trims the first and last 300 m of every activity.
-2. It finds every place where your runs often start or end (home, work, the gym) and deletes all points inside an irregular zone around each one, including runs that only pass by. In the atlas this is done city by city, and where you ran only a few times a single loop run is enough to hide where it started (a hotel, a family home).
+2. It finds every place where your runs often start or end (home, work, the gym) and deletes all points inside an irregular zone around each one, including runs that only pass by. In the atlas this is done city by city, the private places of every city also protect the others (a long run grouped elsewhere can still start at home), and where you ran only a few times a single loop run is enough to hide where it started (a hotel, a family home).
 3. It checks the result. If any line still touches a zone, nothing is exported.
-4. It never prints coordinates, start points, activity names or dates. The favourite street is never one within 1 km of a private zone.
+4. It never prints coordinates, start points, activity names or dates, and nothing outside the visible map is written into the PNG, PDF or SVG. The favourite street is never one within 1 km of a private zone.
 5. Your files never leave your computer. Only the bounding box of the area is sent to OpenStreetMap to fetch the streets and the city name (in the atlas, each city's box and its centre rounded to about 1 km).
 
 A run that starts in one place and ends in another, once, only has its ends trimmed. This reduces the risk; it is not a guarantee of anonymity. A map of where you run still says something about you. Look at the poster before you share it, and hide more places with `--zone LAT,LON,RADIUS_M` (repeatable).

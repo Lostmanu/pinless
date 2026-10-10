@@ -21,6 +21,7 @@ from matplotlib.patches import PathPatch
 from matplotlib.textpath import TextPath
 from matplotlib.transforms import Affine2D
 
+from . import privacy
 from .render import MAJOR, MINOR, MM, SIZES, _hw, _lines, heat_raster
 from .render_sport import _num
 from .stats import fmt_time
@@ -46,6 +47,49 @@ STYLES = {
         "heat": ["#bc875d", "#d19e6d", "#e0b582", "#eed0a8", "#fff2d7"],
     },
 }
+
+
+def _outline(path, trans, step):
+    """The glyph outlines after trans, sampled every `step` along each edge (corners alone miss a slanted accent)."""
+    out = []
+    for poly in path.to_polygons(transform=trans):
+        seg = np.diff(poly, axis=0)
+        n = np.maximum(1, np.ceil(np.hypot(seg[:, 0], seg[:, 1]) / step)).astype(int)
+        for a, d, m in zip(poly[:-1], seg, n):
+            out.append(a + d * (np.arange(m)[:, None] / m))
+    return np.concatenate(out) if out else np.empty((0, 2))
+
+
+def place_text(value, x, y, k, pt=9, font=None, align="left", max_w=None, height=None, clear=None):
+    """Path, transform and size (A3-grid millimetres) of a text whose top-left is (x, y), page y pointing down.
+
+    The box runs from the capital height down to the lowest descender (a comma still counts) and ignores what rises
+    above the capitals, so CÁDIZ gets the same letters as MADRID and its accent sticks out on top. clear=(x0, x1,
+    y_min): nothing of the text may rise above y_min between x0 and x1 (an accent under the PINLESS label); only then
+    is the whole box, accent included, fitted to the height instead."""
+    path = TextPath((0, 0), str(value), size=pt * k, prop=font)
+    b = path.get_extents()
+    bottom = min(b.y0, 0.0)
+
+    def fit(top):
+        scale = 25.4 / 72.0
+        if height is not None and top > bottom:
+            scale = min(scale, height * k / (top - bottom))
+        if max_w is not None and b.width * scale > max_w * k:
+            scale = max_w * k / b.width
+        width = b.width * scale
+        anchor = x * k - (width if align == "right" else width / 2 if align == "center" else 0)
+        return Affine2D().translate(-b.x0, -top).scale(scale, -scale).translate(anchor, y * k), width, scale
+
+    top = TextPath((0, 0), "H", size=pt * k, prop=font).get_extents().y1
+    trans, width, scale = fit(top)
+    if clear is not None and b.y1 > top:
+        pts = _outline(path, trans, 0.3 * k)
+        under = (pts[:, 0] >= clear[0] * k) & (pts[:, 0] <= clear[1] * k)
+        if under.any() and pts[under, 1].min() < clear[2] * k:
+            top = b.y1
+            trans, width, scale = fit(top)
+    return path, trans, width / k, (top - bottom) * scale / k
 
 
 def map_aspect(size="A3"):
@@ -85,6 +129,7 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
     if headline == "name" and not name.strip():
         raise ValueError("a name is required for the name headline")
     S = STYLES[style]
+    pieces = privacy.clip_to_extent(pieces, extent)  # only what is drawn is written (no hidden PDF/SVG lines)
     wmm, hmm = SIZES[size]
     k = wmm / 297.0
     fig = plt.figure(figsize=(wmm * MM, hmm * MM), dpi=dpi, facecolor=S["bg"])
@@ -94,25 +139,12 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
     page.set_ylim(hmm, 0)
     page.axis("off")
 
-    def text(x, y, value, pt=9, font=TEXT, color=None, align="left", max_w=None, height=None):
+    def text(x, y, value, pt=9, font=TEXT, color=None, align="left", max_w=None, height=None, clear=None):
         if not value:
             return (0, 0)
-        path = TextPath((0, 0), str(value), size=pt * k, prop=font)
-        b = path.get_extents()
-        # the box runs from the capital height down to the lowest descender (a comma still counts), but anything above
-        # the capitals (an accent) does not: CÁDIZ gets the same letters as MADRID and the accent sticks out on top
-        top = TextPath((0, 0), "H", size=pt * k, prop=font).get_extents().y1
-        bottom = min(b.y0, 0.0)
-        scale = 25.4 / 72.0
-        if height is not None and top > bottom:
-            scale = min(scale, height * k / (top - bottom))
-        if max_w is not None and b.width * scale > max_w * k:
-            scale = max_w * k / b.width
-        width, th = b.width * scale, (top - bottom) * scale
-        anchor = x * k - (width if align == "right" else width / 2 if align == "center" else 0)
-        trans = Affine2D().translate(-b.x0, -top).scale(scale, -scale).translate(anchor, y * k)
+        path, trans, w, h = place_text(value, x, y, k, pt, font, align, max_w, height, clear)
         page.add_patch(PathPatch(path, transform=trans + page.transData, color=color or S["ink"], lw=0))
-        return width / k, th / k
+        return w, h
 
     def rule(y, left=18, right=279, width=0.45, color=None):
         page.plot([left * k, right * k], [y * k, y * k], color=color or S["rule"], lw=width * k)
@@ -123,7 +155,7 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
          align="right", color=S["sub"])
     title = name if headline == "name" else city or ("MI CIUDAD" if es else "MY CITY")
     text(18, 24, title.upper(), pt=235, font=DISPLAY,
-         max_w=215, height=57)
+         max_w=215, height=57, clear=(15, 36, 17.0))  # an accent must not touch the PINLESS label
     text(279, 27, str(year), pt=43, font=REGULAR, color=S["accent"], align="right", max_w=39)
     text(279, 47, "TEMPORADA" if es else "SEASON", pt=6.0, align="right", color=S["sub"])
     if headline == "name":

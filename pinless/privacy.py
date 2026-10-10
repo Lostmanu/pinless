@@ -132,3 +132,18 @@ def apply(tracks_xy: list, trim_m=300.0, zone_r=500.0, eps=180.0, min_share=0.04
     rep.km_out = sum(p.length for _, p in pieces) / 1000
     rep.leak_check = "passed" if forbidden is not None else "no zones"
     return pieces, rep
+
+
+def clip_to_extent(pieces, extent, margin_frac=0.0):
+    """Only what is drawn is written: cut the pieces to the map box, so a PDF or SVG holds no geometry outside the
+    visible map, where a clip path would hide it but not remove it. The renderers call it themselves."""
+    x0, x1, y0, y1 = extent
+    mx, my = (x1 - x0) * margin_frac, (y1 - y0) * margin_frac
+    frame = Polygon([(x0 - mx, y0 - my), (x1 + mx, y0 - my), (x1 + mx, y1 + my), (x0 - mx, y1 + my)])
+    out = []
+    for i, line in pieces:
+        cut = line.intersection(frame)
+        for part in getattr(cut, "geoms", [cut]):
+            if isinstance(part, LineString) and not part.is_empty and part.length > 0:
+                out.append((i, part))
+    return out
