@@ -99,14 +99,18 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
             return (0, 0)
         path = TextPath((0, 0), str(value), size=pt * k, prop=font)
         b = path.get_extents()
+        # the box runs from the capital height down to the lowest descender (a comma still counts), but anything above
+        # the capitals (an accent) does not: CÁDIZ gets the same letters as MADRID and the accent sticks out on top
+        top = TextPath((0, 0), "H", size=pt * k, prop=font).get_extents().y1
+        bottom = min(b.y0, 0.0)
         scale = 25.4 / 72.0
-        if height is not None and b.height:
-            scale = min(scale, height * k / b.height)
+        if height is not None and top > bottom:
+            scale = min(scale, height * k / (top - bottom))
         if max_w is not None and b.width * scale > max_w * k:
             scale = max_w * k / b.width
-        width, th = b.width * scale, b.height * scale
+        width, th = b.width * scale, (top - bottom) * scale
         anchor = x * k - (width if align == "right" else width / 2 if align == "center" else 0)
-        trans = Affine2D().translate(-b.x0, -b.y1).scale(scale, -scale).translate(anchor, y * k)
+        trans = Affine2D().translate(-b.x0, -top).scale(scale, -scale).translate(anchor, y * k)
         page.add_patch(PathPatch(path, transform=trans + page.transData, color=color or S["ink"], lw=0))
         return width / k, th / k
 

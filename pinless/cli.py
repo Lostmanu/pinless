@@ -1,4 +1,4 @@
-"""pinless EXPORT [--year 2025] [--name Lucía] [--place "Madrid"] [--layout editorial] [--style huella]
+"""pinless EXPORT [--year 2025] [--name Lucía] [--place "Madrid"] [--layout editorial|atlas] [--style huella]
 
 With no area options it finds where you run most, fetches that area's OpenStreetMap data once (cached) and names the
 city. Everything else runs locally: the export never leaves the machine; only the area's bounding box is sent to
@@ -15,7 +15,7 @@ import numpy as np
 from pyproj import Transformer
 from shapely.geometry import LineString, box
 
-from . import area, ingest, privacy, render, render_sport, render_editorial, stats
+from . import area, atlas, ingest, privacy, render, render_sport, render_editorial, stats
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -30,11 +30,14 @@ def main(argv=None):
     p.add_argument("--title", default="", help="headline city text; default: --place or the city found at the area centre")
     p.add_argument("--year", type=int, default=None)
     p.add_argument("--type", default="Run")
-    p.add_argument("--layout", default="editorial", choices=["classic", "sport", "editorial"])
+    p.add_argument("--layout", default="editorial", choices=["classic", "sport", "editorial", "atlas"],
+                   help="atlas: one small map per city you ran in")
+    p.add_argument("--max-cities", type=int, default=9, help="atlas: most cities on the print (1-12)")
     p.add_argument("--name", default="", help="runner name for sport/editorial layouts (gifts)")
     p.add_argument("--headline", default="city", choices=["city", "name"],
                    help="editorial headline: city (default) or runner name")
-    p.add_argument("--style", default=None, help="classic: nightrun|ink · sport: volt|pista · editorial: huella|carbon")
+    p.add_argument("--style", default=None,
+                   help="classic: nightrun|ink · sport: volt|pista · editorial and atlas: huella|carbon")
     p.add_argument("--size", default="A3", choices=sorted(render.SIZES))
     p.add_argument("--dpi", type=int, default=300)
     p.add_argument("--lang", default="en", choices=["en", "es"])
@@ -47,17 +50,23 @@ def main(argv=None):
     p.add_argument("--svg", default=None, help="vector export for the editorial layout")
     p.add_argument("--preview", default=None, help="lightweight editorial JPEG preview (1600 px high)")
     a = p.parse_args(argv)
-    styles = {"classic": render.STYLES, "sport": render_sport.STYLES, "editorial": render_editorial.STYLES}
+    styles = {"classic": render.STYLES, "sport": render_sport.STYLES, "editorial": render_editorial.STYLES,
+              "atlas": render_editorial.STYLES}
     if a.style and a.style not in styles[a.layout]:
         p.error(f"style {a.style!r} is not available for {a.layout}; choose {', '.join(styles[a.layout])}")
-    if a.svg and a.layout != "editorial":
-        p.error("--svg is available for the editorial layout")
+    if a.svg and a.layout not in ("editorial", "atlas"):
+        p.error("--svg is available for the editorial and atlas layouts")
+    if a.layout == "atlas" and (a.bbox or a.place or a.cache or a.fit or a.headline != "city"):
+        p.error("the atlas finds every city by itself: --bbox, --place, --cache, --fit and --headline do not apply")
+    if not 1 <= a.max_cities <= 12:
+        p.error("--max-cities must be between 1 and 12")
     if a.headline == "name" and a.layout != "editorial":
         p.error("--headline name is available for the editorial layout")
     if a.headline == "name" and not a.name.strip():
         p.error("--headline name requires --name")
-    if a.preview and (a.layout != "editorial" or os.path.splitext(a.preview)[1].lower() not in (".jpg", ".jpeg")):
-        p.error("--preview requires the editorial layout and a .jpg or .jpeg filename")
+    if a.preview and (a.layout not in ("editorial", "atlas") or
+                      os.path.splitext(a.preview)[1].lower() not in (".jpg", ".jpeg")):
+        p.error("--preview requires the editorial or atlas layout and a .jpg or .jpeg filename")
     t0 = time.time()
 
     acts, rep = ingest.read_export(a.export)
@@ -67,6 +76,10 @@ def main(argv=None):
     if not sel:
         print("no activities match the type/year filters")
         return 2
+    if a.layout == "atlas":
+        code = atlas.run(sel, a)
+        print(f"[done] {time.time() - t0:.0f}s")
+        return code
     if a.bbox:
         s, w, n, e = map(float, a.bbox.split(","))
     elif a.place:
@@ -123,14 +136,19 @@ def main(argv=None):
     if a.cache:
         folder = os.path.join(ROOT, "cache", a.cache)
     else:
-        folder = area.fetch_basemap(big)
+        try:
+            folder = area.fetch_basemap(big)
+        except RuntimeError as ex:  # every OpenStreetMap server busy
+            print(f"[osm] STOP: {ex}. Run the same command again later.")
+            return 4
     basemap = render.load_basemap(folder, big, crs)
     if not a.title:
         a.title = (a.place.split(",")[0] if a.place else area.city_name((s + n) / 2, (w + e) / 2, lang=a.lang))
         if a.title:
             print(f"[area] headline: {a.title}")
     years = sorted({x.start.year for x in sel if x.start})
-    stats_ = {"n": len(sel), "km": total_m / 1000, "year_label": str(a.year) if a.year else (f"{years[0]}–{years[-1]}" if years else "")}
+    span = f"{years[0]}–{years[-1]}" if len(years) > 1 else (str(years[0]) if years else "")  # one year: "2025"
+    stats_ = {"n": len(sel), "km": total_m / 1000, "year_label": str(a.year) if a.year else span}
     if a.layout in ("sport", "editorial"):
         st_ = stats.compute(sel, [t for _, t in tracks], basemap[0],
                             private_pieces_xy=[np.asarray(pc.coords) for _, pc in pieces],

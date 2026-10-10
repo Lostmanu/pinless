@@ -8,9 +8,11 @@ Only the bbox of the area is sent to OpenStreetMap services; activity files neve
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
+import socket
 import urllib.parse
 import urllib.request
 
@@ -81,29 +83,148 @@ def city_name(lat: float, lon: float, lang: str = "en", timeout=20) -> str:
     return d.get("name", "") or ""
 
 
+_last_lookup = [0.0]
+
+
+def place_names(lat: float, lon: float, lang: str = "en", timeout=20):
+    """(city, country) at a point, or ('', '') if the lookup fails (offline is fine).
+
+    The point is rounded to 0.01 degrees (about 1 km) before it is sent, answers are cached on disk, and requests are
+    spaced at least 1.1 s apart (Nominatim usage policy)."""
+    import time
+
+    key = f"{lat:.2f},{lon:.2f},{lang}"
+    path = os.path.join(cache_root(), "places.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            known = json.load(f)
+    except (OSError, ValueError):
+        known = {}
+    if key in known:
+        return tuple(known[key])
+    wait = 1.1 - (time.monotonic() - _last_lookup[0])
+    if wait > 0:
+        time.sleep(wait)
+    _last_lookup[0] = time.monotonic()
+    url = "https://nominatim.openstreetmap.org/reverse?" + urllib.parse.urlencode(
+        {"lat": f"{lat:.2f}", "lon": f"{lon:.2f}", "format": "jsonv2", "zoom": 10, "accept-language": lang})
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.load(r)
+    except Exception:
+        return ("", "")
+    adr = d.get("address", {})
+    city = next((adr[k] for k in ("city", "town", "village", "municipality", "county") if adr.get(k)), "")
+    out = (city or d.get("name", "") or "", adr.get("country", ""))
+    known[key] = list(out)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(known, f, ensure_ascii=False, indent=0)
+    return out
+
+
 def cache_root() -> str:
     base = os.environ.get("PINLESS_CACHE") or os.path.join(os.path.expanduser("~"), ".cache", "pinless")
     os.makedirs(base, exist_ok=True)
     return base
 
 
-def fetch_basemap(bbox, root=None, log=print):
-    """Download (once) and cache the OSM layers for a bbox. Returns the folder that render.load_basemap reads."""
+def _cached_cover(root, bbox):
+    """A complete cached folder whose box already contains bbox (the smallest one), or None."""
+    s, w, n, e = bbox
+    best = None
+    for name in os.listdir(root) if os.path.isdir(root) else []:
+        if not name.startswith("bbox_"):
+            continue
+        try:
+            cs, cw, cn, ce = (float(v[1:]) * -1 if v.startswith("m") else float(v) for v in name[5:].split("_"))
+        except ValueError:
+            continue
+        folder = os.path.join(root, name)
+        done = all(os.path.exists(os.path.join(folder, f)) for f in ("walk.graphml", "green.gpkg", "water.gpkg"))
+        if done and cs <= s and cw <= w and cn >= n and ce >= e:
+            size = (cn - cs) * (ce - cw)
+            if best is None or size < best[0]:
+                best = (size, folder)
+    return best[1] if best else None
+
+
+OVERPASS = ("https://overpass-api.de/api", "https://overpass.private.coffee/api")  # main server, then a public mirror
+
+
+@contextlib.contextmanager
+def _pinned(host, ip):
+    """osmnx pins one address per server through socket.gethostbyname; make that lookup return ip for host."""
+    original = socket.gethostbyname
+    socket.gethostbyname = lambda h: ip if h == host else original(h)
+    try:
+        yield
+    finally:
+        socket.gethostbyname = original
+
+
+_answered = {}  # host -> the address that answered last: tried first next time, so a dead machine costs one timeout
+
+
+def _addresses(host):
+    try:
+        ips = sorted(set(socket.gethostbyname_ex(host)[2]))
+    except OSError:
+        return [None]
+    good = _answered.get(host)
+    return ([good] if good in ips else []) + [ip for ip in ips if ip != good] or [None]
+
+
+def _overpass(call, log):
+    """Run an osmnx download against the Overpass servers in turn (PINLESS_OVERPASS overrides the list), and against
+    every address of each server: overpass-api.de is several machines, and one of them can be down while the others
+    answer. "No features of that kind here" is an answer, not a failure, so it is not retried."""
     import osmnx as ox
+    from osmnx._errors import InsufficientResponseError
+
+    urls = [os.environ["PINLESS_OVERPASS"]] if os.environ.get("PINLESS_OVERPASS") else list(OVERPASS)
+    last = None
+    for url in urls:
+        host = urllib.parse.urlparse(url).hostname
+        for ip in _addresses(host):
+            ox.settings.overpass_url = url
+            try:
+                with _pinned(host, ip) if ip else contextlib.nullcontext():
+                    out = call()
+                _answered[host] = ip
+                return out
+            except InsufficientResponseError:
+                raise
+            except Exception as ex:  # busy or unreachable machine: try the next one
+                last = ex
+                log(f"[osm] {host}{f' ({ip})' if ip else ''} did not answer ({type(ex).__name__}); trying the next one")
+    raise RuntimeError("no OpenStreetMap (Overpass) server answered; try again later") from last
+
+
+def fetch_basemap(bbox, root=None, log=print):
+    """Download (once) and cache the OSM layers for a bbox. Returns the folder that render.load_basemap reads.
+    A layer is cached as empty only when OSM answers that there is nothing of that kind in the box; a server error
+    stops instead, so a busy server never leaves a map without its parks or water."""
+    import osmnx as ox
+    from osmnx._errors import InsufficientResponseError
 
     s, w, n, e = bbox
+    root = root or cache_root()
+    reuse = _cached_cover(root, bbox)
+    if reuse:
+        return reuse
     key = f"bbox_{s:.3f}_{w:.3f}_{n:.3f}_{e:.3f}".replace("-", "m")
-    folder = os.path.join(root or cache_root(), key)
+    folder = os.path.join(root, key)
     os.makedirs(folder, exist_ok=True)
     ox.settings.use_cache = True
     ox.settings.cache_folder = os.path.join(folder, "overpass")
     ox.settings.log_console = False
-    ox.settings.requests_timeout = 600
+    ox.settings.requests_timeout = 180
     gpath = os.path.join(folder, "walk.graphml")
     box_ = (w, s, e, n)  # osmnx 2.x: (left, bottom, right, top)
     if not os.path.exists(gpath):
         log("[osm] downloading streets for the area (one time, cached)...")
-        G = ox.graph_from_bbox(box_, network_type="walk", simplify=True, retain_all=True)
+        G = _overpass(lambda: ox.graph_from_bbox(box_, network_type="walk", simplify=True, retain_all=True), log)
         ox.save_graphml(G, gpath)
     for nombre, tags in (
         ("green", {"leisure": ["park", "garden", "pitch", "golf_course"], "landuse": ["grass", "forest", "recreation_ground", "meadow"],
@@ -115,11 +236,11 @@ def fetch_basemap(bbox, root=None, log=print):
             continue
         log(f"[osm] downloading {nombre} for the area (one time, cached)...")
         try:
-            gdf = ox.features_from_bbox(box_, tags=tags)
+            gdf = _overpass(lambda: ox.features_from_bbox(box_, tags=tags), log)
             gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon", "LineString", "MultiLineString"])]
             keep = [c for c in ("leisure", "landuse", "natural", "waterway", "water", "name") if c in gdf.columns]
             gdf = gdf[keep + ["geometry"]].reset_index(drop=True)
-        except Exception:  # no features of that kind in the area
+        except InsufficientResponseError:  # OSM answered: nothing of that kind in the area
             import geopandas as gpd
             gdf = gpd.GeoDataFrame({"name": []}, geometry=[], crs=4326)
         gdf.to_file(path, driver="GPKG")

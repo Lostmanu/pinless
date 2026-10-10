@@ -89,12 +89,14 @@ def _irregular_zone(centre, radius, rng: random.Random, n=14):
     return Polygon(pts).buffer(0)
 
 
-def apply(tracks_xy: list, trim_m=300.0, zone_r=500.0, eps=180.0, min_share=0.04, user_zones_xy=(), margin_m=200.0):
-    """tracks_xy: list of (N,2) arrays in metres. Returns (list of LineString pieces, report). Raises PrivacyError."""
+def apply(tracks_xy: list, trim_m=300.0, zone_r=500.0, eps=180.0, min_share=0.04, user_zones_xy=(), margin_m=200.0,
+          min_pts_floor=3):
+    """tracks_xy: list of (N,2) arrays in metres. Returns (list of LineString pieces, report). Raises PrivacyError.
+    min_pts_floor: fewest start/end points that make a zone; 2 means a single loop run already marks its start."""
     rep = PrivacyReport(activities_in=len(tracks_xy))
     rep.km_in = sum(float(np.hypot(*np.diff(t, axis=0).T).sum()) for t in tracks_xy if len(t) > 1) / 1000
     ends = np.array([p for t in tracks_xy if len(t) > 1 for p in (t[0], t[-1])])
-    min_pts = max(3, int(min_share * len(tracks_xy)))
+    min_pts = max(min_pts_floor, int(min_share * len(tracks_xy)))
     found = _clusters(ends, eps, min_pts)
     rng = random.SystemRandom()  # fresh randomness every export; never stored
     centres = [c for c, _ in found]

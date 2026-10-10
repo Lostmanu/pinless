@@ -8,7 +8,8 @@ description: Make a print-ready poster of a runner's year from their Strava expo
 ## Rules
 - Only run the `pinless` command. Do NOT open, read, unzip, summarise or print the export or any GPX/TCX/FIT file:
   they contain the user's exact locations and must stay out of this conversation.
-- Do not upload the export anywhere. Pinless works locally; it only sends the area's bounding box to OpenStreetMap.
+- Do not upload the export anywhere. Pinless works locally; it only sends the area's bounding box (for the atlas, each
+  city's box and its centre rounded to about 1 km) to OpenStreetMap.
 - If the export path is unknown, ask the user for it. Do not search their disk for it.
 
 ## Steps
@@ -19,5 +20,6 @@ description: Make a print-ready poster of a runner's year from their Strava expo
    `pinless "<export.zip>" --year <YEAR> --name "<NAME>" --style <STYLE> --out poster.png --pdf poster.pdf --preview poster.jpg`
    Add `--place "<City, Country>"` only if the user wants a city other than where they run most,
    and `--lang es` for Spanish labels.
+   If they want every city they ran in on one print (trips, holidays), add `--layout atlas` instead of `--place`.
 4. If the command prints `[privacy] STOP`, tell the user nothing was exported and why; do not try to bypass it.
 5. Show the user `poster.jpg` and tell them where `poster.pdf` is. Remind them to look at it before sharing.

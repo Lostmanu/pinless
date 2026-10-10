@@ -78,15 +78,15 @@ def highway_of(d):
     return h[0] if isinstance(h, list) else h
 
 
-def build_graph(city, rng):
-    base = os.path.join(ROOT, "cache", city)
+def build_graph(city, rng, base=None, crs=25830):
+    base = base or os.path.join(ROOT, "cache", city)
     G = ox.load_graphml(os.path.join(base, "walk.graphml"))
     green = gpd.read_file(os.path.join(base, "green.gpkg"))
     parks = green[(green.geometry.type.isin(["Polygon", "MultiPolygon"]))]
-    parks = parks.to_crs(25830)
+    parks = parks.to_crs(crs)
     parks = parks[parks.geometry.area > 30000]  # >= 3 ha
     tree = STRtree(list(parks.geometry.values))
-    to_utm = Transformer.from_crs(4326, 25830, always_xy=True)
+    to_utm = Transformer.from_crs(4326, crs, always_xy=True)
     xs = np.array([d["x"] for _, d in G.nodes(data=True)])
     ys = np.array([d["y"] for _, d in G.nodes(data=True)])
     ux, uy = to_utm.transform(xs, ys)
@@ -129,7 +129,7 @@ def route_line(G, nodes_seq):
     return coords
 
 
-def sample_track(coords_ll, to_utm, rng, pace_s_per_km, dt_s, start_time, trees_factor):
+def sample_track(coords_ll, to_utm, rng, pace_s_per_km, dt_s, start_time, trees_factor, crs=25830, ele0=650.0):
     """Resample a route at constant speed, add AR(1) GPS noise and rare spikes; return list of (lat, lon, ele, t)."""
     xs, ys = to_utm.transform([c[0] for c in coords_ll], [c[1] for c in coords_ll])
     line = LineString(list(zip(xs, ys)))
@@ -155,10 +155,10 @@ def sample_track(coords_ll, to_utm, rng, pace_s_per_km, dt_s, start_time, trees_
         v = speed * rng.uniform(0.9, 1.1)
         s += v * dt_s
         t += dt_s
-    to_ll = Transformer.from_crs(25830, 4326, always_xy=True)
+    to_ll = Transformer.from_crs(crs, 4326, always_xy=True)
     lon, lat = to_ll.transform([q[0] for q in pts], [q[1] for q in pts])
     out = []
-    ele = 650.0
+    ele = ele0
     for i, q in enumerate(pts):
         ele += rng.gauss(0, 0.4)
         out.append((lat[i], lon[i], round(ele, 1), start_time + dt.timedelta(seconds=q[2])))

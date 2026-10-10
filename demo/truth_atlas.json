@@ -1,0 +1,29 @@
+{
+ "home": [
+  40.4005,
+  -3.6955
+ ],
+ "work": [
+  40.4452,
+  -3.6935
+ ],
+ "lodgings": {
+  "Paris": [
+   48.8641,
+   2.376
+  ],
+  "Roma": [
+   41.8975,
+   12.495
+  ],
+  "Valencia": [
+   39.4705,
+   -0.329
+  ],
+  "Zurich": [
+   47.377,
+   8.548
+  ]
+ },
+ "note": "Synthetic runner. Only for privacy tests. Never ship with the export."
+}

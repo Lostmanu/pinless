@@ -1,0 +1,399 @@
+"""Atlas: one small map per city you ran in, on one print.
+
+Same pipeline as the single-city poster, applied city by city:
+- group_by_city: activities grouped by where they happened (places less than link_km apart are joined).
+- prepare: privacy PER CITY (own projection, own start/end clusters; with few runs a single loop run already marks
+  its start, so a hotel or a family home gets a zone too). Offline; fails closed like the poster.
+- render: a grid of maps in the editorial style. Line colour means the same in every map: how often you ran there.
+Only each city's map box, and its centre rounded to about 1 km (for the name), are sent to OpenStreetMap services.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import math
+from dataclasses import dataclass, field
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.collections import LineCollection
+from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.patches import PathPatch
+from matplotlib.textpath import TextPath
+from matplotlib.transforms import Affine2D
+from pyproj import Transformer
+
+from . import area, privacy, render
+from .render import MAJOR, MINOR, MM, SIZES, _hw, _lines, heat_raster
+from .render_editorial import DISPLAY, REGULAR, STYLES, TEXT, _density_segments
+from .render_sport import _num
+
+EARTH_KM = 6371.0088
+TOP, BOTTOM, LEFT, RIGHT = 87.0, 372.0, 18.0, 279.0  # grid area on the A3 layout grid (mm, scaled for other sizes)
+CAPTION, GAP_X, GAP_Y = 15.0, 8.0, 7.0
+ASPECT_MIN, ASPECT_MAX = 0.75, 2.2  # no map narrower or flatter than this (width/height)
+
+
+def _hav_km(lat1, lon1, lat2, lon2):
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    a = np.sin((p2 - p1) / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(np.radians(np.subtract(lon2, lon1)) / 2) ** 2
+    return 2 * EARTH_KM * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+
+
+def track_km(lonlat):
+    a = np.asarray(lonlat, dtype=float)
+    return float(_hav_km(a[:-1, 1], a[:-1, 0], a[1:, 1], a[1:, 0]).sum()) if len(a) > 1 else 0.0
+
+
+@dataclass(eq=False)
+class City:
+    acts: list = field(repr=False)
+    lat: float
+    lon: float
+    km: float
+    first: dt.date | None
+    last: dt.date | None
+    name: str = ""
+    country: str = ""
+    crs: object = field(default=None, repr=False)
+    tracks: list = field(default_factory=list, repr=False)
+    pieces: list = field(default_factory=list, repr=False)
+    report: object = field(default=None, repr=False)
+
+    @property
+    def n(self):
+        return len(self.acts)
+
+    @property
+    def hours(self):
+        return sum(a.times[-1] - a.times[0] for a in self.acts if a.times) / 3600
+
+
+def group_by_city(activities, link_km=30.0):
+    """Groups of activities whose median points chain less than link_km apart. The city with the most km comes first
+    (home), then the others in the order you first ran there."""
+    acts = [a for a in activities if len(a.lonlat) > 1]
+    if not acts:
+        return []
+    anchors = np.array([np.median(np.asarray(a.lonlat, dtype=float), axis=0) for a in acts])  # (lon, lat)
+    cells, inv = np.unique(np.round(anchors / 0.05).astype(np.int64), axis=0, return_inverse=True)
+    inv = np.asarray(inv).ravel()
+    centres = cells * 0.05
+    parent = list(range(len(cells)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(len(cells) - 1):
+        d = _hav_km(centres[i, 1], centres[i, 0], centres[i + 1:, 1], centres[i + 1:, 0])
+        for j in np.nonzero(d <= link_km)[0] + i + 1:
+            parent[find(int(j))] = find(i)
+    groups = {}
+    for k, a in enumerate(acts):
+        groups.setdefault(find(int(inv[k])), []).append(a)
+    cities = []
+    for members in groups.values():
+        pts = np.concatenate([np.asarray(a.lonlat, dtype=float) for a in members])
+        lon, lat = np.median(pts, axis=0)
+        days = sorted(a.start.date() for a in members if a.start)
+        cities.append(City(acts=members, lat=float(lat), lon=float(lon), km=sum(track_km(a.lonlat) for a in members),
+                           first=days[0] if days else None, last=days[-1] if days else None))
+    home = max(cities, key=lambda c: c.km)
+    rest = sorted((c for c in cities if c is not home), key=lambda c: (c.first or dt.date.max, -c.km))
+    return [home] + rest
+
+
+def prepare(cities, trim_m=300.0, zone_r=500.0, user_zones_ll=(), log=print):
+    """Privacy per city, in place. Raises privacy.PrivacyError if any city fails its leak check (nothing is exported).
+    Cities left with nothing to draw are dropped and reported."""
+    kept = []
+    for c in cities:
+        c.crs = render.utm_crs(c.lon, c.lat)
+        tr = Transformer.from_crs(4326, c.crs, always_xy=True)
+        c.tracks = []
+        for a in c.acts:
+            arr = np.asarray(a.lonlat, dtype=float)
+            c.tracks.append(np.column_stack(tr.transform(arr[:, 0], arr[:, 1])))
+        zones = []
+        for la, lo, r in user_zones_ll:  # every user zone, in this city's projection (far ones simply never touch)
+            zx, zy = tr.transform(lo, la)
+            if math.isfinite(zx) and math.isfinite(zy):
+                zones.append((zx, zy, r))
+        c.pieces, c.report = privacy.apply(c.tracks, trim_m=trim_m, zone_r=zone_r, user_zones_xy=zones,
+                                           min_pts_floor=2)
+        if c.pieces:
+            kept.append(c)
+        else:
+            log(f"[atlas] a city with {c.n} runs has nothing left after the privacy cuts: not drawn")
+    return kept
+
+
+def _rows(m, cols, top, mh):
+    """m cells of height mh in rows of cols, from top; an incomplete last row is centred."""
+    mw = (RIGHT - LEFT - (cols - 1) * GAP_X) / cols
+    cells = []
+    for i in range(m):
+        r, c = divmod(i, cols)
+        in_row = min(cols, m - r * cols)
+        x0 = LEFT + (RIGHT - LEFT - (in_row * mw + (in_row - 1) * GAP_X)) / 2 + c * (mw + GAP_X)
+        cells.append((x0, top + r * (mh + CAPTION + GAP_Y), mw, mh))
+    return cells
+
+
+def layout(n, target=1.25, hero_target=1.5, empty_cost=0.35):
+    """Map cells (x, y, w, h) in A3 layout millimetres for n cities. Two families are scored by how far each map is
+    from a pleasant shape (target width/height), plus a cost per empty cell: a uniform grid, or the first city (home)
+    across the full width with the others in a grid below. No empty row; an incomplete last row is centred."""
+    H, W = BOTTOM - TOP, RIGHT - LEFT
+    best = None
+    for cols in range(1, 5):
+        rows = math.ceil(n / cols)
+        if rows * cols - n >= cols:
+            continue
+        mw = (W - (cols - 1) * GAP_X) / cols
+        mh = (H - (rows - 1) * GAP_Y - rows * CAPTION) / rows
+        if mh < 25 or not ASPECT_MIN <= mw / mh <= ASPECT_MAX:
+            continue
+        score = abs(math.log(mw / mh / target)) + empty_cost * (rows * cols - n)
+        if best is None or score < best[0]:
+            best = (score, _rows(n, cols, TOP, mh))
+    m = n - 1
+    for cols in range(1, 5) if n >= 3 else ():
+        rows = math.ceil(m / cols)
+        if rows * cols - m >= cols:
+            continue
+        mw = (W - (cols - 1) * GAP_X) / cols
+        avail = H - (rows + 1) * CAPTION - rows * GAP_Y
+        for hh in range(60, int(avail)):
+            mh = (avail - hh) / rows
+            if mh < 25:
+                break
+            if not (ASPECT_MIN <= W / hh <= ASPECT_MAX and ASPECT_MIN <= mw / mh <= ASPECT_MAX):
+                continue
+            score = (abs(math.log(W / hh / hero_target)) + abs(math.log(mw / mh / target))) / 2 \
+                + empty_cost * (rows * cols - m)
+            if best is None or score < best[0]:
+                best = (score, [(LEFT, TOP, W, float(hh))] + _rows(m, cols, TOP + hh + CAPTION + GAP_Y, mh))
+    return best[1]
+
+
+def fit(city, aspect, min_span_m=2500.0):
+    """Map extent for a city: the area where you ran most there (as on the poster), grown to the cell aspect."""
+    x0, x1, y0, y1 = render.fit_extent(area.auto_bbox(city.acts), city.crs, aspect)
+    if x1 - x0 < min_span_m:
+        cx, cy, hw = (x0 + x1) / 2, (y0 + y1) / 2, min_span_m / 2
+        x0, x1, y0, y1 = cx - hw, cx + hw, cy - hw / aspect, cy + hw / aspect
+    return x0, x1, y0, y1
+
+
+class _Page:
+    """Text and rules in physical millimetres of the A3 layout grid, scaled by k for other paper sizes."""
+
+    def __init__(self, fig, wmm, hmm, k, S):
+        self.k, self.S = k, S
+        self.ax = fig.add_axes([0, 0, 1, 1], zorder=10)
+        self.ax.set_xlim(0, wmm)
+        self.ax.set_ylim(hmm, 0)
+        self.ax.axis("off")
+
+    def text(self, x, y, value, pt=9, font=TEXT, color=None, align="left", max_w=None, height=None):
+        if not value:
+            return (0, 0)
+        k = self.k
+        path = TextPath((0, 0), str(value), size=pt * k, prop=font)
+        b = path.get_extents()
+        # the box runs from the capital height down to the lowest descender (a comma still counts), but anything above
+        # the capitals (an accent) does not: PARÍS gets the same letters as ROMA and the accent sticks out on top
+        top = TextPath((0, 0), "H", size=pt * k, prop=font).get_extents().y1
+        bottom = min(b.y0, 0.0)
+        scale = 25.4 / 72.0
+        if height is not None and top > bottom:
+            scale = min(scale, height * k / (top - bottom))
+        if max_w is not None and b.width * scale > max_w * k:
+            scale = max_w * k / b.width
+        width = b.width * scale
+        anchor = x * k - (width if align == "right" else width / 2 if align == "center" else 0)
+        trans = Affine2D().translate(-b.x0, -top).scale(scale, -scale).translate(anchor, y * k)
+        self.ax.add_patch(PathPatch(path, transform=trans + self.ax.transData, color=color or self.S["ink"], lw=0))
+        return width / k, (top - bottom) * scale / k
+
+    def rule(self, y, left=LEFT, right=RIGHT, width=0.45, color=None):
+        self.ax.plot([left * self.k, right * self.k], [y * self.k, y * self.k], color=color or self.S["rule"],
+                     lw=width * self.k)
+
+
+def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", size="A3", dpi=300, name="", title="",
+                 year="", lang="en", more=0, pdf_path=None, svg_path=None, preview_path=None):
+    S = STYLES[style]
+    es = lang == "es"
+    wmm, hmm = SIZES[size]
+    k = wmm / 297.0
+    fig = plt.figure(figsize=(wmm * MM, hmm * MM), dpi=dpi, facecolor=S["bg"])
+    page = _Page(fig, wmm, hmm, k, S)
+    T, rule = page.text, page.rule
+
+    n_cities = len(cities) + more
+    countries = {c.country for c in cities if c.country}
+    T(18, 13, "P I N L E S S", pt=8.4)
+    T(279, 13, "ATLAS DE RUNNING" if es else "RUNNING ATLAS", pt=6.6, align="right", color=S["sub"])
+    if title:
+        head = title
+    elif n_cities == 1:
+        head = cities[0].name or "ATLAS"
+    else:
+        head = f"{n_cities} CIUDADES" if es else f"{n_cities} CITIES"
+    T(18, 22, head.upper(), pt=235, font=DISPLAY, max_w=215, height=44)
+    T(279, 25, str(year), pt=43, font=REGULAR, color=S["accent"], align="right", max_w=39)
+    T(279, 45, "TEMPORADA" if es else "SEASON", pt=6.0, align="right", color=S["sub"])
+    T(18, 73, "UN AÑO EN MOVIMIENTO" if es else "A YEAR IN MOTION", pt=7.2, color=S["sub"])
+    T(279, 72.5, name.upper(), pt=13.2, align="right", max_w=105)
+    rule(80)
+
+    # densities first: one colour scale for every map, so a colour means the same number of runs everywhere
+    cmap = LinearSegmentedColormap.from_list("huella", S["heat"])
+    dens = []
+    for c, (x, y, w, h), ext in zip(cities, cells, extents):
+        W, H = int(round(w * k * MM * 220)), int(round(h * k * MM * 220))
+        acc = heat_raster(c.pieces, ext, W, H, max(1, int(round(0.22 * 220 / 25.4 * k))))
+        dens.append((acc, *_density_segments(c.pieces, ext, acc)))
+    every = np.concatenate([d[2] for d in dens if len(d[2])]) if any(len(d[2]) for d in dens) else np.ones(1)
+    cap = max(3.0, float(np.percentile(every, 98.5)))
+
+    for i, (c, (x, y, w, h), ext, bm, (acc, segments, counts)) in enumerate(zip(cities, cells, extents, basemaps, dens)):
+        ax = fig.add_axes([x * k / wmm, 1 - (y + h) * k / hmm, w * k / wmm, h * k / hmm], zorder=1)
+        ax.set_xlim(ext[0], ext[1])
+        ax.set_ylim(ext[2], ext[3])
+        ax.set_aspect("equal")
+        ax.axis("off")
+        sw = min(1.0, max(0.55, math.sqrt(w / (RIGHT - LEFT))))  # thinner streets in small maps
+        if bm is not None:
+            edges, green, water = bm
+            gp = green[green.geometry.type.isin(["Polygon", "MultiPolygon"])]
+            if len(gp):
+                gp.plot(ax=ax, color=S["green"], linewidth=0, zorder=1)
+            wp = water[water.geometry.type.isin(["Polygon", "MultiPolygon"])]
+            if len(wp):
+                wp.plot(ax=ax, color=S["water"], linewidth=0, zorder=2)
+            wl = water[water.geometry.type.isin(["LineString", "MultiLineString"])]
+            if len(wl):
+                ax.add_collection(LineCollection(_lines(wl.geometry), colors=S["water_line"], linewidths=0.7 * k * sw,
+                                                 zorder=2))
+            edges = edges.loc[~edges.geometry.to_wkb().duplicated()]
+            hw = edges["highway"].map(_hw)
+            for cls, mask in (("path", ~hw.isin(MAJOR | MINOR)), ("minor", hw.isin(MINOR)), ("major", hw.isin(MAJOR))):
+                color, width = S["street"][cls]
+                ax.add_collection(LineCollection(_lines(edges[mask].geometry), colors=color, linewidths=width * k * sw,
+                                                 zorder=3, capstyle="round"))
+        if len(segments):
+            strength = np.clip(np.log1p(counts) / math.log1p(cap), 0, 1)
+            order = np.argsort(strength, kind="stable")
+            widths = (0.5 + 0.42 * strength) * k * max(sw, 0.8)
+            ax.add_collection(LineCollection(segments[order], colors=cmap(strength[order]), linewidths=widths[order],
+                                             capstyle="round", joinstyle="round", zorder=5))
+        # caption
+        cy = y + h + 3.0
+        T(x, cy + 0.4, f"{i + 1:02d}", pt=14, font=REGULAR, color=S["accent"], height=4.4)
+        T(x + 7.5, cy, c.name.upper(), pt=40, font=DISPLAY, height=5.4,  # no name found: no label, never coordinates
+          max_w=w * 0.68 - 7.5)
+        T(x + w, cy, _num(c.km, lang), pt=40, font=DISPLAY, height=5.4, align="right", max_w=w * 0.3)
+        T(x + 7.5, cy + 8.2, c.country.upper(), pt=6.2, color=S["sub"], max_w=w * 0.68 - 7.5)  # no dates, as on the poster
+        runs = f"KM · {c.n} {'SALIDA' if es else 'RUN'}{'' if c.n == 1 else 'S'}"
+        T(x + w, cy + 8.2, runs, pt=6.2, color=S["sub"], align="right", max_w=w * 0.3)
+
+    rule(377)
+    total_km = sum(c.km for c in cities)
+    records = (
+        (_num(total_km, lang), "KILÓMETROS" if es else "KILOMETRES"),
+        (str(sum(c.n for c in cities)), "SALIDAS" if es else "RUNS"),
+        (str(len(countries)) if countries else "—", "PAÍSES" if es else "COUNTRIES"),
+        (_num(sum(c.hours for c in cities), lang), "HORAS REGISTRADAS" if es else "RECORDED HOURS"),
+    )
+    for i, (value, label) in enumerate(records):
+        xx = 18 + i * 65.25
+        T(xx, 381, value, pt=25, font=DISPLAY, max_w=58, height=6.4)
+        T(xx, 391.5, label, pt=6.3, color=S["sub"], max_w=58)
+    rule(398)
+    T(18, 404, "CADA SALIDA DEJA HUELLA." if es else "EVERY RUN LEAVES A TRACE.", pt=6.8)
+    T(212, 404, "REPETICIÓN" if es else "REPETITION", pt=5.8, color=S["sub"], align="right")
+    for i, v in enumerate(np.linspace(0, 1, 6)):
+        page.ax.plot([(218 + i * 8.4) * k, (225 + i * 8.4) * k], [405 * k, 405 * k], color=cmap(v),
+                     lw=(0.55 + 0.95 * v) * k, solid_capstyle="round")
+    T(279, 403, "+", pt=8, align="right", color=S["sub"])
+    T(18, 412, "© OpenStreetMap contributors · ODbL · openstreetmap.org/copyright", pt=6.2, color=S["sub"], max_w=200)
+    if more:
+        T(279, 412, (f"+{more} CIUDADES MÁS" if es else f"+{more} MORE CITIES"), pt=6.2, color=S["sub"], align="right")
+
+    # No timestamps, activity ids, source paths or author metadata, as on the poster.
+    fig.savefig(out_path, dpi=dpi, facecolor=S["bg"], metadata={"Software": "Pinless"})
+    if pdf_path:
+        fig.savefig(pdf_path, dpi=dpi, facecolor=S["bg"],
+                    metadata={"Creator": None, "Producer": None, "CreationDate": None, "ModDate": None,
+                              "Title": None, "Author": None, "Subject": None, "Keywords": None})
+    if svg_path:
+        with matplotlib.rc_context({"svg.hashsalt": "pinless-atlas", "svg.fonttype": "path"}):
+            fig.savefig(svg_path, facecolor=S["bg"], metadata={"Date": None, "Creator": "Pinless"})
+    if preview_path:
+        fig.savefig(preview_path, dpi=1600 * 25.4 / hmm, facecolor=S["bg"], pil_kwargs={"quality": 88, "optimize": True})
+    plt.close(fig)
+    return {"cap": cap, "max": int(max((d[0].max() for d in dens if d[0].size), default=0))}
+
+
+def run(sel, a, log=print):
+    """CLI entry for --layout atlas. Returns the exit code."""
+    cities = group_by_city(sel)
+    if not cities:
+        log("no activities with GPS to draw")
+        return 2
+    more = 0
+    if len(cities) > a.max_cities:  # keep home and the biggest others; say what is left out
+        keep = {id(c) for c in [cities[0]] + sorted(cities[1:], key=lambda c: -c.km)[: a.max_cities - 1]}
+        left = [c for c in cities if id(c) not in keep]
+        more = len(left)
+        cities = [c for c in cities if id(c) in keep]
+        log(f"[atlas] {more} smaller cities left out ({sum(c.n for c in left)} runs, {sum(c.km for c in left):.0f} km);"
+            f" raise --max-cities to show them")
+    zones = []
+    for z in a.zone:
+        la, lo, r = map(float, z.split(","))
+        zones.append((la, lo, r))
+    try:
+        cities = prepare(cities, trim_m=a.trim, zone_r=a.zone_radius, user_zones_ll=zones, log=log)
+    except privacy.PrivacyError as ex:
+        log(f"[privacy] STOP: {ex}. Nothing was exported.")
+        return 3
+    if not cities:
+        log("nothing left to draw after the privacy cuts")
+        return 2
+    for i, c in enumerate(cities):
+        c.name, c.country = area.place_names(round(c.lat, 2), round(c.lon, 2), lang=a.lang)
+        r = c.report
+        log(f"[atlas] {i + 1:02d} {c.name or '(no name found)'}{', ' + c.country if c.country else ''} · "
+            f"{c.n} run{'' if c.n == 1 else 's'} · "
+            f"{c.km:.0f} km · zones {r.zones_suggested} + {r.zones_user} · leak check {r.leak_check}")
+    if len(cities) == 1:
+        log("[atlas] only one city: the single-city poster (--layout editorial) shows it bigger")
+    cells = layout(len(cities))
+    extents = [fit(c, w / h) for c, (x, y, w, h) in zip(cities, cells)]
+    basemaps = []
+    for c, ext in zip(cities, extents):
+        inv = Transformer.from_crs(c.crs, 4326, always_xy=True)
+        lons, lats = inv.transform([ext[0], ext[1], ext[0], ext[1]], [ext[2], ext[2], ext[3], ext[3]])
+        big = (min(lats) - 0.002, min(lons) - 0.002, max(lats) + 0.002, max(lons) + 0.002)  # ~200 m: streets reach the edge
+        try:
+            folder = area.fetch_basemap(big, log=log)
+        except RuntimeError as ex:  # every OpenStreetMap server busy: stop cleanly, what was downloaded stays cached
+            log(f"[osm] STOP: {ex}. Run the same command again later; the cities already downloaded are kept.")
+            return 4
+        basemaps.append(render.load_basemap(folder, big, c.crs))
+    years = sorted({x.start.year for c in cities for x in c.acts if x.start})
+    year = str(a.year) if a.year else (f"{years[0]}–{years[-1]}" if len(years) > 1 else (str(years[0]) if years else ""))
+    info = render_atlas(cities, cells, extents, basemaps, a.out, style=a.style or "huella", size=a.size, dpi=a.dpi,
+                        name=a.name, title=a.title, year=year, lang=a.lang, more=more, pdf_path=a.pdf,
+                        svg_path=a.svg, preview_path=a.preview)
+    log(f"[render] {a.out} · {len(cities)} cities · heat cap {info['cap']:.0f} · max overlap {info['max']}")
+    return 0
