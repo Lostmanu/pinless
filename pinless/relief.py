@@ -688,17 +688,34 @@ def _detail_level(job, dataset, n_levels):
     return max([L for L in range(n_levels) if _spacing(dataset, L) <= job.sigma] or [0])
 
 
+def _level_blocks(job, dataset, headers, L, pad):
+    """[(cell, L, br, bc)]: the blocks of level L that cover the map padded by pad."""
+    box, cells = job.box(pad)
+    return [(cell, L, br, bc) for cell, br, bc in _blocks(dataset, headers, cells, L, box)]
+
+
+def _uncached(dataset, blocks, root):
+    return [b for b in blocks if not os.path.exists(_block_path(root, dataset, *b))]
+
+
 def _plan(job, dataset, headers, n_levels, root):
-    """(level, blocks still to download): the detail level, one level coarser while those blocks exceed
+    """(level, its blocks): the detail level, one level coarser while the blocks still to download exceed
     BUDGET_BYTES; the coarsest level is always within budget."""
     L = _detail_level(job, dataset, n_levels)
     while True:
-        box, cells = job.box(job.detail_pad(_spacing(dataset, L)))
-        todo = [(cell, L, br, bc) for cell, br, bc in _blocks(dataset, headers, cells, L, box)
-                if not os.path.exists(_block_path(root, dataset, cell, L, br, bc))]
+        blocks = _level_blocks(job, dataset, headers, L, job.detail_pad(_spacing(dataset, L)))
+        todo = _uncached(dataset, blocks, root)
         if L == n_levels - 1 or sum(_block_bytes(headers, *b) for b in todo) <= BUDGET_BYTES:
-            return L, todo
+            return L, blocks
         L += 1
+
+
+def _download(dataset, headers, blocks, root):
+    """Every block of the set, in sorted order: S3 sees the requests in order, and the maps of a print come in an
+    order that says something (an atlas puts home first, then the trips by date), so the order is the set's own.
+    Cached blocks are validated here too, so a damaged one is fetched again in its place in the order."""
+    for cell, L, br, bc in sorted(set(blocks)):
+        _block(dataset, cell, headers[cell], L, br, bc, root)
 
 
 def _detail(job, dataset, headers, L, root):
@@ -743,9 +760,15 @@ def prepare_many(maps, log=print, root=None):
             log("[relief] only sea here: no relief")
             return out
         n_levels = NOMINAL_LEVELS[dataset]  # read_header holds every cell to it
+        # Blocks are requested in two sorted sweeps, the probe of every map and then the detail of the maps that
+        # pass it; the steps of each map read only the cache.
+        probe = n_levels - 1
+        s = _spacing(dataset, probe)
+        _download(dataset, headers, [b for j in jobs for b in _level_blocks(j, dataset, headers, probe, j.probe_pad(s))],
+                  root)
         passed = []
         for job in jobs:  # the probe: the coarsest level only; detail blocks are requested after it passes
-            share = _gate(job, dataset, headers, n_levels - 1, root)
+            share = _gate(job, dataset, headers, probe, root)
             if share is None:
                 say(job.i, "mostly water here: no relief")
             elif share < GATE_SHARE:
@@ -753,10 +776,12 @@ def prepare_many(maps, log=print, root=None):
             else:
                 passed.append((job, share))
         plans = [(job, share) + _plan(job, dataset, headers, n_levels, root) for job, share in passed]
-        todo = list(dict.fromkeys(b for *_, blocks in plans for b in blocks))
+        detail = {b for *_, blocks in plans for b in blocks}  # maps that share a block download it once
+        todo = _uncached(dataset, detail, root)
         if todo:
             size = sum(_block_bytes(headers, *b) for b in todo)
             log(f"[relief] downloading {len(todo)} blocks, {size / 2 ** 20:.1f} MB (one time, cached)")
+        _download(dataset, headers, detail, root)
         for job, share, L, _ in plans:
             out[job.i] = Relief(_detail(job, dataset, headers, L, root), dataset, L, share)
     except _Unsupported:  # the same on every run: no point in running it again

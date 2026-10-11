@@ -388,6 +388,60 @@ def test_requests_are_the_full_rectangle_and_ignore_the_tracks(monkeypatch, tmp_
     assert captured["info"]["relief"] is True
 
 
+THREE_CELLS = ((40, -4), (40, -3), (41, -4))
+
+
+def test_the_order_of_the_maps_never_reorders_the_requests(monkeypatch, tmp_path):
+    """S3 sees the requests in order. In an atlas the maps come home first, then the trips by the date of their first
+    run: the requests must be a function of the set of maps alone, sorted, whatever their order."""
+    files = {c: _cog(c, _steep) for c in THREE_CELLS}
+    maps = [_utm_extent(41.5, -3.5, 12000, 10000), _utm_extent(40.45, -2.6, 12000, 10000),
+            _utm_extent(40.42, -3.7, 12000, 10000)]
+    lists = []
+    for k, order in enumerate(((0, 1, 2), (2, 1, 0), (1, 2, 0))):
+        calls = _serve(monkeypatch, files)
+        out = relief.prepare_many([(maps[i][0], maps[i][1], 60.0) for i in order], log=lambda *_: None,
+                                  root=str(tmp_path / f"dem{k}"))  # each time with nothing cached
+        assert all(isinstance(r, relief.Relief) for r in out)
+        lists.append(calls)
+    assert lists[0] == lists[1] == lists[2], "the same requests in the same order"
+    blocks = [(u, first) for u, first, _ in lists[0] if first != 0]
+    assert len({u for u, _ in blocks}) == 3, "setup: blocks of the three cells"
+
+
+def _dated_loop(i, lat, lon, day):
+    import dataclasses
+    import datetime as dt
+    return dataclasses.replace(_loop_act(i, lat, lon), start=dt.datetime(day.year, day.month, day.day, 8,
+                                                                           tzinfo=dt.timezone.utc))
+
+
+def test_the_atlas_requests_do_not_tell_which_city_is_home_or_when_each_trip_was(monkeypatch, tmp_path):
+    import datetime as dt
+    import types
+    from pinless import atlas
+    files = {c: _cog(c, _steep) for c in THREE_CELLS}
+    monkeypatch.setattr(atlas.area, "place_names", lambda lat, lon, lang="en": ("C", "K"))
+    monkeypatch.setattr(atlas, "_basemap", lambda c, ext, log: (_empty(), _empty(), _empty()))
+    monkeypatch.setattr(atlas, "render_atlas", lambda *a, **k: {"cap": 1.0, "max": 1})
+    home, trip_a, trip_b = (41.50, -3.50), (40.45, -2.60), (40.42, -3.70)  # home sorts last of the three cells
+    early, late = dt.date(2025, 3, 1), dt.date(2025, 7, 1)
+    lists = []
+    for k, a_first in enumerate((True, False)):  # the same runs; only the dates of the two trips swap
+        acts = [_dated_loop(i, *home, dt.date(2025, 1, 1 + i)) for i in range(6)]  # home: the most km
+        acts += [_dated_loop(10 + i, *trip_a, (early if a_first else late) + dt.timedelta(days=i)) for i in range(3)]
+        acts += [_dated_loop(20 + i, *trip_b, (late if a_first else early) + dt.timedelta(days=i)) for i in range(3)]
+        monkeypatch.setenv("PINLESS_CACHE", str(tmp_path / f"cache{k}"))  # each time with nothing cached
+        calls = _serve(monkeypatch, files)
+        args = types.SimpleNamespace(zone=[], trim=300.0, zone_radius=500.0, max_cities=3, lang="en", year=None,
+                                     style=None, size="A4", dpi=20, name="", title="", out=str(tmp_path / "a.png"),
+                                     pdf=None, svg=None, preview=None, color_by="heat", relief="shade")
+        assert atlas.run(acts, args, log=lambda *_: None) == 0
+        lists.append(calls)
+    assert any(first != 0 for _, first, _ in lists[0]), "setup: blocks were requested"
+    assert lists[0] == lists[1], "the very same requests, in the very same order"
+
+
 def _hill(lat_p, lon_p, height=800.0, r_m=2500.0):
     def fn(lon, lat):
         dx = (lon - lon_p) * relief.M_PER_DEG_LON * math.cos(math.radians(lat_p))
@@ -834,7 +888,7 @@ def test_a_failure_on_one_map_leaves_the_whole_print_without_relief(monkeypatch,
     u1 = relief.url("glo30", (40, -4))
     first_map = _detail_offsets(files[u1])
     assert any(u == u1 and first in first_map for u, first, _ in opener.calls), \
-        "setup: the first map was drawn before the second one failed"
+        "setup: the first map's blocks were fetched before the second one's failed"
     assert [line for line in logs if "skipped" in line] == [logs[-1]], "one line for the print"
 
 
