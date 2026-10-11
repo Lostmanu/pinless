@@ -23,6 +23,7 @@ def _offline(monkeypatch, tmp_path):
     monkeypatch.setattr(relief, "_fetch", no_network)
     monkeypatch.setenv("PINLESS_CACHE", str(tmp_path / "cache"))
     monkeypatch.setattr(relief, "HEIGHT0", {"glo30": H30, "glo90": H90})
+    monkeypatch.setattr(relief, "TILE", {"glo30": 64, "glo90": 64})  # the probe level is one block, as in real files
 
 
 def _cell_grid(cell, h0, fn, dataset="glo30"):
@@ -57,16 +58,22 @@ def test_predictor3_rows_decode_to_a_known_vector():
     assert out.dtype == np.float32 and out.tolist() == [[1.0, 2.0], [-3.5, 1000.25]]
 
 
-def test_reader_reads_every_level_of_a_synthetic_cog(monkeypatch, tmp_path):
+def _small_cells(monkeypatch):
+    """Cells of 40 x 40 pixels in blocks of 16: four levels, the last one (5 x 5) a single block."""
     monkeypatch.setattr(relief, "HEIGHT0", {"glo30": 40, "glo90": 40})
+    monkeypatch.setattr(relief, "TILE", {"glo30": 16, "glo90": 16})
+
+
+def test_reader_reads_every_level_of_a_synthetic_cog(monkeypatch, tmp_path):
+    _small_cells(monkeypatch)
     rng = np.random.default_rng(5)
     a0 = (-450.0 + rng.random((40, 40)) * 1950.0).astype(np.float32)  # negative, fractional, around 1e3
     a0[a0 == 0] = 0.5
-    levels = levels_of(a0, 3)  # 40, 20, 10: edge tiles of 16 px are partial
+    levels = levels_of(a0, 4)  # 40, 20, 10, 5: edge tiles of 16 px are partial
     data = write_cog(cell=(40, -4), levels=levels, tile=16)
     _serve(monkeypatch, {(40, -4): data})
     hdr = relief.read_header(data[:relief.HEADER_BYTES], (40, -4))
-    assert [(lv.w, lv.h) for lv in hdr.levels] == [(40, 40), (20, 20), (10, 10)]
+    assert [(lv.w, lv.h) for lv in hdr.levels] == [(40, 40), (20, 20), (10, 10), (5, 5)]
     for L, want in enumerate(levels):
         lv = hdr.levels[L]
         got = np.full((lv.h, lv.w), np.nan, np.float32)
@@ -89,7 +96,7 @@ def test_reader_reads_every_level_of_a_synthetic_cog(monkeypatch, tmp_path):
 def _refusals():
     rng = np.random.default_rng(2)
     a0 = (100 + rng.random((40, 40)) * 500).astype(np.float32)
-    good = levels_of(a0, 3)
+    good = levels_of(a0, 4)
 
     def spiked(value):
         out = [a.copy() for a in good]
@@ -110,11 +117,11 @@ def _refusals():
         "tiepoint off by 0.01": dict(levels=good, tiepoint=(0, 0, 0, -4.01, 41.0, 0)),
         "tiepoint latitude off by 0.01": dict(levels=good, tiepoint=(0, 0, 0, -4.0, 41.01, 0)),
         "pixel scale off by 1%": dict(levels=good, scale=(1 / 40, 1.01 / 40, 0.0)),
-        "a cell of 48 rows": dict(levels=levels_of(np.tile(a0, (2, 2))[:48, :48], 3)),  # consistent, but not 40
-        "a cell narrower than its band": dict(levels=levels_of(a0[:, :20], 3)),  # at 40N a cell is as wide as high
+        "a cell of 48 rows": dict(levels=levels_of(np.tile(a0, (2, 2))[:48, :48], 4)),  # consistent, but not 40
+        "a cell narrower than its band": dict(levels=levels_of(a0[:, :24], 4)),  # at 40N a cell is as wide as high
         "width 0": dict(levels=good, tags={(0, 256): (4, [0])}),
         "a width in floating point": dict(levels=good, tags={(0, 256): (12, [40.0])}),
-        "overview not half the size": dict(levels=[good[0], a0[:19, :19]]),
+        "overview not half the size": dict(levels=[good[0], a0[:19, :19], good[2], good[3]]),
         "an overview not marked as one": dict(levels=good, tags={(1, 254): (4, [0])}),
         "fewer tile offsets than tiles": dict(levels=good, tags={(0, 324): (4, [8, 8]), (0, 325): (4, [1, 1])}),
         "IFD chain loops back": dict(levels=good, ifd_loop=True),
@@ -126,7 +133,7 @@ def _refusals():
 
 @pytest.mark.parametrize("case", sorted(_refusals()))
 def test_reader_refuses_what_it_cannot_decode(monkeypatch, tmp_path, case):
-    monkeypatch.setattr(relief, "HEIGHT0", {"glo30": 40, "glo90": 40})
+    _small_cells(monkeypatch)
     data = write_cog(cell=(40, -4), tile=16, **_refusals()[case])
     _serve(monkeypatch, {(40, -4): data})
     with pytest.raises(relief.ReliefError):
@@ -142,6 +149,51 @@ def test_reader_refuses_what_it_cannot_decode(monkeypatch, tmp_path, case):
     assert not list(tmp_path.rglob("*.zz")), "only validated files are cached"
     # a header is cached only once it parses, and a cell whose blocks do not decode is forgotten, header included
     assert not list(tmp_path.rglob("header.bin"))
+
+
+RETILED = {  # (tiling as write_cog takes it, levels): what a server could publish instead of the dataset's layout
+    "smaller blocks at full resolution": ([32, 64, 64, 64], 4),
+    "the probe level in small blocks": ([64, 64, 64, 16], 4),
+    "strips one block wide": ([(8, 480), 64, 64, 64], 4),
+    "strips one block high": ([(480, 8), 64, 64, 64], 4),
+    "larger blocks": (128, 4),
+    "one level less": (64, 3),
+    "one level more": (64, 5),
+    "a probe level of several blocks of the dataset's size": (16, 4),
+}
+
+
+@pytest.mark.parametrize("case", sorted(RETILED))
+def test_a_cell_in_other_blocks_than_the_datasets_is_refused_after_its_header(monkeypatch, tmp_path, case):
+    """S3 learns which blocks a print asks for, so their size is the real files' (1024 px for GLO-30; 64 here), never
+    the server's choice: smaller blocks would pin the map down to a few km, and a probe level of several blocks would
+    tell where even a flat map is. A cell in any other layout is refused once its header is read."""
+    tile, n_levels = RETILED[case]
+    assert len(relief.read_header(_cog((40, -4), _steep)[:relief.HEADER_BYTES], (40, -4)).levels) == 4, \
+        "setup: the same cell in the dataset's own blocks is read"
+    if case == "a probe level of several blocks of the dataset's size":
+        monkeypatch.setattr(relief, "TILE", {"glo30": 16, "glo90": 16})  # 60 x 60 at the probe level: 4 x 4 blocks
+    a0 = _cell_grid((40, -4), H30, _steep)
+    data = write_cog(cell=(40, -4), levels=levels_of(a0, n_levels), tile=tile)
+    with pytest.raises(relief.ReliefError):
+        relief.read_header(data[:relief.HEADER_BYTES], (40, -4))
+    calls = _serve(monkeypatch, {(40, -4): data})
+    extent, crs = _utm_extent(40.5, -3.5, 14000, 12000)  # inside the cell, with every pad
+    assert relief._Map(0, extent, crs, A4_MAP).cells == {(40, -4)}
+    logs = []
+    assert relief.prepare_many([(extent, crs, A4_MAP)], log=logs.append) == [None]
+    assert "skipped (ReliefError)" in logs[-1]
+    assert calls == [(relief.url("glo30", (40, -4)), 0, relief.HEADER_BYTES - 1)], "the header and nothing else"
+    assert not [p for p in tmp_path.rglob("*") if p.is_file()], "nothing cached"
+
+
+def test_a_print_across_cells_with_different_levels_is_refused_not_crashed(monkeypatch, tmp_path):
+    calls = _serve(monkeypatch, {(40, -4): _cog((40, -4), _steep), (40, -3): _cog((40, -3), _steep, n_levels=3)})
+    extent, crs = _utm_extent(40.5, -3.0, 12000, 10000)  # across both cells
+    logs = []
+    assert relief.prepare_many([(extent, crs, A4_MAP)], log=logs.append) == [None]
+    assert "skipped (ReliefError)" in logs[-1]
+    assert all(first == 0 for _, first, _ in calls), "refused at the headers: no block is asked for"
 
 
 def test_cell_keys_and_urls():

@@ -100,6 +100,9 @@ def check_decoder(root):
     assert pillow.shape == ours.shape and np.array_equal(pillow, ours), "the stdlib reader and Pillow disagree"
     print(f"[decoder] one real GLO-30 block ({lv.tw}x{lv.th}, {len(tile):,} bytes): stdlib reader == Pillow, "
           f"{ours.min():.1f} to {ours.max():.1f} m")
+    h90 = relief._header("glo90", cell, root)  # the reader holds both datasets to their real levels and blocks
+    print(f"[decoder] real headers read: GLO-30 {len(hdr.levels)} levels of {lv.tw} px blocks, GLO-90 "
+          f"{len(h90.levels)} levels of {h90.levels[0].tw} px blocks")
 
 
 # 2 -------------------------------------------------------------------------------------------------------------------

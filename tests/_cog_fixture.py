@@ -35,19 +35,21 @@ def write_cog(cell=(40, -4), levels=None, tile=16, endian="<", compression=8, pr
               raster_type=2, tiepoint=None, ifd_at_end=False, bits=32, scale=None, tags=None, ifd_loop=False):
     """bytes of a GeoTIFF for a cell (south, west) with one IFD per array in `levels` (full resolution first).
 
+    tile: the tile size of every level, or one entry per level, each a size or a (width, height) pair.
     tags={(level, tag): (type, values)} replaces (or adds) an entry of that level's IFD; ifd_loop points the last
     IFD back at the first."""
     N, W = cell
     levels = [np.asarray(a, dtype=np.float32) for a in levels]
     h0, w0 = levels[0].shape
+    sizes = [t if isinstance(t, tuple) else (t, t) for t in (tile if isinstance(tile, list) else [tile] * len(levels))]
     tiles = []  # per level: compressed tiles, row-major
-    for a in levels:
+    for a, (tw, th) in zip(levels, sizes):
         h, w = a.shape
         out = []
-        for br in range(-(-h // tile)):
-            for bc in range(-(-w // tile)):
-                t = np.zeros((tile, tile), np.float32)
-                part = a[br * tile:(br + 1) * tile, bc * tile:(bc + 1) * tile]
+        for br in range(-(-h // th)):
+            for bc in range(-(-w // tw)):
+                t = np.zeros((th, tw), np.float32)
+                part = a[br * th:(br + 1) * th, bc * tw:(bc + 1) * tw]
                 t[:part.shape[0], :part.shape[1]] = part
                 out.append(_encode(t))
         tiles.append(out)
@@ -55,8 +57,8 @@ def write_cog(cell=(40, -4), levels=None, tile=16, endian="<", compression=8, pr
     def entries(L, offsets, counts):
         a = levels[L]
         e = [(254, 4, [0 if L == 0 else 1]), (256, 4, [a.shape[1]]), (257, 4, [a.shape[0]]), (258, 3, [bits]),
-             (259, 3, [compression]), (277, 3, [1]), (284, 3, [1]), (317, 3, [predictor]), (322, 3, [tile]),
-             (323, 3, [tile]), (324, 4, offsets), (325, 4, counts), (339, 3, [sample_format])]
+             (259, 3, [compression]), (277, 3, [1]), (284, 3, [1]), (317, 3, [predictor]), (322, 3, [sizes[L][0]]),
+             (323, 3, [sizes[L][1]]), (324, 4, offsets), (325, 4, counts), (339, 3, [sample_format])]
         if L == 0:
             sc = scale or (1 / w0, 1 / h0, 0.0)
             tp = tiepoint or (0.0, 0.0, 0.0, float(W), float(N + 1), 0.0)

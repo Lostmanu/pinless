@@ -55,6 +55,10 @@ M_PER_DEG_LON = 111320.0
 DATASETS = {"glo30": ("copernicus-dem-30m", "COG_10"), "glo90": ("copernicus-dem-90m", "COG_30")}
 HEIGHT0 = {"glo30": 3600, "glo90": 1200}  # rows of a cell at full resolution: 1 and 3 arc-seconds
 NOMINAL_LEVELS = {"glo30": 4, "glo90": 3}  # 3600 to 450 rows, 1200 to 300: bounds the cells a print can need
+# The blocks of the real files, at every level. They are all that S3 learns inside a cell, so their size is ours, not
+# the server's: GLO-30 blocks of 1024 px are about 30 km at full resolution and the whole cell at the probe level;
+# GLO-90 blocks of 2048 px are the whole cell at every level.
+TILE = {"glo30": 1024, "glo90": 2048}
 
 # Art. 6(b) of the licences, verbatim (the GLO-30 notice has no trademark sign; the GLO-90 one has it)
 NOTICE = {"glo30": "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and "
@@ -251,6 +255,8 @@ def _read_header(buf, cell, dataset):
         raise ReliefError("unexpected georeference")
     if abs(scale[0] - 1 / width0) > 1e-12 or abs(scale[1] - 1 / height0) > 1e-12:
         raise ReliefError("unexpected georeference")
+    if len(ifds) != NOMINAL_LEVELS[dataset]:  # the probe level, and so the cells of a print, are fixed in advance
+        raise ReliefError("unexpected number of levels")
     levels = []
     for L, t in enumerate(ifds):
         if (t[259][0] not in (8, 32946) or t[317][0] != 3 or t[339] != (3,) or t[258] != (32,)
@@ -259,6 +265,8 @@ def _read_header(buf, cell, dataset):
         w, h, tw, th = (_ints(t, tag)[0] for tag in (256, 257, 322, 323))
         if min(w, h, tw, th) <= 0:
             raise ReliefError("unexpected TIFF layout")
+        if (tw, th) != (TILE[dataset], TILE[dataset]):  # smaller blocks would tell S3 more about where the map is
+            raise ReliefError("blocks of another size")
         if L == 0:
             if t.get(254, (0,))[0] != 0:
                 raise ReliefError("unexpected TIFF layout")
@@ -269,6 +277,8 @@ def _read_header(buf, cell, dataset):
         if len(offsets) != tiles or len(counts) != tiles:
             raise ReliefError("unexpected TIFF layout")
         levels.append(Level(w, h, tw, th, tuple(offsets), tuple(counts)))
+    if len(levels[-1].offsets) != 1:  # every map is probed: on a flat one, S3 must learn the cell and nothing more
+        raise ReliefError("a probe level of several blocks")
     return Header(W, N, width0, height0, tuple(levels))
 
 
@@ -732,9 +742,7 @@ def prepare_many(maps, log=print, root=None):
         if not present:
             log("[relief] only sea here: no relief")
             return out
-        if len({len(h.levels) for h in present}) != 1:
-            raise ReliefError("cells with different levels")
-        n_levels = len(present[0].levels)
+        n_levels = NOMINAL_LEVELS[dataset]  # read_header holds every cell to it
         passed = []
         for job in jobs:  # the probe: the coarsest level only; detail blocks are requested after it passes
             share = _gate(job, dataset, headers, n_levels - 1, root)
