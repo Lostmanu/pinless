@@ -88,6 +88,31 @@ def test_street_colour_and_weight_are_shared_by_both_lines():
     assert set(classes[on(1200, 1)]) == {0}, "the colour belongs to the street, not the line"
 
 
+def test_a_street_weighs_how_often_it_was_run_whoever_ran_it():
+    """Each run's GPS line lies a few metres from the others. A street run 6 times by one person weighs what a street
+    run 3 + 3 by two people does, and twice a street run 3 times: weight and colour count the activities within
+    SHARED_MM of a line, the same way for one person and for two."""
+    gen = np.random.default_rng(1)
+    s, streets = Scene(), {}
+    for j in range(6):
+        y0 = -1500.0 + 600 * j
+        for name, dy, runs in (("6+0", 0, (6, 0)), ("3+3", 200, (3, 3)), ("3+0", 400, (3, 0))):
+            streets.setdefault(name, []).append(y0 + dy)
+            for who, n in enumerate(runs):
+                for _ in range(n):  # the whole run a few metres off, plus GPS noise along it
+                    x = np.linspace(-2000, 2000, 400)
+                    s.add(LineString(np.column_stack([x, y0 + dy + gen.normal(0, 3) + gen.normal(0, 1.5, 400)])), who)
+    segs, weight, classes, owner = s.classify(extent(8000))
+    y = segs[:, :, 1].mean(axis=1)
+
+    def median(name):
+        return np.median([np.median(weight[np.abs(y - y0) < 40]) for y0 in streets[name]])
+
+    assert median("6+0") == median("3+3") == 6 and median("3+0") == 3
+    shared = (np.abs(y[:, None] - np.array(streets["3+3"])) < 40).any(axis=1)
+    assert set(classes[shared & (owner == 0)]) == set(classes[shared & (owner == 1)]) == {2}
+
+
 @pytest.mark.parametrize("size", ["A3", "50x70"])
 def test_shared_means_close_on_paper(size):
     for width, expect in ((3000, ({0}, {4})), (40000, ({2}, {2}))):

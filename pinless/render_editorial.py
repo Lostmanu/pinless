@@ -445,22 +445,6 @@ def _probe_px(segments, extent, shape):
     return py, px
 
 
-def _dilate(acc, r):
-    """The maximum over the (2r+1) x (2r+1) square around each pixel (separable; the dtype is kept)."""
-    out = acc.copy()
-    for axis in (0, 1):
-        src = out.copy()
-        n = src.shape[axis]
-        for s in range(1, min(r, n - 1) + 1):
-            if axis == 0:
-                np.maximum(out[s:], src[:-s], out=out[s:])
-                np.maximum(out[:-s], src[s:], out=out[:-s])
-            else:
-                np.maximum(out[:, s:], src[:, :-s], out=out[:, s:])
-                np.maximum(out[:, :-s], src[:, s:], out=out[:, :-s])
-    return out
-
-
 def _density_segments(pieces, extent, acc, with_ids=False):
     """Colour original segments from an activity-per-pixel density field.
 
@@ -491,28 +475,29 @@ def who_classes(a, b, owner_is_b):
 def who_values(pieces, owner, extent, W, H, k, width_px):
     """(segments, weight, colour values in [0, 1], classes) for a poster of two. owner[i]: 0 or 1 for activity i.
 
-    Each person's activities are counted once per pixel, apart. The colour belongs to the street, not the line: it
-    comes from both counts within SHARED_MM on paper (the same in metres at every paper size), so both lines of a
-    shared street get the same class, and one run of the second person on a street the first ran 20 times takes
-    the first person's ink. Weight: the line's own count plus the other person's count within SHARED_MM, so both
-    lines of a street both ran a and b times weigh a + b."""
+    a and b are how many of each person's activities pass within SHARED_MM on paper (the same in metres at every
+    paper size): each activity is drawn 2 * SHARED_MM wider than its line and counted once per pixel. The colour
+    belongs to the street, not the line: both lines of a shared street read the same a and b, so they get the same
+    class, and one run of the second person on a street the first ran 20 times takes the first person's ink.
+    Weight: a + b, the same measure for one person and for two, so a street run 6 times by one of you weighs what a
+    street run 3 + 3 does, even when each run's GPS line lies a few metres from the others."""
     owner = np.asarray(owner)
     segments, ids = _segments(pieces)
     if not len(segments):
         return segments, np.empty(0), np.empty(0), np.empty(0, dtype=int)
-    acc_a = heat_raster([(i, p) for i, p in pieces if owner[i] == 0], extent, W, H, width_px)
-    acc_b = heat_raster([(i, p) for i, p in pieces if owner[i] == 1], extent, W, H, width_px)
     r = max(1, int(round(SHARED_MM * k * 220 / 25.4)))  # 4 px at A3, 7 at 50x70
+    reach = width_px + 2 * r  # a line this wide covers every pixel within SHARED_MM of the run
+    acc_a = heat_raster([(i, p) for i, p in pieces if owner[i] == 0], extent, W, H, reach)
+    acc_b = heat_raster([(i, p) for i, p in pieces if owner[i] == 1], extent, W, H, reach)
     py, px = _probe_px(segments, extent, acc_a.shape)
 
     def med(img):  # the median of three integer probes is the middle one: an exact integer
         return np.sort(img[py, px].astype(np.int64), axis=1)[:, 1]
 
-    a_own, b_own = med(acc_a), med(acc_b)
-    a_d, b_d = med(_dilate(acc_a, r)), med(_dilate(acc_b, r))
+    a, b = med(acc_a), med(acc_b)
     is_b = owner[ids] == 1
-    weight = np.maximum(1, np.where(is_b, b_own + a_d, a_own + b_d))
-    classes = who_classes(a_d, b_d, is_b)
+    weight = np.maximum(1, a + b)
+    classes = who_classes(a, b, is_b)
     return segments, weight, (classes + 0.5) / 5, classes
 
 
