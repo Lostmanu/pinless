@@ -265,6 +265,97 @@ def test_streets_you_both_ran_are_counted_on_the_drawn_lines(monkeypatch, tmp_pa
     assert seen["couple"].streets_both == 1 and "streets you both ran 1 of 1" in capsys.readouterr().out
 
 
+def test_the_couple_flow_learns_each_person_s_places_and_cuts_both_at_once(monkeypatch, tmp_path, capsys):
+    """A quiet partner (25 runs) has a gym with 8 ends: their own threshold (2) finds it, the union of both exports
+    (threshold 9) would not. couple.run asks pair_places for both people's places with --zone-radius and cuts every
+    track in ONE privacy.apply with those zones, every original centre as a witness and --trim."""
+    gym = (-4000.0, 4000.0)
+    ta = loops_from(HA, 200)
+    tb = loops_from(HB, 20) + loops_from(gym, 4, r0=900.0) + [through(gym)]
+    _by_path(monkeypatch, {"a.zip": _acts(ta, 0), "b.zip": _acts(tb, 5000, hour=18)})
+    calls, real_pair, real_apply = {"pair": [], "apply": []}, privacy.pair_places, privacy.apply
+
+    def pair(groups, **kw):
+        out = real_pair(groups, **kw)
+        calls["pair"].append(([len(g) for g in groups], kw, out))
+        return out
+
+    def apply(tracks, **kw):
+        calls["apply"].append((len(tracks), kw))
+        return real_apply(tracks, **kw)
+
+    monkeypatch.setattr(privacy, "pair_places", pair)
+    monkeypatch.setattr(privacy, "apply", apply)
+    seen, drawn = _spy_drawn(monkeypatch)
+    argv = BASE + ["--bbox", BOX, "--trim", "250", "--zone-radius", "800", "--dpi", "20", "--out", str(tmp_path / "p.png")]
+    assert cli.main(argv) == 0
+    out = capsys.readouterr().out
+    (sizes, kw, (zones, witnesses, counts)), = calls["pair"]
+    assert sizes == [200, 25] and kw["zone_r"] == 800 and tuple(kw["n_runs"]) == (200, 25)
+    assert counts["per"] == [1, 2] and "[privacy] places: Lucía 1 · Marcos 2" in out, "the gym is the partner's own"
+    assert min(r for _, _, r in zones) >= 800
+    (n, kw), = calls["apply"]
+    assert n == 225 and kw["trim_m"] == 250 and kw["zone_r"] == 800
+    assert kw["places_xy"] is zones and kw["witnesses_xy"] is witnesses and len(witnesses) > len(zones)
+    g, ha, hb = _to_map(gym, HA, HB)
+    assert _gap(drawn, g) >= 200, "the quiet partner's gym is hidden from both lines"
+    assert min(_gap(drawn, ha), _gap(drawn, hb)) >= 0.4411 * 800 - 20, "800 m zones keep at least 353 m"
+
+
+def test_a_zone_given_with_with_hides_both_people_s_lines(monkeypatch, tmp_path, capsys):
+    """--zone with --with: both people run straight through P. Neither line comes within 200 m of it. Neither export
+    has a clock, and the partner's runs are from the year before: the year label spans both."""
+    p = (5000.0, -5000.0)
+    acts_a = [dataclasses.replace(x, times=None) for x in madrid_runs() + _acts([through(p), through(p, 0.6)], 900)]
+    acts_b = [dataclasses.replace(x, times=None, start=x.start.replace(year=2024))
+              for x in _partner() + _acts([through(p, 1.0), through(p, 1.3)], 1900)]
+    _by_path(monkeypatch, {"a.zip": acts_a, "b.zip": acts_b})
+    seen, drawn = _spy_drawn(monkeypatch)
+    (lon, lat), = _lonlat([p])
+    assert cli.main(BASE + ["--bbox", BOX, "--zone", f"{lat},{lon},600", "--dpi", "20",
+                            "--out", str(tmp_path / "p.png")]) == 0
+    out = capsys.readouterr().out
+    pz, = _to_map(p)
+    assert _gap(drawn, pz) >= 200 and "user zones 1" in out
+    assert "[together] no clock in Lucía's and Marcos's activities" in out
+    assert seen["year"] == "2024–2025", "the year label spans both people's runs"
+    assert f"{lat:.3f}" not in out and f"{lon:.3f}" not in out
+
+
+def test_a_person_with_nothing_left_on_the_map_stops_the_export_before_any_request(monkeypatch, tmp_path, capsys):
+    """The partner only runs 100 m loops from their door: after the end trims nothing of theirs is left, so nothing
+    is exported and nothing is sent, rather than a poster of only one of the two."""
+    tiny = [loop(*HB, 100, phase=0.5 * i) for i in range(12)]
+    _by_path(monkeypatch, {"a.zip": madrid_runs(), "b.zip": _acts(tiny, 5000, hour=18)})
+    monkeypatch.setattr(area, "fetch_basemap", _never)
+    monkeypatch.setattr(area, "city_name", _never)
+    assert cli.main(BASE + ["--bbox", BOX, "--pdf", str(tmp_path / "p.pdf"), "--out", str(tmp_path / "p.png")]) == 2
+    out = capsys.readouterr().out
+    assert "[privacy] Marcos: nothing of yours is left on this map after the privacy cuts" in out
+    assert "--trim" not in out and "--zone-radius" not in out and not list(tmp_path.iterdir())
+
+
+def test_busy_map_servers_stop_the_poster_for_two(monkeypatch, tmp_path, capsys):
+    def busy(bbox, log=print):
+        raise RuntimeError("every OpenStreetMap server is busy")
+
+    _by_path(monkeypatch, {"a.zip": madrid_runs(), "b.zip": _partner()})
+    monkeypatch.setattr(area, "fetch_basemap", busy)
+    monkeypatch.setattr(area, "city_name", _never)
+    assert cli.main(BASE + ["--pdf", str(tmp_path / "p.pdf"), "--out", str(tmp_path / "p.png")]) == 4
+    out = capsys.readouterr().out
+    assert "[osm] STOP: every OpenStreetMap server is busy. Run the same command again later." in out
+    assert not list(tmp_path.iterdir())
+
+
+def test_the_first_person_without_runs_is_told_to_choose_the_type(monkeypatch, tmp_path, capsys):
+    rides = [dataclasses.replace(x, type="Ride") for x in madrid_runs()]
+    _by_path(monkeypatch, {"a.zip": rides, "b.zip": _partner()})
+    assert cli.main(BASE + ["--out", str(tmp_path / "p.png")]) == 2
+    out = capsys.readouterr().out
+    assert "Lucía: no Run activities (this export has: Ride 48). Choose the type with --type." in out
+
+
 def test_files_in_both_exports_do_not_unhide_a_single_loop(monkeypatch, tmp_path, capsys):
     """39 of the first person's runs are also in the second export (allowed: under half of it). They are drawn for
     each, but they are not the second person's own runs: counted, they would raise that person's threshold from 2

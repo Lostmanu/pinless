@@ -179,6 +179,40 @@ def test_a_place_split_across_two_exports_is_hidden():
     assert not any(np.hypot(x - p[0], y - p[1]) < 250 for x, y, _ in zones)
 
 
+def test_the_pooled_rule_at_its_edges():
+    """The pooled rule takes every end (starts and finishes), labels each by its person and accepts exactly one full
+    threshold of evidence: 6/12 + 6/12 is a place, and so is 20/40 + 1/2 when the two thresholds differ."""
+    ta, tb, p = _split_place(6)  # 6/12 + 6/12 = 1 exactly
+    assert near_any(privacy.pooled_places([ta, tb]), p)
+    ta, tb, p = _split_place(7)
+    ta = [t[::-1] for t in ta]
+    tb = [t[::-1] for t in tb]  # the same runs ending at the place instead of starting there
+    zones, _, counts = privacy.pair_places([ta, tb])
+    assert counts["pooled_new"] == 1 and any(np.hypot(x - p[0], y - p[1]) < 250 for x, y, _ in zones)
+    assert far(couple_cut(ta, tb, rng=random.Random(9))[0], p) >= 200
+    ta, tb, p = _split_place(11)  # 22 one-way runs from p: 20 for the first person, 1 for the second
+    first, second = ta[:311] + tb[300:309] + [ta[-1]], tb[:50] + [tb[309]]
+    assert len(first) == 321 and len(second) == 51
+    assert near_any(privacy.pooled_places([first, second], n_runs=(1000, 50)), p), "20/40 + 1/2 = 1"
+    fewer = first[:300] + first[301:]
+    assert not near_any(privacy.pooled_places([fewer, second], n_runs=(1000, 50)), p), "control: 19/40 + 1/2"
+
+
+def test_pair_places_draws_its_zones_with_the_given_radius_and_keeps_every_centre_as_a_witness():
+    ha, hb = np.array([0.0, 0.0]), np.array([6000.0, 0.0])
+    ta, tb = loops_from(ha, 60), loops_from(hb, 60) + loops_from(ha + (100.0, 0.0), 10)  # B also starts by A's door
+    zones, witnesses, counts = privacy.pair_places([ta, tb], zone_r=1000.0)
+    per = [privacy.find_places(g, min_pts_floor=2) for g in (ta, tb)]
+    pooled = privacy.pooled_places([ta, tb])
+    assert len(witnesses) == sum(map(len, per)) + len(pooled) > len(zones), "every original centre, not the zones"
+    for x, y, r in zones:
+        members = [w for w in witnesses if np.hypot(w[0] - x, w[1] - y) < 180]
+        d_max = max(np.hypot(w[0] - x, w[1] - y) for w in members)
+        assert r == pytest.approx(1000.0 + 2.5 * d_max) and r >= 1000.0
+    assert sorted(round(r) for _, _, r in privacy.pair_places([ta[:30], loops_from(hb, 30)], zone_r=1000.0)[0]) == \
+        [1000, 1000], "lone places: exactly the radius asked for"
+
+
 def test_a_place_next_to_a_bigger_one_gets_its_own_zone():
     """A gym 450 m from home shares a 3 x 3 block of cells with the home's many ends: that block's mean lies at home,
     so the gym needs a look of its own at the ends no centre covers yet. The same for a place where the two people's
@@ -309,7 +343,59 @@ def test_runs_together_need_the_same_time_and_place():
     assert stats.together(a, [route], [_act("b", t0, side, paused)], [side])["runs"] == 1
 
 
-def test_streets_both_ran_count_cut_pieces_only():
+def test_each_runs_together_rule_is_needed():
+    """One case per rule that only that rule turns down, at the same clock: a parallel street 100 m away (median gap),
+    60 % side by side and then 2 km apart (share of the shared time within 150 m), a partner who joins for the last
+    15 of 45 minutes (half of the shorter run), an 8-minute jog alongside (10 minutes at least)."""
+    route = line((0, 0), (9000, 0), step=5.0)
+    d = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(route, axis=0).T))])
+    t0 = dt.datetime(2025, 5, 4, 8, tzinfo=UTC)
+    clock = d / 3.3  # 45 minutes
+    a = [_act("a", t0, route, clock)]
+
+    def runs(xy, times, start=t0):
+        return stats.together(a, [route], [_act("b", start, xy, times)], [xy])["runs"]
+
+    assert runs(route + (0.0, 5.0), clock) == 1, "control: side by side"
+    assert runs(route + (0.0, 100.0), clock) == 0, "a parallel street"
+    apart = route + np.where(d[:, None] > 0.6 * d[-1], (0.0, 2000.0), (0.0, 5.0))
+    assert runs(apart, clock) == 0, "together for 60 %, then 2 km apart"
+    late = clock >= clock[-1] - 900  # the last 15 minutes of the first run, then 30 more minutes elsewhere
+    tail = np.vstack([route[late], line(route[-1] + (0.0, 50.0), (9000, 6000), step=5.0)])
+    td = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(tail, axis=0).T))]) / 3.3
+    assert runs(tail, td, t0 + dt.timedelta(seconds=float(clock[late][0]))) == 0, "joins for 15 of 45 minutes"
+    short = clock <= 480
+    eight = stats.together([_act("a8", t0, route[short], clock[short])], [route[short]],
+                           [_act("b8", t0, route[short] + (0.0, 5.0), clock[short])], [route[short] + (0.0, 5.0)])
+    assert eight["runs"] == 0, "an 8-minute jog alongside"
+
+
+def test_runs_together_km_and_matching():
+    """The km of a run together is the mean of what each covered over the shared time (a jittery watch covers more),
+    and the runs are matched one to one, longest overlap first."""
+    route = line((0, 0), (9000, 0), step=5.0)
+    d = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(route, axis=0).T))])
+    t0 = dt.datetime(2025, 5, 4, 8, tzinfo=UTC)
+    clock = d / 3.3
+    zig = route + np.column_stack([np.zeros(len(route)), np.where(np.arange(len(route)) % 2, 15.0, -15.0)])
+    dz = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(zig, axis=0).T))])
+    got = stats.together([_act("a", t0, route, clock)], [route], [_act("b", t0, zig, clock)], [zig])
+    assert got["runs"] == 1 and got["km"] == pytest.approx((d[-1] + dz[-1]) / 2000, rel=0.01)
+    # one long route run at 3.3 m/s: where everyone is at each moment; each activity is a window of it
+    long = line((0, 0), (25000, 0), step=5.0)
+    s = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(long, axis=0).T))])
+    t_abs = s / 3.3
+
+    def window(name, m0, m1, dy):
+        keep = (t_abs >= 60 * m0) & (t_abs <= 60 * m1)
+        xy = long[keep] + (0.0, dy)
+        return _act(name, t0 + dt.timedelta(seconds=float(t_abs[keep][0])), xy, t_abs[keep] - t_abs[keep][0]), xy
+
+    (a0, xa0), (a1, xa1) = window("a0", 0, 60, 0.0), window("a1", 45, 105, 0.0)
+    (b0, xb0), (b1, xb1) = window("b0", 35, 75, 5.0), window("b1", 0, 40, 5.0)
+    # overlaps: a0-b1 40 min, a1-b0 30 min, a0-b0 25 min: longest first matches two pairs, index order only one
+    got = stats.together([a0, a1], [xa0, xa1], [b0, b1], [xb0, xb1])
+    assert got["runs"] == 2
     names = ["Calle A", "Calle B", "Calle C", "Calle D"]
     geoms = [LineString([(0, 0), (1000, 0)]), LineString([(0, 1000), (1000, 1000)]),
              LineString([(0, 2000), (1000, 2000)]), LineString([(3000, 3000), (3200, 3000)])]

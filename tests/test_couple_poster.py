@@ -114,6 +114,20 @@ def test_a_street_weighs_how_often_it_was_run_whoever_ran_it():
 
 
 @pytest.mark.parametrize("size", ["A3", "50x70"])
+@pytest.mark.parametrize("width", [3000.0, 12000.0])
+def test_half_a_millimetre_on_an_a3_print_is_one_street_at_every_size(size, width):
+    """0.45 mm apart on an A3 print is one street and 0.8 mm is two, on any map and at every paper size (the same
+    distance on the ground: 0.76 mm and 1.35 mm on a 50x70 print)."""
+    for gap_mm, expect in ((0.45, ({2}, {2})), (0.8, ({0}, {4}))):
+        gap = gap_mm * width / 261.0  # the A3 map is 261 mm wide
+        s = Scene()
+        s.add(street(0, -width / 3, width / 3), 0)
+        s.add(street(gap, -width / 3, width / 3), 1)
+        _, _, classes, owner = s.classify(extent(width, size=size), size)
+        assert (set(classes[owner == 0]), set(classes[owner == 1])) == expect, (gap_mm, width, size)
+
+
+@pytest.mark.parametrize("size", ["A3", "50x70"])
 def test_shared_means_close_on_paper(size):
     for width, expect in ((3000, ({0}, {4})), (40000, ({2}, {2}))):
         s = Scene()
@@ -228,6 +242,97 @@ def test_in_a_couple_poster_colour_only_means_who(monkeypatch, tmp_path):
         allowed = set(S["who"]) | {S["ink"], S["sub"]}
         assert len(colours) > 30 and {c for _, c in colours} <= allowed
         assert [c for v, c in colours if v == "2025"] == [S["ink"]], "the year is in the paper's ink"
+
+
+def _same(c1, c2):
+    return np.allclose(to_rgba(c1), to_rgba(c2), atol=1e-3)
+
+
+def test_each_line_takes_its_person_s_ink_and_a_shared_street_the_paper_s_ink(monkeypatch, tmp_path):
+    S = re_.STYLES["huella"]
+    who = S["who"]
+    seen, real = [], re_.PathPatch
+
+    def spy(path, *a, **k):
+        if k.get("zorder") == 5:
+            seen.append((np.asarray(path.vertices), k["edgecolor"], k["linewidth"]))
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(re_, "PathPatch", spy)
+    pieces = [(0, street(100, 100, 900)), (1, street(700, 100, 500)), (2, street(400, 100, 900)),
+              (3, street(401, 100, 900))]  # 1 m apart on a 1 km map: 0.26 mm on paper, one street
+    info = re_.render(pieces, (EMPTY, EMPTY, EMPTY), (0, 1000, 0, 850), None, str(tmp_path / "p.png"), dpi=20,
+                      couple=_couple(owner=(0, 1, 0, 1)))
+
+    def inks(y0):
+        return [c for v, c, _ in seen if np.abs(v[:, 1] - y0).min() < 2]
+
+    assert inks(100) and all(_same(c, who[0]) for c in inks(100)), "the first person alone: their ink"
+    assert inks(700) and all(_same(c, who[4]) for c in inks(700)), "the second person alone: theirs"
+    assert inks(400) and all(_same(c, who[2]) for c in inks(400.5)), "a street both ran: the paper's ink"
+    # drawn length by class, first to second: 800 m alone, 2 x 800 m both, 400 m alone
+    assert info["who_frac"] == pytest.approx([800 / 2800, 0, 1600 / 2800, 0, 400 / 2800], abs=0.01)
+    # weight 1 (cap 3) is the thinnest step: COUPLE_BASE plus the routes' gain at that step
+    w1 = int(np.rint(np.log1p(1) / np.log1p(3) * 7) * 31 / 7) / 31
+    assert min(lw for _, _, lw in seen) == pytest.approx(re_.COUPLE_BASE + re_.ROUTE_GAIN * w1)
+
+
+def test_every_text_of_a_poster_for_two_takes_the_right_ink(monkeypatch, tmp_path):
+    """Blueprint, whose accent is the first person's ink. The names, each person's line and the split bar are in
+    their own ink; 'km' is in the paper's ink; the key shows each name on its side and strokes no heavier than the
+    heaviest route."""
+    import matplotlib.pyplot as plt
+
+    S = re_.STYLES["blueprint"]
+    who = S["who"]
+    texts, colours, figs = {}, [], []
+    real_place, real_runs, real_patch, real_close = re_.place_text, re_.place_runs, re_.PathPatch, plt.close
+    calls = []
+
+    def place(value, x, y, *a, **k):
+        out = real_place(value, x, y, *a, **k)
+        texts[id(out[0])] = str(value)
+        calls.append((str(value), x, y, k.get("align", a[3] if len(a) > 3 else "left")))
+        return out
+
+    def runs(parts, *a, **k):
+        items, w = real_runs(parts, *a, **k)
+        for (p, _, _), t in zip(items, [t for t, _ in parts if str(t).strip()]):
+            texts[id(p)] = str(t)
+        return items, w
+
+    def patch(path, *a, **k):
+        if "transform" in k:
+            colours.append((texts.get(id(path)), k["color"]))
+        return real_patch(path, *a, **k)
+
+    monkeypatch.setattr(re_, "place_text", place)
+    monkeypatch.setattr(re_, "place_runs", runs)
+    monkeypatch.setattr(re_, "PathPatch", patch)
+    monkeypatch.setattr(plt, "close", lambda fig=None: figs.append(fig))
+    pieces, owner = _two_lines()
+    c = _couple(owner=owner)
+    cc = re_.couple_cells(c, "en")
+    for headline in ("name", "city"):
+        colours.clear()
+        calls.clear()
+        re_.render(pieces, (EMPTY, EMPTY, EMPTY), (0, 1000, 0, 850), None, str(tmp_path / "p.png"), style="blueprint",
+                   dpi=20, name="Lucía", city="Madrid", year="2025", lang="en", headline=headline, couple=c)
+        ink = dict(colours)
+        assert ink["km"] == S["ink"], "the unit is not the accent: colour only says who"
+        assert ink[cc["first"]] == who[0] and ink[cc["second"]] == who[4]
+        names = [(t, col) for t, col in colours if t in ("LUCÍA", " & ", "MARCOS")]
+        assert names[:3] == [("LUCÍA", who[0]), (" & ", S["sub"]), ("MARCOS", who[4])], headline
+        assert ("LUCÍA", 218, 399 + 3.6, "left") in calls and ("MARCOS", 266.8, 399 + 3.6, "right") in calls
+    page = figs[-1].axes[0]
+    bar = sorted((ln.get_xdata()[0], ln.get_color()) for ln in page.lines if np.allclose(ln.get_ydata(), 362.2))
+    assert len(bar) == 2 and bar[0][0] == pytest.approx(18) and _same(bar[0][1], who[0]) and _same(bar[1][1], who[4])
+    key = sorted(ln.get_linewidth() for ln in page.lines if np.allclose(ln.get_ydata(), 400.0)
+                 and _same(ln.get_color(), S["sub"]))
+    assert key == pytest.approx([re_.COUPLE_BASE + re_.ROUTE_GAIN * v for v in (0, 1 / 3, 2 / 3, 1)])
+    assert max(key) == pytest.approx(re_.COUPLE_BASE + re_.ROUTE_GAIN), "the heaviest key stroke is the heaviest route"
+    for fig in figs:
+        real_close(fig)
 
 
 def test_place_runs_sets_parts_like_one_string():
