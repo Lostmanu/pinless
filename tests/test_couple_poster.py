@@ -352,8 +352,8 @@ def test_every_text_of_a_poster_for_two_takes_the_right_ink(monkeypatch, tmp_pat
         ink = dict(colours)
         assert ink["km"] == S["ink"], "the unit is not the accent: colour only says who"
         assert ink[cc["first"]] == who[0] and ink[cc["second"]] == who[4]
-        names = [(t, col) for t, col in colours if t in ("LUCÍA", " & ", "MARCOS")]
-        assert names[:3] == [("LUCÍA", who[0]), (" & ", S["sub"]), ("MARCOS", who[4])], headline
+        names = [(t.strip(), col) for t, col in colours if t and t.strip() in ("LUCÍA", "&", "MARCOS")]
+        assert names[:3] == [("LUCÍA", who[0]), ("&", S["sub"]), ("MARCOS", who[4])], headline
         assert ("LUCÍA", 218, 399 + 3.6, "left") in calls and ("MARCOS", 266.8, 399 + 3.6, "right") in calls
     page = figs[-1].axes[0]
     bar = sorted((ln.get_xdata()[0], ln.get_color()) for ln in page.lines if np.allclose(ln.get_ydata(), 362.2))
@@ -364,6 +364,39 @@ def test_every_text_of_a_poster_for_two_takes_the_right_ink(monkeypatch, tmp_pat
     assert max(key) == pytest.approx(re_.COUPLE_BASE + re_.ROUTE_GAIN), "the heaviest key stroke is the heaviest route"
     for fig in figs:
         real_close(fig)
+
+
+@pytest.mark.parametrize("a,b", [("LUCIA", "MARCOS"), ("MAXIMILIANO", "GUADALUPE"), ("MARIA JOSE", "JUAN CARLOS"),
+                                 ("ALEXANDRA", "BARTHOLOMEW"), ("ÁLVARO", "ÍÑIGO"), ("ANA", "LEO")])
+def test_the_names_headline_fills_its_band(a, b):
+    """The city fills the band from y 24 to 81. Names that one line would set lower than 35 mm go on two lines at
+    one size ("A &" over "B"), which fill at least 80 % of it, with letters at least as big as on one line; short
+    names (ANA & LEO) keep one line across the page. Nothing rises into the PINLESS label or the line above."""
+    from matplotlib.transforms import Bbox
+    pair = [(a, "first"), (" & ", "sub"), (b, "second")]
+    one_kw = dict(pt=235, font=re_.DISPLAY, max_w=215, height=57, clear=(15, 36, 17.0))
+    _, one_t, _, one_h = re_.place_text(f"{a} & {b}", 18, 24, 1.0, **one_kw)
+    lines = re_.name_lines(pair, 1.0)
+    boxes, scales = [], []
+    for parts, y, kw in lines:
+        items, _ = re_.place_runs(parts, 18, y, 1.0, **kw)
+        boxes.append(Bbox.union([p.transformed(t).get_extents() for p, t, _ in items]))
+        scales.append(items[0][1].get_matrix()[0, 0])
+        for p, t, _ in items:
+            v = re_._outline(p, t, 0.3)
+            under = (v[:, 0] >= 15) & (v[:, 0] <= 36)
+            assert not under.any() or v[under, 1].min() >= 17.0 - 1e-6, "nothing reaches the PINLESS label"
+    if one_h >= re_.NAMES_ONE_LINE_MM:
+        assert len(lines) == 1
+        return
+    assert [[t.strip() for t, _ in parts] for parts, _, _ in lines] == [[a, "&"], [b]]
+    assert [[c for _, c in parts] for parts, _, _ in lines] == [["first", "sub"], ["second"]]
+    assert boxes[1].y0 >= boxes[0].y1 - 1e-6, "the second line stays under the first"
+    assert boxes[1].y1 - 24 >= 0.8 * 57 and boxes[1].y1 <= 81, "two lines fill the band"
+    one_scale = one_t.get_matrix()[0, 0]
+    assert min(scales) >= 0.75 * one_scale, "never much smaller letters than on one line"
+    if a.isascii():  # an accent over the first line is fitted into its height, as on one line under PINLESS
+        assert scales[0] >= one_scale, "letters at least as big as on one line"
 
 
 def test_place_runs_sets_parts_like_one_string():

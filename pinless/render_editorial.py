@@ -380,6 +380,38 @@ def place_runs(parts, x, y, k, pt=9, font=None, align="left", max_w=None, height
     return out, width
 
 
+NAMES_ONE_LINE_MM = 35  # a names headline lower than this on one line leaves the 57 mm band half empty
+
+
+def name_lines(pair, k):
+    """The names headline of a poster for two as [(parts, y, place_runs keywords)], in the band from y 24 to 81 that
+    the city fills on a single poster. One line, shrunk to fit; or, when that line would be lower than
+    NAMES_ONE_LINE_MM, two lines at one size ("LUCÍA &" over "MARCOS") that fill the band, unless that would make the
+    letters smaller than three quarters of the one line's. pair: [(first name, ink), (" & ", ink), (second, ink)]."""
+    one = dict(pt=235, font=DISPLAY, max_w=215, height=57, clear=(15, 36, 17.0))  # an accent must not touch PINLESS
+    h1 = place_text("".join(t for t, _ in pair), 18, 24, k, **one)[3]
+    if h1 >= NAMES_ONE_LINE_MM:
+        return [(pair, 24, one)]
+    top, bottom, gap = [pair[0], (pair[1][0].rstrip(), pair[1][1])], [pair[2]], 4.0
+    second = "".join(t for t, _ in bottom)
+    cap = TextPath((0, 0), "H", size=235 * k, prop=DISPLAY).get_extents().y1
+    b = TextPath((0, 0), second, size=235 * k, prop=DISPLAY).get_extents()
+    rise = max(0.0, b.y1 - cap) / (cap - min(b.y0, 0.0))  # accents over the second line, as a share of its height
+
+    def kw(h, first):  # nothing of the first line under PINLESS; the second line's accents get room of their own
+        return dict(pt=235, font=DISPLAY, max_w=215, height=h, clear=(15, 36, 17.0) if first else None)
+
+    def fit(parts, h, first):
+        return place_text("".join(t for t, _ in parts), 18, 24, k, **kw(h, first))[3]
+
+    # both lines at one size, ending 2 mm above one line would: the city or motto line below needs the air
+    h = (55 - gap) / (2 + rise)
+    h = min(fit(top, h, True), fit(bottom, h, False))  # a name too wide for the line sets the size of both
+    if h < 0.75 * h1:
+        return [(pair, 24, one)]
+    return [(top, 24, kw(h, True)), (bottom, 24 + h + gap + rise * h, kw(h, False))]
+
+
 MISSING = fmt_time(None)  # the mark of a number that is not known
 
 
@@ -588,8 +620,9 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
     text(279, 13, ("ARCHIVO DE RUNNING A DOS" if es else "RUNNING ARCHIVE FOR TWO") if couple is not None else
          ("ARCHIVO DE RUNNING" if es else "RUNNING ARCHIVE"), pt=6.6, align="right", color=S["sub"])
     title = name if headline == "name" else city or ("MI CIUDAD" if es else "MY CITY")
-    if couple is not None and headline == "name":  # both names on one line, shrunk to fit
-        runs(pair, 18, 24, pt=235, font=DISPLAY, max_w=215, height=57, clear=(15, 36, 17.0))
+    if couple is not None and headline == "name":  # both names: one line, or two when one would be low
+        for parts, y, kw in name_lines(pair, k):
+            runs(parts, 18, y, **kw)
     else:
         text(18, 24, title.upper(), pt=235, font=DISPLAY,
              max_w=215, height=57, clear=(15, 36, 17.0))  # an accent must not touch the PINLESS label
