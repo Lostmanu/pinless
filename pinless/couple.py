@@ -142,7 +142,7 @@ def run(acts_a, acts_b, sel_a, sel_b, a, log=print):
     named = "name" in edges.columns and bool(edges["name"].notna().any())
     st = []
     for o, (sel, tracks) in enumerate(((sel_a, ta), (sel_b, tb))):
-        mine = [(i, p) for i, p in pieces if owner[i] == o]
+        mine = [(i, p) for i, p in clipped if owner[i] == o]  # streets on the drawn lines only, never beyond the map
         x = stats.compute(sel, tracks, edges, private_pieces_xy=[np.asarray(p.coords) for _, p in mine],
                           piece_groups=[i for i, _ in mine], sensitive_xy=rep.centres, keep_streets=True)
         for key in ("fav_street", "fav_street_n"):  # no favourite street on a poster for two

@@ -181,9 +181,10 @@ def main(argv=None):
     frame.headline(a, (s, w, n, e), print)
     stats_ = {"n": len(sel), "km": total_m / 1000, "year_label": frame.year_label(sel, a)}
     if a.layout in ("sport", "editorial"):
+        drawn = privacy.clip_to_extent(pieces, extent)  # streets on the drawn lines only, never beyond the map
         st_ = stats.compute(sel, [t for _, t in tracks], basemap[0],
-                            private_pieces_xy=[np.asarray(pc.coords) for _, pc in pieces],
-                            piece_groups=[i for i, _ in pieces], sensitive_xy=prep.centres)
+                            private_pieces_xy=[np.asarray(pc.coords) for _, pc in drawn],
+                            piece_groups=[i for i, _ in drawn], sensitive_xy=prep.centres)
         print(f"[stats] {st_['n']} runs · {st_['km']:.0f} km · {st_['hours']:.0f} h · best 5k {stats.fmt_time(st_['best5k_s'])} · "
               f"best 10k {stats.fmt_time(st_['best10k_s'])} · {st_.get('streets')} streets · fav: {st_.get('fav_street')}")
         if a.layout == "editorial":

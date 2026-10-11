@@ -4,14 +4,15 @@ import dataclasses
 import datetime as dt
 import re
 
+import geopandas as gpd
 import numpy as np
 import pytest
 from pyproj import Transformer
-from shapely.geometry import Point
+from shapely.geometry import LineString, Point
 
 from pinless import area, cli, couple, ingest, privacy, render, render_editorial
 from pinless.ingest import Activity
-from test_cli_editorial import _lonlat, madrid_runs, stub_world
+from test_cli_editorial import EMPTY, _lonlat, madrid_runs, stub_world
 from test_couple_privacy import line, loop, loops_from, through
 
 BASE = ["a.zip", "--with", "b.zip", "--name", "Lucía", "--with-name", "Marcos"]
@@ -205,6 +206,34 @@ def test_cli_couple_end_to_end_offline(monkeypatch, tmp_path, capsys):
     assert "Lucía" in out and "Marcos" in out and "[privacy] places: Lucía" in out
     assert not re.search(r"\d\.\d{4}", out) and "40.4" not in out and "-3.7" not in out, "no coordinates"
     assert all(f.exists() and f.stat().st_size > 0 for f in files)
+    assert c.streets_both is None and "no street names in this map" in out, "an empty basemap names no street"
+
+
+def test_streets_you_both_ran_are_counted_on_the_drawn_lines(monkeypatch, tmp_path, capsys):
+    """Three named streets, each run by both: 'Calle Dentro' on the map, 'Calle Fuera' 300 m beyond its top edge (in
+    the basemap's margin) and 'Calle Casa' through the first person's door (inside its zone). Only the first one is on
+    the drawn lines, so the poster says 1."""
+    bbox = tuple(map(float, BOX.split(",")))
+    crs = render.utm_crs((bbox[1] + bbox[3]) / 2, (bbox[0] + bbox[2]) / 2)
+    ext = render.fit_extent(bbox, crs, render_editorial.map_aspect("A3"))
+    y_out = ext[3] - _to_map((0.0, 0.0))[0][1] + 300  # metres north of the reference point, beyond the map's top
+    streets = {"Calle Dentro": [(-6000, 6500), (-3000, 6500)], "Calle Fuera": [(-1000, y_out), (1000, y_out)],
+               "Calle Casa": [(-200, 0), (200, 0)]}
+    edges = gpd.GeoDataFrame({"highway": ["residential"] * 3, "name": list(streets)},
+                             geometry=[LineString(_to_map(*ends)) for ends in streets.values()])
+    runs_a = [line((-6500, 5500), (-6500, 6500), (-2500, 6500), (-2500, 7500)),
+              line((0, y_out - 2500), (0, y_out), (-1000, y_out), (1000, y_out), (1000, y_out - 2500)),
+              line((-2500, 0), (2500, 0))]
+    runs_b = [line((-6500, 7500), (-6500, 6500), (-2500, 6500), (-2500, 5500)),
+              line((-3000, y_out - 2000), (-1000, y_out), (1000, y_out), (3000, y_out - 2000)),
+              line((-3000, 0), (3000, 0))]
+    _by_path(monkeypatch, {"a.zip": madrid_runs() + _acts(runs_a, 500, day0=dt.date(2025, 6, 1)),
+                           "b.zip": _partner() + _acts(runs_b, 1500, day0=dt.date(2025, 6, 1), hour=19)})
+    monkeypatch.setattr(render, "load_basemap", lambda folder, bbox, crs: (edges, EMPTY, EMPTY))
+    seen, _ = _spy_drawn(monkeypatch)
+    assert cli.main(BASE + ["--bbox", BOX, "--dpi", "20", "--out", str(tmp_path / "p.png")]) == 0
+    assert seen["extent"] == pytest.approx(ext) and edges.geometry[1].bounds[1] > ext[3] + 200
+    assert seen["couple"].streets_both == 1 and "streets you both ran 1 of 1" in capsys.readouterr().out
 
 
 def test_files_in_both_exports_do_not_unhide_a_single_loop(monkeypatch, tmp_path, capsys):
