@@ -53,7 +53,7 @@ M_PER_DEG_LON = 111320.0
 
 DATASETS = {"glo30": ("copernicus-dem-30m", "COG_10"), "glo90": ("copernicus-dem-90m", "COG_30")}
 HEIGHT0 = {"glo30": 3600, "glo90": 1200}  # rows of a cell at full resolution: 1 and 3 arc-seconds
-NOMINAL_LEVELS = 4  # GLO-30 has 4 levels (3600 to 450 rows), GLO-90 3: bounds the cells a print can need
+NOMINAL_LEVELS = {"glo30": 4, "glo90": 3}  # 3600 to 450 rows, 1200 to 300: bounds the cells a print can need
 
 # Art. 6(b) of the licences, verbatim (the GLO-30 notice has no trademark sign; the GLO-90 one has it)
 NOTICE = {"glo30": "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and "
@@ -598,7 +598,7 @@ class _Map:
         self.sigma = max(SIGMA_MIN_M, SIGMA_PAPER_MM * (x1 - x0) / self.map_w)  # the detail smoothing
         self.probe_grid = _grid(self.extent, max(125.0, max(x1 - x0, y1 - y0) / 400), GATE_SIGMA_M)
         # every cell the map could need, whatever the dataset and level: fixed before any request is made
-        spacings = [M_PER_DEG_LAT / h0 * 2 ** L for h0 in HEIGHT0.values() for L in range(NOMINAL_LEVELS)]
+        spacings = [_spacing(ds, L) for ds in HEIGHT0 for L in range(NOMINAL_LEVELS[ds])]
         self.cells = set(_cells(_lonlat_box(self.extent, crs, max(max(self.probe_pad(s), self.detail_pad(s))
                                                                     for s in spacings))))
 
