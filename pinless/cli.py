@@ -18,6 +18,7 @@ from pyproj import Transformer
 from shapely.geometry import LineString, box
 
 from . import area, atlas, colouring, ingest, privacy, race, render, render_sport, render_editorial, stats
+from . import relief
 from .localtime import local_start
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -63,6 +64,10 @@ def main(argv=None):
     p.add_argument("--pdf", default=None)
     p.add_argument("--svg", default=None, help="vector export for the editorial layout")
     p.add_argument("--preview", default=None, help="lightweight editorial JPEG preview (1600 px high)")
+    p.add_argument("--relief", default="off", choices=["off", "shade"],
+                   help="shade: terrain relief under the map where the land is hilly (editorial, atlas and race), from "
+                        "the Copernicus elevation model; downloads the 1-degree cells around the map from Amazon S3 "
+                        "once (cached); flat areas get none")
     a = p.parse_args(argv)
     styles = {"classic": render.STYLES, "sport": render_sport.STYLES, "editorial": render_editorial.STYLES,
               "atlas": render_editorial.STYLES, "race": render_editorial.STYLES}
@@ -74,6 +79,8 @@ def main(argv=None):
         p.error("--color-by is available for the editorial, atlas and race layouts")
     if a.svg and a.layout not in ("editorial", "atlas", "race"):
         p.error("--svg is available for the editorial, atlas and race layouts")
+    if a.relief != "off" and a.layout not in ("editorial", "atlas", "race"):
+        p.error("--relief is available for the editorial, atlas and race layouts")
     if (a.activity != "longest" or a.allow_private_ends) and a.layout != "race":
         p.error("--activity and --allow-private-ends are for the race layout")
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.activity):
@@ -178,6 +185,8 @@ def main(argv=None):
             print(f"[osm] STOP: {ex}. Run the same command again later.")
             return 4
     basemap = render.load_basemap(folder, big, crs)
+    relief_ = relief.prepare_many([(extent, crs, render.SIZES[a.size][0] * (1 - 36 / 297))],
+                                  log=print)[0] if a.relief == "shade" else None
     if not a.title:
         a.title = (a.place.split(",")[0] if a.place else area.city_name((s + n) / 2, (w + e) / 2, lang=a.lang))
         if a.title:
@@ -196,7 +205,8 @@ def main(argv=None):
                                            size=a.size, dpi=a.dpi, name=a.name, city=a.title,
                                            year=stats_["year_label"], lang=a.lang, pdf_path=a.pdf, svg_path=a.svg,
                                            headline=a.headline, preview_path=a.preview, color_by=a.color_by,
-                                           activities=sel, tracks_xy=[t for _, t in tracks], graphs=a.graphs)
+                                           activities=sel, tracks_xy=[t for _, t in tracks], graphs=a.graphs,
+                                           relief=relief_)
         else:
             info = render_sport.render(pieces_all, basemap, extent, st_, a.out, style=a.style or "volt", size=a.size, dpi=a.dpi,
                                        name=a.name, city=a.title, year=stats_["year_label"], lang=a.lang, pdf_path=a.pdf)

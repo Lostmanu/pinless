@@ -204,6 +204,65 @@ def _levels_of_ranges(files, calls, h0=H30, dataset="glo30"):
     return blocks, headers
 
 
+def _loop_act(i, lat, lon, r=0.012, n=150):
+    import datetime as dt
+    from pinless.ingest import Activity
+    t = np.linspace(0, 2 * np.pi, n)
+    return Activity(id=str(i), type="Run", start=dt.datetime(2025, 3, 1 + i, 8, tzinfo=dt.timezone.utc),
+                    lonlat=list(zip(lon + r * 1.3 * np.cos(t), lat + r * np.sin(t))), source="x",
+                    times=list(np.arange(n) * 10.0))
+
+
+def _editorial_world(monkeypatch, acts, captured):
+    """The editorial CLI without OSM, without stats and without drawing: render_editorial.render records its
+    arguments."""
+    from pinless import area, ingest, render_editorial, stats
+    monkeypatch.setattr(ingest, "read_export", lambda path: (acts, ingest.IngestReport()))
+    monkeypatch.setattr(area, "fetch_basemap", lambda bbox, root=None, log=print: "unused")
+    monkeypatch.setattr(render, "load_basemap", lambda folder, bbox, crs: (_empty(), _empty(), _empty()))
+    monkeypatch.setattr(stats, "compute", lambda *args, **kw: dict(STATS, fav_street=None))
+
+    def spy(*args, **kw):
+        captured.update(kw)
+        return {"W": 1, "H": 1, "cap": 3.0, "max": 1, "legend": {"mode": "heat"}}
+
+    monkeypatch.setattr(render_editorial, "render", spy)
+
+
+def _race_world(monkeypatch, captured, texts=None):
+    """The race CLI for one public 6 km course in Madrid, without OSM; render_race.render draws for real."""
+    import datetime as dt
+    from pinless import area, ingest, race, render_race
+    from pinless.ingest import Activity
+    d = np.linspace(0, 6000, 601)
+    xy = np.column_stack([d, d / 3])
+    lonlat = [(-3.70 + x / (111320 * math.cos(math.radians(40.42))), 40.42 + y / 110540) for x, y in xy]
+    run = Activity(id="r", type="Run", start=dt.datetime(2025, 3, 2, 8, tzinfo=dt.timezone.utc), lonlat=lonlat,
+                   source="x", times=list(d * 0.3), ele=list(650 + 20 * np.sin(d / 900)))
+    monkeypatch.setattr(ingest, "read_export", lambda path: ([run], ingest.IngestReport()))
+    monkeypatch.setattr(area, "fetch_basemap", lambda bbox, root=None, log=print: "unused")
+    monkeypatch.setattr(render, "load_basemap", lambda folder, bbox, crs: (_empty(), _empty(), _empty()))
+    monkeypatch.setattr(area, "place_names", lambda lat, lon, lang="en": ("Madrid", "Spain"))
+    real = render_race.render
+
+    def spy(*args, **kw):
+        info = real(*args, **kw)
+        captured.update(kw, info=info)
+        return info
+
+    monkeypatch.setattr(race.render_race, "render", spy)
+    if texts is not None:
+        from pinless import atlas, render_editorial
+        real_text = render_editorial.place_text
+
+        def spy_text(value, *args, **kw):
+            texts.append(str(value))
+            return real_text(value, *args, **kw)
+
+        for mod in (render_editorial, atlas, render_race):
+            monkeypatch.setattr(mod, "place_text", spy_text)
+
+
 def test_requests_are_the_full_rectangle_and_ignore_the_tracks(monkeypatch, tmp_path):
     import inspect
     assert set(inspect.signature(relief.prepare_many).parameters) == {"maps", "log", "root"}
@@ -225,6 +284,22 @@ def test_requests_are_the_full_rectangle_and_ignore_the_tracks(monkeypatch, tmp_
         want = {(r, c) for r in range(min(rows), max(rows) + 1) for c in range(min(cols), max(cols) + 1)}
         assert got == want, f"level {L}: the full rectangle, no holes"
     assert len({b for b in blocks if b[1] == 0}) > 1, "setup: the map spans several blocks"
+    # through the editorial CLI: other runs and other private zones, the very same requests
+    from pinless import cli
+    lists = []
+    for k, (acts, zones) in enumerate((([_loop_act(i, 40.42, -3.70 + 0.01 * i) for i in range(3)], []),
+                                       ([_loop_act(9, 40.45, -3.66, r=0.02)], ["40.45,-3.66,400", "40.43,-3.7,300"]))):
+        calls.clear()
+        monkeypatch.setenv("PINLESS_CACHE", str(tmp_path / f"cache{k}"))  # each run starts with nothing cached
+        captured = {}
+        _editorial_world(monkeypatch, acts, captured)
+        args = ["x.zip", "--bbox", "40.38,-3.75,40.48,-3.62", "--title", "X", "--relief", "shade", "--out",
+                str(tmp_path / "p.png")]
+        assert cli.main(args + [z for zone in zones for z in ("--zone", zone)]) == 0
+        assert isinstance(captured["relief"], relief.Relief)
+        lists.append(list(calls))
+    assert lists[0] and lists[0] == lists[1], "the requests depend on the map box only"
+    assert any(first != 0 for _, first, _ in lists[0])
 
 
 def _hill(lat_p, lon_p, height=800.0, r_m=2500.0):
@@ -790,3 +865,69 @@ def test_footer_credits_fit_and_appear_only_with_relief(monkeypatch, tmp_path, l
     atlas.render_atlas(cities, cells, extents, [None] * len(cities), str(tmp_path / "a.png"), size="A4", dpi=10,
                        lang=lang, more=3, reliefs=reliefs)
     _check_footer(boxes, 404, 412, dataset, lang, more_note=True)
+
+
+# --- the command line -------------------------------------------------------------------------------------------------
+
+RACE_ARGS = ["x.zip", "--layout", "race", "--dpi", "20", "--size", "A4"]
+
+
+def test_a_failing_server_leaves_the_race_print_without_relief(monkeypatch, tmp_path, capsys):
+    import urllib.error
+    from pinless import cli
+
+    def down(*args):
+        raise urllib.error.URLError("unreachable")
+
+    monkeypatch.setattr(relief, "_fetch", down)
+    captured, texts = {}, []
+    _race_world(monkeypatch, captured, texts)
+    out = tmp_path / "race.png"
+    assert cli.main(RACE_ARGS + ["--relief", "shade", "--out", str(out)]) == 0
+    assert out.stat().st_size > 0 and captured["relief"] is None and captured["info"]["relief"] is False
+    assert not any("Copernicus" in t for t in texts) and any(t.startswith("© OpenStreetMap") for t in texts)
+    log = capsys.readouterr().out
+    assert "[relief] skipped (URLError): the poster is drawn without relief" in log
+
+
+def test_relief_flag_and_default(monkeypatch, tmp_path, capsys):
+    import types
+    from pinless import atlas, cli
+    for layout in ("classic", "sport"):
+        with pytest.raises(SystemExit) as ex:
+            cli.main(["x.zip", "--layout", layout, "--relief", "shade"])
+        assert ex.value.code == 2
+    real_prepare = relief.prepare_many
+
+    def never(*args, **kw):
+        raise AssertionError("relief is off: nothing may be prepared or requested")
+
+    monkeypatch.setattr(relief, "prepare_many", never)
+    captured = {}
+    _editorial_world(monkeypatch, [_loop_act(i, 40.42, -3.70 + 0.01 * i) for i in range(3)], captured)
+    assert cli.main(["x.zip", "--bbox", "40.38,-3.75,40.48,-3.62", "--title", "X", "--out",
+                     str(tmp_path / "e.png")]) == 0
+    assert captured["relief"] is None
+    captured = {}
+    _race_world(monkeypatch, captured)
+    assert cli.main(RACE_ARGS + ["--out", str(tmp_path / "r.png")]) == 0
+    assert captured["relief"] is None and captured["info"]["relief"] is False
+    # atlas.run with arguments built without a relief attribute (as other callers do)
+    acts = [_loop_act(i, 40.42, -3.70) for i in range(4)]
+    got = {}
+    monkeypatch.setattr(atlas.area, "place_names", lambda lat, lon, lang="en": ("C", "K"))
+    monkeypatch.setattr(atlas, "_basemap", lambda c, ext, log: None)
+    monkeypatch.setattr(atlas, "render_atlas", lambda drawn, *a, **k: got.update(k) or {"cap": 3.0, "max": 1})
+    args = types.SimpleNamespace(zone=[], trim=300.0, zone_radius=500.0, max_cities=2, lang="en", year=None,
+                                 style=None, size="A3", dpi=40, name="", title="", out=str(tmp_path / "a.png"),
+                                 pdf=None, svg=None, preview=None, color_by="heat")
+    assert atlas.run(acts, args, log=lambda *_: None) == 0 and got["reliefs"] is None
+    # --relief shade on the race print: a Relief reaches render_race.render, and the notice is drawn
+    monkeypatch.setattr(relief, "prepare_many", real_prepare)
+    _serve(monkeypatch, {(40, -4): _cog((40, -4), _steep)})
+    captured, texts = {}, []
+    _race_world(monkeypatch, captured, texts)
+    assert cli.main(RACE_ARGS + ["--relief", "shade", "--out", str(tmp_path / "r2.png")]) == 0
+    assert isinstance(captured["relief"], relief.Relief) and captured["info"]["relief"] is True
+    assert texts.count(relief.notice("glo30", "en")) == 1
+    capsys.readouterr()

@@ -33,6 +33,7 @@ from shapely.geometry import LineString, Point
 from shapely.ops import substring
 
 from . import area, ingest, privacy, render, render_race
+from . import relief
 from .localtime import local_start
 from .render_race import along
 
@@ -238,6 +239,8 @@ def run(sel, pool, a, log=print):
     except RuntimeError as ex:
         log(f"[osm] STOP: {ex}. Run the same command again later.")
         return 4
+    relief_ = relief.prepare_many([(extent, crs, render.SIZES[a.size][0] * (1 - 36 / 297))],
+                                  log=log)[0] if getattr(a, "relief", "off") == "shade" else None
     mid_lon, mid_lat = inv.transform(*np.median(np.asarray(pieces[0][1].coords), axis=0))
     city, country = area.place_names(round(float(mid_lat), 2), round(float(mid_lon), 2), lang=a.lang)
     if race.name and not a.title:
@@ -248,7 +251,8 @@ def run(sel, pool, a, log=print):
     info = render_race.render(race, track, pieces, basemap, extent, a.out, style=a.style or "huella", size=a.size,
                               dpi=a.dpi, title=title, city=", ".join(v for v in (city, country) if v), name=a.name,
                               date=local_start(race), lang=a.lang, color_by=mode, pdf_path=a.pdf, svg_path=a.svg,
-                              preview_path=a.preview, times=race.times, ele=race.ele, stretch=stretch)
+                              preview_path=a.preview, times=race.times, ele=race.ele, stretch=stretch,
+                              relief=relief_)
     if info["legend"]["mode"] != mode:
         log(f"[colour] this activity has no {mode} data: drawn in one colour")
     log(f"[render] {a.out} · {title} · {info['km']:.2f} km")

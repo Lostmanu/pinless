@@ -22,6 +22,7 @@ from matplotlib.patches import PathPatch
 from pyproj import Transformer
 
 from . import area, colouring, privacy, render
+from . import relief
 from .render import MM, SIZES, heat_raster
 from .render_editorial import (DISPLAY, REGULAR, STYLES, TEXT, _density_segments, draw_basemap, draw_legend,
                                draw_routes, place_text, route_colours)
@@ -384,11 +385,15 @@ def run(sel, a, log=print):
         except RuntimeError as ex:  # every OpenStreetMap server busy: stop cleanly, what was downloaded stays cached
             log(f"[osm] STOP: {ex}. Run the same command again later; the cities already downloaded are kept.")
             return 4
+    k = SIZES[a.size][0] / 297
+    reliefs = relief.prepare_many([(ext, c.crs, w * k) for c, (x, y, w, h), ext in zip(drawn, cells, extents)],
+                                  log=log) if getattr(a, "relief", "off") == "shade" else None
     years = sorted({t.year for c in cities for x in c.acts if (t := local_start(x))})
     year = str(a.year) if a.year else (f"{years[0]}–{years[-1]}" if len(years) > 1 else (str(years[0]) if years else ""))
     info = render_atlas(drawn, cells, extents, basemaps, a.out, style=a.style or "huella", size=a.size, dpi=a.dpi,
                         name=a.name, title=a.title, year=year, lang=a.lang, more=more, pdf_path=a.pdf,
-                        svg_path=a.svg, preview_path=a.preview, summary=totals(cities), color_by=a.color_by)
+                        svg_path=a.svg, preview_path=a.preview, summary=totals(cities), color_by=a.color_by,
+                        reliefs=reliefs)
     if info.get("legend", {}).get("fallback"):
         log(f"[colour] no {a.color_by} data in these activities: drawn in one colour")
     log(f"[render] {a.out} · {len(drawn)} of {len(cities)} cities drawn · heat cap {info['cap']:.0f} · "
