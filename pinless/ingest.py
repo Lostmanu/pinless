@@ -19,6 +19,7 @@ HEADERS = {
     "type": ["Activity Type", "Tipo de actividad", "Type d'activité", "Aktivitätsart", "Tipo di attività"],
     "file": ["Filename", "Nombre del archivo", "Nom du fichier", "Dateiname", "Nome file"],
     "date": ["Activity Date", "Fecha de la actividad", "Date de l'activité", "Aktivitätsdatum", "Data attività"],
+    "name": ["Activity Name", "Nombre de la actividad", "Nom de l'activité", "Aktivitätsname", "Nome attività"],
 }
 GPX_TYPES = {"running": "Run", "run": "Run", "9": "Run", "cycling": "Ride", "biking": "Ride", "ride": "Ride", "1": "Ride",
              "walking": "Walk", "walk": "Walk", "hiking": "Hike", "10": "Walk"}
@@ -32,6 +33,8 @@ class Activity:
     lonlat: list  # [(lon, lat), ...]
     source: str
     times: list = None  # seconds since the first point, aligned with lonlat (None if unknown)
+    ele: list = None  # metres above sea level, aligned with lonlat (None if the file has none)
+    name: str = ""  # the activity's title in the export (a race name, or Strava's "Morning Run")
 
 
 @dataclass
@@ -66,6 +69,13 @@ def _parse_time(s):
         return None
 
 
+def _float(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_gpx(data: bytes):
     root = _strip_ns(ET.fromstring(data))
     pts, t0, kind = [], None, None
@@ -73,7 +83,7 @@ def parse_gpx(data: bytes):
         k = trk.find("type")
         if k is not None and k.text:
             kind = GPX_TYPES.get(k.text.strip().lower(), k.text.strip())
-    ts = []
+    ts, ele = [], []
     for p in root.iter("trkpt"):
         try:
             pts.append((float(p.get("lon")), float(p.get("lat"))))
@@ -81,14 +91,16 @@ def parse_gpx(data: bytes):
             continue
         tt = p.find("time")
         ts.append(_parse_time(tt.text if tt is not None else None))
+        ee = p.find("ele")
+        ele.append(_float(ee.text if ee is not None else None))
         if t0 is None:
             t0 = ts[-1]
-    return pts, t0, kind, ts
+    return pts, t0, kind, ts, ele
 
 
 def parse_tcx(data: bytes):
     root = _strip_ns(ET.fromstring(data.strip()))
-    pts, t0, kind, ts = [], None, None, []
+    pts, t0, kind, ts, ele = [], None, None, [], []
     act = root.find(".//Activity")
     if act is not None and act.get("Sport"):
         kind = {"Running": "Run", "Biking": "Ride"}.get(act.get("Sport"), act.get("Sport"))
@@ -103,14 +115,16 @@ def parse_tcx(data: bytes):
             continue
         tt = tp.find("Time")
         ts.append(_parse_time(tt.text if tt is not None else None))
+        aa = tp.find("AltitudeMeters")
+        ele.append(_float(aa.text if aa is not None else None))
         if t0 is None:
             t0 = ts[-1]
-    return pts, t0, kind, ts
+    return pts, t0, kind, ts, ele
 
 
 def parse_fit(data: bytes):
     import fitdecode  # optional dependency
-    pts, t0, kind, ts = [], None, None, []
+    pts, t0, kind, ts, ele = [], None, None, [], []
     with fitdecode.FitReader(io.BytesIO(data)) as fit:
         for frame in fit:
             if not isinstance(frame, fitdecode.FitDataMessage):
@@ -123,9 +137,11 @@ def parse_fit(data: bytes):
                     continue
                 pts.append((lo * 180.0 / 2**31, la * 180.0 / 2**31))
                 ts.append(frame.get_value("timestamp") if frame.has_field("timestamp") else None)
+                alt = next((frame.get_value(f) for f in ("enhanced_altitude", "altitude") if frame.has_field(f)), None)
+                ele.append(_float(alt))
                 if t0 is None:
                     t0 = ts[-1]
-    return pts, t0, kind, ts
+    return pts, t0, kind, ts, ele
 
 
 def _decode(name: str, raw: bytes):
@@ -170,7 +186,7 @@ def read_export(path: str):
         for row in csv.DictReader(io.StringIO(text)):
             fn = (_col(row, "file") or "").strip()
             if fn:
-                meta[fn] = {"id": _col(row, "id"), "type": _col(row, "type")}
+                meta[fn] = {"id": _col(row, "id"), "type": _col(row, "type"), "name": (_col(row, "name") or "").strip()}
             else:
                 rep.skip("no_gps", "", "no GPS file (indoor or manual)")
     acts = []
@@ -180,7 +196,7 @@ def read_export(path: str):
             continue
         rep.files_seen += 1
         try:
-            pts, t0, kind, ts = _decode(name, read())
+            pts, t0, kind, ts, ele = _decode(name, read())
         except ImportError:
             rep.skip("unsupported", name, "FIT file but fitdecode is not installed")
             continue
@@ -194,7 +210,9 @@ def read_export(path: str):
         secs = None
         if ts and all(t is not None for t in ts) and len(ts) == len(pts):
             secs = [(t - ts[0]).total_seconds() for t in ts]
+        heights = ele if ele and len(ele) == len(pts) and all(e is not None for e in ele) else None
         acts.append(Activity(id=str(m.get("id") or os.path.basename(name).split(".")[0]),
-                             type=(m.get("type") or kind or "Unknown"), start=t0, lonlat=pts, source=name, times=secs))
+                             type=(m.get("type") or kind or "Unknown"), start=t0, lonlat=pts, source=name, times=secs,
+                             ele=heights, name=m.get("name", "")))
         rep.used += 1
     return acts, rep

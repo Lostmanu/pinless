@@ -118,7 +118,8 @@ def trip_runs(trip, rng, act_id, dt_s):
             seq = [node_near(trip["lodging"], 25)] + mid + [node_near(trip["lodging"], 25)]
             name, pace, kind = "Morning Run", rng.uniform(320, 360), "trip"
         coords = sim.route_line(G, seq)
-        pts, L = sim.sample_track(coords, to_utm, rng, pace, dt_s, start_time, 1.2, crs=crs, ele0=trip["ele"])
+        pts, L = sim.sample_track(coords, to_utm, rng, pace, dt_s, start_time, 1.2, crs=crs, ele0=trip["ele"],
+                                    terrain=None)
         out.append({"id": act_id, "date": start_time, "name": name, "type": "Run", "dist_km": L / 1000,
                     "elapsed": int((pts[-1][3] - pts[0][3]).total_seconds()), "pts": pts, "kind": kind,
                     "city": trip["city"], "fmt": rng.choices(["gpx", "gpx.gz", "tcx.gz"], weights=[60, 25, 15])[0]})

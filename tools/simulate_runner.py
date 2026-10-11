@@ -129,7 +129,17 @@ def route_line(G, nodes_seq):
     return coords
 
 
-def sample_track(coords_ll, to_utm, rng, pace_s_per_km, dt_s, start_time, trees_factor, crs=25830, ele0=650.0):
+def madrid_terrain(lat, lon):
+    """Synthetic but plausible Madrid ground (m): rising to the north, the Manzanares valley in the west, gentle hills."""
+    if not (40.30 < lat < 40.56 and -3.86 < lon < -3.54):  # away from Madrid (the beach holiday): near sea level
+        return 8.0 + 2.0 * math.sin(lon * 300)
+    river = -3.718 - 0.25 * (lat - 40.40)
+    return (640 + 900 * (lat - 40.40) - 55 * math.exp(-((lon - river) / 0.008) ** 2)
+            + 12 * math.sin(lon * 140) * math.cos(lat * 95))
+
+
+def sample_track(coords_ll, to_utm, rng, pace_s_per_km, dt_s, start_time, trees_factor, crs=25830, ele0=650.0,
+                 terrain=madrid_terrain):
     """Resample a route at constant speed, add AR(1) GPS noise and rare spikes; return list of (lat, lon, ele, t)."""
     xs, ys = to_utm.transform([c[0] for c in coords_ll], [c[1] for c in coords_ll])
     line = LineString(list(zip(xs, ys)))
@@ -160,8 +170,9 @@ def sample_track(coords_ll, to_utm, rng, pace_s_per_km, dt_s, start_time, trees_
     out = []
     ele = ele0
     for i, q in enumerate(pts):
-        ele += rng.gauss(0, 0.4)
-        out.append((lat[i], lon[i], round(ele, 1), start_time + dt.timedelta(seconds=q[2])))
+        ele += rng.gauss(0, 0.4)  # one draw per point, as before: the routes and times stay the same
+        h = terrain(lat[i], lon[i]) + (ele - ele0) * 0.5 if terrain else ele  # barometer noise on the ground
+        out.append((lat[i], lon[i], round(h, 1), start_time + dt.timedelta(seconds=q[2])))
     return out, L
 
 
