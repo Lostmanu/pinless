@@ -213,6 +213,40 @@ def test_pair_places_draws_its_zones_with_the_given_radius_and_keeps_every_centr
         [1000, 1000], "lone places: exactly the radius asked for"
 
 
+def test_two_light_runners_one_start_each_at_one_place_is_hidden():
+    """Both people have under 75 runs, so each threshold is the floor of 2. Each starts ONE one-way run at P: 1/2 + 1/2
+    = 1, a place that only the pooled rule finds, and only with the floor pair_places passes on (with 3, 1/3 + 1/3).
+    A third run passes straight over P. Control: one start there (1/2) is no place."""
+    p = np.array([6000.0, 4500.0])
+    ta = loops_from(np.array([0.0, 0.0]), 40) + [line(p, (10000.0, 4500.0), noise=4.0), through(p)]
+    tb = loops_from(np.array([0.0, 9000.0]), 40) + [line(p, (6000.0, 9000.0), noise=4.0)]
+    zones, witnesses, counts = privacy.pair_places([ta, tb])
+    assert any(np.hypot(*(w - p)) < 60 for w in witnesses) and counts["pooled_new"] == 1
+    for seed in range(3):
+        assert far(couple_cut(ta, tb, rng=random.Random(seed))[0], p) >= 200, seed
+    zones, witnesses, _ = privacy.pair_places([ta, tb[:-1]])
+    assert not any(np.hypot(*(w - p)) < 250 for w in witnesses)
+
+
+def test_files_in_both_exports_never_raise_the_pooled_thresholds():
+    """39 of the first person's 120 runs are also in the second export (40 runs of the second person's own). Without
+    the copies the thresholds are 3 (81 runs) and 2 (40 runs): 2 starts of the first person and 1 of the second at P
+    make 2/3 + 1/2 >= 1, a place. Counting the copies in the pooled rule (thresholds 4 and 3) gives 2/4 + 1/3 and P
+    would be drawn: pair_places must pass n_runs on to it, not only to each person's own pass."""
+    p = np.array([6000.0, 4500.0])
+    ha = np.array([0.0, 0.0])
+    ta = loops_from(ha, 116) + [line(p, (10000.0, 4500.0 + 300 * i), noise=4.0) for i in range(2)] + [through(p)]
+    ta += [line((-7000.0, -6000.0), (-4000.0, -3000.0))]
+    tb = [line((-9000.0 + 450 * i, 12000), (-8800.0 + 450 * i, 20000), noise=4.0) for i in range(39)]
+    tb += [line(p, (6000.0, 9000.0), noise=4.0)] + ta[:39]
+    assert len(ta) == 120 and len(tb) == 79
+    zones, witnesses, counts = privacy.pair_places([ta, tb], n_runs=(81, 40))
+    assert any(np.hypot(*(w - p)) < 60 for w in witnesses) and counts["pooled_new"] == 1
+    for seed in range(3):
+        pieces, _ = privacy.apply(ta + tb, places_xy=zones, witnesses_xy=witnesses, rng=random.Random(seed))
+        assert far(pieces, p) >= 200, seed
+
+
 def test_a_place_next_to_a_bigger_one_gets_its_own_zone():
     """A gym 450 m from home shares a 3 x 3 block of cells with the home's many ends: that block's mean lies at home,
     so the gym needs a look of its own at the ends no centre covers yet. The same for a place where the two people's
@@ -304,6 +338,28 @@ def test_auto_bbox_with_groups_picks_where_both_run():
     assert area.auto_bbox(a + b) == old and area.auto_bbox(a + b, groups=None) == old
     with pytest.raises(ValueError):
         area.auto_bbox(_runs(x, 20, 0) + b, groups=[0] * 20 + [1] * len(b))
+
+
+def test_a_place_each_person_runs_alone_never_beats_the_place_they_share():
+    """The first person runs 100 times at X and 5 at Y, the second 60 times at Z and 20 at Y. X and Z each score 1 for
+    one person and 0 for the other; Y is the only area both run in, so the smallest of the two shares must win, not
+    their sum."""
+    x, y, z = (40.42, -3.70), (40.48, -3.37), (40.30, -3.95)
+    a = _runs(x, 100, 0) + _runs(y, 5, 1000)
+    b = _runs(z, 60, 2000) + _runs(y, 20, 3000)
+    s, w, n, e = area.auto_bbox(a + b, groups=[0] * len(a) + [1] * len(b))
+    assert s < y[0] < n and w < y[1] < e
+
+
+def test_each_person_s_score_is_a_share_of_their_own_best():
+    """The first person runs 400 times at X and 40 at Y; the second 10 times at X and 30 at Y. As shares of each
+    person's own best, X scores min(1, 1/3) and Y min(1/10, 1): X wins. Raw counts would pick Y (min(400, 10) is
+    under min(40, 30))."""
+    x, y = (40.42, -3.70), (40.48, -3.37)
+    a = _runs(x, 400, 0) + _runs(y, 40, 1000)
+    b = _runs(x, 10, 2000) + _runs(y, 30, 3000)
+    s, w, n, e = area.auto_bbox(a + b, groups=[0] * len(a) + [1] * len(b))
+    assert s < x[0] < n and w < x[1] < e and not (s < y[0] < n and w < y[1] < e)
 
 
 def _act(i, start, xy, times):
@@ -418,3 +474,16 @@ def test_runs_together_km_and_matching():
     assert sa & sb == {"Calle A"} and len(sa | sb) == 3
     assert streets(0, ta, cut=False) & streets(1, tb, cut=False) == {"Calle A", "Calle D"}, "control: full tracks"
     assert "street_names" not in stats.compute([acts[0]], ta, edges, private_pieces_xy=[ta[0]], piece_groups=[0])
+
+
+def test_runs_together_are_known_when_some_activity_on_each_side_has_a_clock():
+    """One of the first person's two files has no clock (a manual upload): the runs together are still counted, and
+    the file without a clock is reported, rather than every number falling back to runs and hours."""
+    route = line((0, 0), (10000.0, 0), step=5.0)
+    d = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(route, axis=0).T))])
+    t0 = dt.datetime(2025, 5, 4, 8, tzinfo=UTC)
+    clock = d / 3.3
+    other = route + (0.0, 9000.0)
+    a = [_act("a", t0, route, clock), _act("a0", None, other, None)]
+    got = stats.together(a, [route, other], [_act("b", t0, route + (0.0, 5.0), clock)], [route + (0.0, 5.0)])
+    assert got["known"] and got["runs"] == 1 and got["no_clock"] == (1, 0)

@@ -438,3 +438,91 @@ def test_the_frame_and_the_overpass_box_do_not_follow_a_lodging_at_the_edge(monk
     assert "[area] found where you both run most" in capsys.readouterr().out
     assert fed and all(box_ == area.snap_box(box_) for box_ in fed), "the frame's box is on the grid"
     assert extents[0] == extents[1] and len(sent) == 2 and sent[0] == sent[1]
+
+
+def _km(acts, crs):
+    tr = Transformer.from_crs(4326, crs, always_xy=True)
+    return sum(float(np.hypot(*np.diff(np.column_stack(tr.transform(*np.asarray(x.lonlat).T)), axis=0).T).sum())
+               for x in acts) / 1000
+
+
+def test_each_person_s_numbers_and_runs_together_reach_the_poster(monkeypatch, tmp_path, capsys):
+    """Lucia 48 runs; Marcos 30 of his own, one run side by side with her (her run 5, 3 m aside, on the same clock)
+    and 5 runs 300 km away. The poster gets each person's own runs and km, counted inside the map only, the one run
+    together, and the log names who has activities outside the map."""
+    acts_a = madrid_runs()
+    with_her = dataclasses.replace(acts_a[5], id="m5", lonlat=[(lo, la + 3 / 110540) for lo, la in acts_a[5].lonlat])
+    far_b = [dataclasses.replace(x, id=f"far{i}") for i, x in enumerate(_moved(_partner(n=5)[:5], 3.3, -0.9))]
+    acts_b = _partner() + [with_her] + far_b
+    _by_path(monkeypatch, {"a.zip": acts_a, "b.zip": acts_b})
+    seen, _ = _spy_drawn(monkeypatch)
+    assert cli.main(BASE + ["--bbox", BOX, "--dpi", "20", "--out", str(tmp_path / "p.png")]) == 0
+    out = capsys.readouterr().out
+    c = seen["couple"]
+    assert [x["n"] for x in c.stats] == [48, 31]
+    crs = render.utm_crs(-3.69, 40.43)  # the box's centre
+    assert c.stats[0]["km"] == pytest.approx(_km(acts_a, crs), rel=1e-9)
+    assert c.stats[1]["km"] == pytest.approx(_km(_partner() + [with_her], crs), rel=1e-9)
+    assert c.together["runs"] == 1 and c.together["known"] and "[together] 1 runs side by side" in out
+    assert "[area] Marcos: 31 of 36 activities are inside the map" in out and "[area] Lucía:" not in out
+
+
+def test_streets_you_both_ran_are_the_streets_of_both(monkeypatch, tmp_path, capsys):
+    """Lucia runs Calle Uno and Calle Dos, Marcos only Calle Uno: one street both ran, two in all."""
+    streets = {"Calle Uno": [(-6000, 6500), (-3000, 6500)], "Calle Dos": [(-6000, -4500), (-3000, -4500)]}
+    edges = gpd.GeoDataFrame({"highway": ["residential"] * 2, "name": list(streets)},
+                             geometry=[LineString(_to_map(*ends)) for ends in streets.values()])
+    runs_a = [line((-6500, 5500), (-6500, 6500), (-2500, 6500), (-2500, 7500)),
+              line((-6500, -5500), (-6500, -4500), (-2500, -4500), (-2500, -3500))]
+    runs_b = [line((-6500, 7500), (-6500, 6500), (-2500, 6500), (-2500, 5500))]
+    _by_path(monkeypatch, {"a.zip": madrid_runs() + _acts(runs_a, 500, day0=dt.date(2025, 6, 1)),
+                           "b.zip": _partner() + _acts(runs_b, 1500, day0=dt.date(2025, 6, 1), hour=19)})
+    monkeypatch.setattr(render, "load_basemap", lambda folder, bbox, crs: (edges, EMPTY, EMPTY))
+    seen, _ = _spy_drawn(monkeypatch)
+    assert cli.main(BASE + ["--bbox", BOX, "--dpi", "20", "--out", str(tmp_path / "p.png")]) == 0
+    assert seen["couple"].streets_both == 1 and "streets you both ran 1 of 2" in capsys.readouterr().out
+
+
+def test_a_person_whose_lines_are_all_beyond_the_map_edge_stops_the_export(monkeypatch, tmp_path, capsys):
+    """Marcos's runs all start 150 m inside the west edge of the map and run 5 km west: they are in the area, but
+    after the 300 m end trim every piece of his lies beyond the map's edge. Nothing of his would be drawn, so nothing
+    is exported: what counts is what is left on the map, not what is left after the cuts."""
+    bbox = tuple(map(float, BOX.split(",")))
+    crs = render.utm_crs((bbox[1] + bbox[3]) / 2, (bbox[0] + bbox[2]) / 2)
+    ext = render.fit_extent(bbox, crs, render_editorial.map_aspect("A3"))
+    x_edge = ext[0] - _to_map((0.0, 0.0))[0][0]  # the map's west edge, metres east of the reference point
+    runs_b = [line((x_edge + 150, -3000.0 + 400 * i), (x_edge - 5000, -3000.0 + 400 * i)) for i in range(12)]
+    _by_path(monkeypatch, {"a.zip": madrid_runs(), "b.zip": _acts(runs_b, 5000, hour=18)})
+    monkeypatch.setattr(area, "fetch_basemap", _never)
+    assert cli.main(BASE + ["--bbox", BOX, "--dpi", "20", "--out", str(tmp_path / "p.png")]) == 2
+    assert "[privacy] Marcos: nothing of yours is left on this map" in capsys.readouterr().out
+    assert not list(tmp_path.iterdir())
+
+
+def test_files_in_both_exports_do_not_unhide_the_first_person_s_single_loop(monkeypatch, tmp_path, capsys):
+    """The mirror of test_files_in_both_exports_do_not_unhide_a_single_loop: 39 of the SECOND person's runs are also
+    in the FIRST export, whose owner has 40 runs of her own and one loop from a lodging. Counted as hers, the copies
+    would raise her threshold from 2 to 3 ends and the loop's start would be drawn."""
+    lodging = (5000.0, 2000.0)
+    tb = loops_from(HB, 120)
+    own_a = [loop(*lodging, 1400, phase=0.4), through(lodging, angle=1.2)]
+    own_a += [line((-7500 + 450 * i, -5800), (-7300 + 450 * i, 8200), noise=4.0) for i in range(38)]
+    acts_b = _acts(tb, 5000, hour=18)
+    _by_path(monkeypatch, {"a.zip": _acts(own_a, 0) + acts_b[:39], "b.zip": acts_b})
+    seen, drawn = _spy_drawn(monkeypatch)
+    assert cli.main(BASE + ["--bbox", BOX, "--dpi", "20", "--out", str(tmp_path / "p.png")]) == 0
+    assert "[couple] 39 activities are in both exports" in capsys.readouterr().out
+    lodging_xy, = _to_map(lodging)
+    assert _gap(drawn, lodging_xy) >= 200
+
+
+def test_fit_and_lang_reach_the_poster_for_two(monkeypatch, tmp_path, capsys):
+    _by_path(monkeypatch, {"a.zip": madrid_runs(), "b.zip": _partner()})
+    seen, _ = _spy_drawn(monkeypatch)
+    assert cli.main(BASE + ["--bbox", BOX, "--dpi", "20", "--out", str(tmp_path / "p.png")]) == 0
+    whole, lang = seen["extent"], seen["lang"]
+    assert cli.main(BASE + ["--bbox", BOX, "--fit", "--lang", "es", "--dpi", "20",
+                            "--out", str(tmp_path / "q.png")]) == 0
+    assert lang == "en" and seen["lang"] == "es"
+    assert seen["extent"][1] - seen["extent"][0] < 0.9 * (whole[1] - whole[0]), "--fit crops the map"
+    capsys.readouterr()

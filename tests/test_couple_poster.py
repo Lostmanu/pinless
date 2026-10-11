@@ -144,6 +144,20 @@ def test_a_fleck_of_another_class_along_a_line_takes_its_neighbours_class():
     assert set(classes[owner == 0]) == {2}
 
 
+def test_smoothing_is_measured_in_millimetres_on_paper():
+    """On a 3 km A3 map 1 mm is 11.5 m. The second person's lines leave the shared street for 25 m (about 2.2 mm): a
+    real stretch where the first person runs alone, longer than SMOOTH_MM, so it keeps the first person's class. With
+    the paper's millimetres counted twice as long it would be a fleck, and take the shared street's class."""
+    sc = Scene()
+    xa = np.linspace(-1000, 1000, 401)
+    xb = np.r_[np.linspace(-1000, -5, 200), np.linspace(0, 20, 5), np.linspace(25, 1000, 196)]
+    for _ in range(3):
+        sc.add(LineString(np.column_stack([xa, np.zeros_like(xa)])), 0)
+        sc.add(LineString(np.column_stack([xb, np.where((xb >= 0) & (xb <= 20), 60.0, 1.0)])), 1)
+    _, _, classes, owner = sc.classify(extent(3000))
+    assert {0, 2} <= set(classes[owner == 0])
+
+
 @pytest.mark.parametrize("size", ["A3", "50x70"])
 @pytest.mark.parametrize("width", [3000.0, 12000.0])
 def test_half_a_millimetre_on_an_a3_print_is_one_street_at_every_size(size, width):
@@ -452,3 +466,38 @@ def test_couple_numbers_and_fallbacks():
     assert big["cells"] == [("1,234", "RUNS TOGETHER"), ("4,567", "KM SIDE BY SIDE")], "counts formatted like km"
     printed = [es["total"], es["first"], es["second"], *map(str, es["cells"]), *map(str, es["records"])]
     assert not any(re.search(r"\d[.,]\d{4}", x) for x in printed), "only rounded numbers are printed"
+
+
+def test_the_records_and_the_key_put_each_person_in_their_own_ink(monkeypatch, tmp_path):
+    """Each record reads 'first · second', in the first person's ink, the paper's grey and the second person's ink;
+    the WHO key's five strokes go from the first person's ink to the second's, left to right; the split bar leaves a
+    1.2 mm gap."""
+    import matplotlib.pyplot as plt
+
+    S = re_.STYLES["huella"]
+    who = S["who"]
+    runs, figs, real_runs, real_close = [], [], re_.place_runs, plt.close
+
+    def spy(parts, x, y, *a, **k):
+        runs.append((y, [(str(t), c) for t, c in parts]))
+        return real_runs(parts, x, y, *a, **k)
+
+    monkeypatch.setattr(re_, "place_runs", spy)
+    monkeypatch.setattr(plt, "close", lambda fig=None: figs.append(fig))
+    pieces, owner = _two_lines()
+    c = _couple(owner=owner)
+    cc = re_.couple_cells(c, "en")
+    re_.render(pieces, (EMPTY, EMPTY, EMPTY), (0, 1000, 0, 850), None, str(tmp_path / "p.png"), dpi=20, lang="en",
+               couple=c)
+    records = [parts for y, parts in runs if y == 375]
+    assert [[t for t, _ in p] for p in records] == [[va, " · ", vb] for (va, vb), _ in cc["records"]]
+    assert len(records) == 3 and all([col for _, col in p] == [who[0], S["sub"], who[4]] for p in records)
+    page = figs[-1].axes[0]
+    key = sorted((ln.get_xdata()[0], ln.get_color()) for ln in page.lines
+                 if np.allclose(ln.get_ydata(), 400.0) and np.isclose(ln.get_linewidth(), 1.6))
+    assert [x for x, _ in key] == pytest.approx([218 + i * 10.2 for i in range(5)])
+    assert all(_same(col, w) for (_, col), w in zip(key, who)), "the key in class order, first to second"
+    bar = sorted(tuple(ln.get_xdata()) for ln in page.lines if np.allclose(ln.get_ydata(), 362.2))
+    assert bar[1][0] - bar[0][1] == pytest.approx(1.2), "a 1.2 mm gap"
+    for fig in figs:
+        real_close(fig)
