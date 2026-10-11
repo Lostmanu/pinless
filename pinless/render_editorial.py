@@ -137,6 +137,7 @@ for _name, _inks in WHO.items():
 LEVELS = 32  # route colour and weight steps: finer than the eye separates on paper, one path per step in a PDF/SVG
 PRINT_TOL_MM = 0.04  # geometry is simplified to this, on paper: far below what a print shows
 SHARED_MM = 0.5  # two lines this close on paper read as one street
+SMOOTH_MM = 1.5  # a change of whose street it is, shorter than this along a line, is a fleck: it takes its neighbours'
 COUPLE_BASE = 0.62  # the thinnest couple stroke (pt x k): a hairline keeps its hue
 ROUTE_GAIN = 0.42  # how much a route thickens from its rarest to its commonest weight (pt x k); the key uses it too
 
@@ -474,6 +475,37 @@ def who_classes(a, b, owner_is_b):
     return np.where(t == 0, np.where(owner_is_b, 4, 0), c)
 
 
+def smooth_classes(classes, segments, mm_per_unit, min_mm=SMOOTH_MM):
+    """Whose street a line is changes along it only where the street does. A stretch of another class shorter than
+    min_mm on paper, between two stretches of one class on the same line, takes their class: GPS noise that brings
+    a line within reach of another for a few metres, or out of it, would otherwise print as a dashed line. The
+    shortest such stretch goes first, until none is left. A line's first and last stretch, and a short stretch
+    between two different classes (a real change of street), are kept. segments: (n, 2, 2) in drawing order, where
+    a line goes on while each segment starts where the one before it ends."""
+    classes = np.array(classes, copy=True)
+    if len(classes) < 3:
+        return classes
+    length = np.hypot(*(segments[:, 1] - segments[:, 0]).T) * mm_per_unit
+    breaks = np.nonzero(np.any(segments[1:, 0] != segments[:-1, 1], axis=1))[0] + 1
+    for lo, hi in zip(np.r_[0, breaks], np.r_[breaks, len(classes)]):
+        cls = classes[lo:hi]
+        edges = np.r_[0, np.nonzero(np.diff(cls))[0] + 1, len(cls)]
+        if len(edges) < 4:  # fewer than three stretches: nothing lies between two others
+            continue
+        runs = [[int(cls[a]), a, b, float(length[lo + a:lo + b].sum())] for a, b in zip(edges[:-1], edges[1:])]
+        while True:
+            short = [(r[3], i) for i, r in enumerate(runs[1:-1], 1)
+                     if r[3] < min_mm and runs[i - 1][0] == runs[i + 1][0]]
+            if not short:
+                break
+            _, i = min(short)
+            before, after = runs[i - 1], runs[i + 1]
+            runs[i - 1:i + 2] = [[before[0], before[1], after[2], before[3] + runs[i][3] + after[3]]]
+        for c, a, b, _ in runs:
+            cls[a:b] = c
+    return classes
+
+
 def who_values(pieces, owner, extent, W, H, k, width_px):
     """(segments, weight, colour values in [0, 1], classes) for a poster of two. owner[i]: 0 or 1 for activity i.
 
@@ -499,7 +531,8 @@ def who_values(pieces, owner, extent, W, H, k, width_px):
     a, b = med(acc_a), med(acc_b)
     is_b = owner[ids] == 1
     weight = np.maximum(1, a + b)
-    classes = who_classes(a, b, is_b)
+    mm_per_unit = W / 220 * 25.4 / (extent[1] - extent[0])  # the density raster has 220 px per inch of paper
+    classes = smooth_classes(who_classes(a, b, is_b), segments, mm_per_unit)
     return segments, weight, (classes + 0.5) / 5, classes
 
 

@@ -113,6 +113,37 @@ def test_a_street_weighs_how_often_it_was_run_whoever_ran_it():
     assert set(classes[shared & (owner == 0)]) == set(classes[shared & (owner == 1)]) == {2}
 
 
+def test_a_fleck_of_another_class_along_a_line_takes_its_neighbours_class():
+    """1 mm on paper is 11.5 m on a 3 km map. Lines of segments 0.5 mm long (5.75 m)."""
+    def line(classes, y=0.0):
+        x = np.arange(len(classes) + 1) * 5.75
+        pts = np.column_stack([x, np.full(len(x), y)])
+        return np.stack([pts[:-1], pts[1:]], axis=1), np.array(classes)
+
+    mm = 1 / 11.5
+    for middle, kept in (([1] * 2, False), ([1] * 4, True)):  # 1 mm is a fleck, 2 mm is a stretch of its own
+        segs, cls = line([2] * 10 + middle + [2] * 10)
+        out = re_.smooth_classes(cls, segs, mm)
+        assert (set(out) == {1, 2}) == kept, middle
+    segs, cls = line([2] * 10 + [1] * 2 + [0] * 10)
+    assert (re_.smooth_classes(cls, segs, mm) == cls).all(), "a short step between two classes is a real change"
+    segs, cls = line([1] * 2 + [2] * 10 + [3] * 2)
+    assert (re_.smooth_classes(cls, segs, mm) == cls).all(), "a line's first and last stretch are kept"
+    (s1, c1), (s2, c2) = line([2] * 10 + [4]), line([4] + [2] * 10, y=500.0)
+    out = re_.smooth_classes(np.r_[c1, c2], np.concatenate([s1, s2]), mm)
+    assert (out == np.r_[c1, c2]).all(), "two lines are smoothed apart"
+    # three runs each on one street; the second person's lines step 15 m aside for 20 m: the first person's line
+    # there sees only their own runs for under 1 mm, and stays the shared street's ink
+    sc = Scene()
+    xa = np.linspace(-1000, 1000, 201)
+    xb = np.r_[np.linspace(-1000, -10, 100), 0, 10, np.linspace(20, 1000, 99)]
+    for _ in range(3):
+        sc.add(LineString(np.column_stack([xa, np.zeros_like(xa)])), 0)
+        sc.add(LineString(np.column_stack([xb, np.where((xb >= 0) & (xb <= 10), 15.0, 1.0)])), 1)
+    _, _, classes, owner = sc.classify(extent(3000))
+    assert set(classes[owner == 0]) == {2}
+
+
 @pytest.mark.parametrize("size", ["A3", "50x70"])
 @pytest.mark.parametrize("width", [3000.0, 12000.0])
 def test_half_a_millimetre_on_an_a3_print_is_one_street_at_every_size(size, width):
