@@ -190,3 +190,28 @@ def test_a_missing_coast_does_not_stop_the_map(tmp_path, monkeypatch):
     folder = area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lines.append)
     assert os.path.exists(os.path.join(folder, "green.gpkg")) and not os.path.exists(os.path.join(folder, "coast.gpkg"))
     assert any("no sea" in s for s in lines)
+
+
+def test_the_city_lookup_sends_its_point_rounded_to_about_a_kilometre(monkeypatch):
+    """The centre of the box of two people who run loops from one door lies about a hundred metres from it: the one
+    Nominatim request for the city name gets that point rounded to 0.01 degrees, as the atlas does."""
+    import io
+    import urllib.request
+
+    sent = []
+
+    class Answer(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(req, timeout=None):
+        sent.append(req.full_url)
+        return Answer(b'{"address": {"city": "Madrid"}}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert area.city_name(40.41629, -3.69729) == "Madrid"
+    assert len(sent) == 1 and "lat=40.42&lon=-3.70&" in sent[0], "rounded to 0.01 degrees"
+    assert "4162" not in sent[0] and "6972" not in sent[0]

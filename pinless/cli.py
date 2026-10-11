@@ -2,8 +2,8 @@
 pinless EXPORT --with EXPORT2 --name Lucía --with-name Marcos   (one poster for two, one ink each)
 
 With no area options it finds where you run most, fetches that area's OpenStreetMap data once (cached) and names the
-city. Everything else runs locally: the export never leaves the machine; only the area's bounding box is sent to
-OpenStreetMap services.
+city. Everything else runs locally: the export never leaves the machine; only the area's bounding box (and its centre
+rounded to about 1 km, for the city name) is sent to OpenStreetMap services.
 """
 from __future__ import annotations
 

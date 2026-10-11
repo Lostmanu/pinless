@@ -1,5 +1,6 @@
 """The frame of a single-map poster, shared by the solo and the couple flows: the area, the map extent, the basemap,
-the headline and the year label. Only the area's bounding box goes out (OpenStreetMap), as in cli.main."""
+the headline and the year label. Only the area's bounding box goes out (OpenStreetMap), and its centre rounded to
+about 1 km for the city name, as in cli.main."""
 from __future__ import annotations
 
 import os
@@ -66,7 +67,8 @@ def basemap_for(extent, crs, a, log=print):
 
 
 def headline(a, bbox, log=print):
-    """Sets a.title when it is empty: the --place name, or the city at the box centre (only that point is sent)."""
+    """Sets a.title when it is empty: the --place name, or the city at the box centre (only that point, rounded to
+    about 1 km, is sent)."""
     s, w, n, e = bbox
     if not a.title:
         a.title = (a.place.split(",")[0] if a.place else area.city_name((s + n) / 2, (w + e) / 2, lang=a.lang))

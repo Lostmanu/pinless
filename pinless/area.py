@@ -2,9 +2,11 @@
 
 - auto_bbox: the area where the runner runs most (densest cluster of points), so holidays elsewhere drop out.
 - geocode_bbox: the bounding box of a named place (one Nominatim request through osmnx).
-- city_name: the city/town at a point (one Nominatim reverse request), for the headline.
+- city_name: the city/town near a point (one Nominatim reverse request, the point rounded to about 1 km), for the
+  headline.
 - fetch_basemap: streets (walk network), green and water for a bbox, cached on disk by rounded bbox.
-Only the bbox of the area is sent to OpenStreetMap services; activity files never leave the machine.
+Only the bbox of the area (and a point rounded to about 1 km for the city name) is sent to OpenStreetMap services;
+activity files never leave the machine.
 """
 from __future__ import annotations
 
@@ -112,9 +114,12 @@ def geocode_bbox(place: str):
 
 
 def city_name(lat: float, lon: float, lang: str = "en", timeout=20) -> str:
-    """City/town/village name at a point, or '' if the lookup fails (offline is fine)."""
+    """City/town/village name at a point, or '' if the lookup fails (offline is fine).
+
+    The point is rounded to 0.01 degrees (about 1 km) before it is sent, as in place_names: the centre of the box of
+    two people who run loops from one door lies a hundred metres or so from it, and a city needs no more."""
     url = "https://nominatim.openstreetmap.org/reverse?" + urllib.parse.urlencode(
-        {"lat": f"{lat:.4f}", "lon": f"{lon:.4f}", "format": "jsonv2", "zoom": 10, "accept-language": lang})
+        {"lat": f"{lat:.2f}", "lon": f"{lon:.2f}", "format": "jsonv2", "zoom": 10, "accept-language": lang})
     try:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=timeout) as r:
