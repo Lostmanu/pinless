@@ -304,7 +304,10 @@ def _unpredict(raw, rows, cols):
 
 
 def _decode(data, lv, br, bc):
-    raw = zlib.decompress(data)
+    try:
+        raw = zlib.decompress(data)
+    except zlib.error as ex:
+        raise ReliefError("a block does not inflate") from ex
     if len(raw) != lv.th * lv.tw * 4:
         raise ReliefError("unexpected block size")
     z = _unpredict(raw, lv.th, lv.tw)[: min(lv.th, lv.h - br * lv.th), : min(lv.tw, lv.w - bc * lv.tw)]
@@ -327,7 +330,7 @@ def _block(dataset, cell, hdr, L, br, bc, root):
             data = f.read()
         try:
             return _decode(data, lv, br, bc)
-        except (ReliefError, zlib.error, ValueError):
+        except (ReliefError, ValueError):
             os.remove(path)
     i = br * math.ceil(lv.w / lv.tw) + bc
     first, n = lv.offsets[i], lv.counts[i]
@@ -539,3 +542,192 @@ def _nodes(extent, crs, g):
     X, Y = np.meshgrid(xs, ys)
     lon, lat = Transformer.from_crs(crs, 4326, always_xy=True).transform(X.ravel(), Y.ravel())
     return np.asarray(lon).reshape(X.shape), np.asarray(lat).reshape(X.shape)
+
+
+# --- shading ----------------------------------------------------------------------------------------------------------
+
+def _gauss(z, sigma, g):
+    """Separable Gaussian of sigma map units on the work grid (edges reflected; the margin absorbs them)."""
+    for axis, step in ((1, g.cx), (0, g.cy)):
+        s = sigma / step
+        if s <= 0:
+            continue
+        r = max(1, math.ceil(4 * s))
+        k = np.exp(-0.5 * (np.arange(-r, r + 1) / s) ** 2)
+        k /= k.sum()
+        pad = [(0, 0), (0, 0)]
+        pad[axis] = (r, r)
+        zp = np.pad(z, pad, mode="reflect")
+        n = z.shape[axis]
+        out = np.zeros(z.shape)
+        for t, wt in enumerate(k):  # every node gets the same sums: a constant field stays exactly constant
+            out += wt * (zp[t:t + n] if axis == 0 else zp[:, t:t + n])
+        z = out
+    return z
+
+
+def _shade(z, cx, cy):
+    """Hillshade in [-1, 1] lit from AZIMUTH_DEG at ALTITUDE_DEG, row 0 north: 0 on flat ground, -1 in full
+    shadow, 1 facing the light. No vertical exaggeration."""
+    dzdrow, dzdx = np.gradient(z, cy, cx)
+    dzdy = -dzdrow
+    az, alt = math.radians(AZIMUTH_DEG), math.radians(ALTITUDE_DEG)
+    lx, ly, lz = math.sin(az) * math.cos(alt), math.cos(az) * math.cos(alt), math.sin(alt)
+    hs = np.maximum(0.0, (-dzdx * lx - dzdy * ly + lz) / np.sqrt(dzdx ** 2 + dzdy ** 2 + 1))
+    s = hs - lz
+    return np.clip(np.where(s < 0, s / lz, s / (1 - lz)), -1.0, 1.0)
+
+
+# --- the maps of one print ------------------------------------------------------------------------------------------
+
+def _spacing(dataset, L):
+    """N-S spacing (m) of level L."""
+    return M_PER_DEG_LAT / HEIGHT0[dataset] * 2 ** L
+
+
+class _Map:
+    """One map of the print: its extent, projection and paper width, and what follows from them alone."""
+
+    def __init__(self, i, extent, crs, map_w_mm):
+        self.i, self.crs, self.map_w = i, crs, float(map_w_mm)
+        self.extent = tuple(float(v) for v in extent)
+        x0, x1, y0, y1 = self.extent
+        if not (x1 > x0 and y1 > y0 and self.map_w > 0):
+            raise ValueError("an empty map")
+        self.shape = raster_shape(self.map_w, self.extent)
+        self.sigma = max(SIGMA_MIN_M, SIGMA_PAPER_MM * (x1 - x0) / self.map_w)  # the detail smoothing
+        self.probe_grid = _grid(self.extent, max(125.0, max(x1 - x0, y1 - y0) / 400), GATE_SIGMA_M)
+        # every cell the map could need, whatever the dataset and level: fixed before any request is made
+        spacings = [M_PER_DEG_LAT / h0 * 2 ** L for h0 in HEIGHT0.values() for L in range(NOMINAL_LEVELS)]
+        self.cells = set(_cells(_lonlat_box(self.extent, crs, max(max(self.probe_pad(s), self.detail_pad(s))
+                                                                    for s in spacings))))
+
+    def detail_grid(self, spacing):
+        return _grid(self.extent, max((self.extent[1] - self.extent[0]) / self.shape[1], spacing / 2), self.sigma)
+
+    def probe_pad(self, spacing):
+        """Padding of the probe box: the outermost node, plus two pixels for the bilinear samples."""
+        return self.probe_grid.reach + 2 * spacing
+
+    def detail_pad(self, spacing):
+        """Padding of the detail box: the outermost node, the ground filter, two pixels."""
+        return self.detail_grid(spacing).reach + OPEN_M + 2 * spacing
+
+    def box(self, pad):
+        box = _lonlat_box(self.extent, self.crs, pad)
+        cells = _cells(box)
+        if not set(cells) <= self.cells:
+            raise ReliefError("a map needs a cell outside its print")
+        return box, cells
+
+
+def _dataset(cells, root):
+    """('glo30', headers) unless a land cell is missing from GLO-30 and present in GLO-90: then ('glo90', headers),
+    for every map of the print. A cell absent from both is sea (None). Network errors raise: they never switch."""
+    h30 = {c: _header("glo30", c, root) for c in cells}
+    h90 = {c: _header("glo90", c, root) for c in cells if h30[c] is None}
+    if any(h is not None for h in h90.values()):
+        return "glo90", {c: h90[c] if c in h90 else _header("glo90", c, root) for c in cells}
+    return "glo30", h30
+
+
+def _block_bytes(headers, cell, L, br, bc):
+    lv = headers[cell].levels[L]
+    return lv.counts[br * math.ceil(lv.w / lv.tw) + bc]
+
+
+def _gate(job, dataset, headers, L, root):
+    """The share of the map's land that slopes visibly, on level L (the coarsest); None when it is mostly water."""
+    g = job.probe_grid
+    box, cells = job.box(job.probe_pad(_spacing(dataset, L)))
+    mos = _mosaic(dataset, headers, cells, L, box, root)
+    raw = _sample(mos, *_nodes(job.extent, job.crs, g))
+    s = _shade(_gauss(raw, GATE_SIGMA_M, g), g.cx, g.cy)
+    inner = (slice(g.m, g.m + g.ny), slice(g.m, g.m + g.nx))
+    land = np.abs(raw[inner]) > LAND_EPS_M  # unsmoothed, so the sea does not bleed into the land
+    if land.mean() < LAND_MIN_FRAC:
+        return None
+    return float((np.abs(s[inner][land]) > GATE_S).mean())
+
+
+def _detail_level(job, dataset, n_levels):
+    """The coarsest level whose N-S spacing is within the map's smoothing (sigma), or 0."""
+    return max([L for L in range(n_levels) if _spacing(dataset, L) <= job.sigma] or [0])
+
+
+def _plan(job, dataset, headers, n_levels, root):
+    """(level, blocks still to download): the detail level, one level coarser while those blocks exceed
+    BUDGET_BYTES; the coarsest level is always within budget."""
+    L = _detail_level(job, dataset, n_levels)
+    while True:
+        box, cells = job.box(job.detail_pad(_spacing(dataset, L)))
+        todo = [(cell, L, br, bc) for cell, br, bc in _blocks(dataset, headers, cells, L, box)
+                if not os.path.exists(_block_path(root, dataset, cell, L, br, bc))]
+        if L == n_levels - 1 or sum(_block_bytes(headers, *b) for b in todo) <= BUDGET_BYTES:
+            return L, todo
+        L += 1
+
+
+def _detail(job, dataset, headers, L, root):
+    """The map's shade raster from level L: mosaic, ground filter, map grid, smoothing, shading, output size."""
+    g = job.detail_grid(_spacing(dataset, L))
+    box, cells = job.box(job.detail_pad(_spacing(dataset, L)))
+    mos = _ground(_mosaic(dataset, headers, cells, L, box, root))
+    z = _gauss(_sample(mos, *_nodes(job.extent, job.crs, g)), job.sigma, g)
+    s = _shade(z, g.cx, g.cy)[g.m:g.m + g.ny, g.m:g.m + g.nx]
+    H, W = job.shape
+    out = np.asarray(Image.fromarray(s.astype(np.float32)).resize((W, H), Image.Resampling.BICUBIC), np.float32)
+    return np.clip(out, -1.0, 1.0).astype(np.float32)
+
+
+def prepare_many(maps, log=print, root=None):
+    """One Relief (or None) per map of a print. maps: [(extent, crs, map_w_mm)]; nothing else about the print
+    (tracks, zones, activities) reaches this function. Any network or decoding failure means no relief anywhere on
+    the print and one log line; a map that is too large, flat or mostly water gets None and its own line."""
+    log("[relief] terrain from the Copernicus elevation model (Amazon S3; only the 1-degree cells around the map are "
+        "requested)")
+    out = [None] * len(maps)
+
+    def say(i, text):
+        log(f"[relief] {f'map {i + 1}: ' if len(maps) > 1 else ''}{text}")
+
+    try:
+        root = root or os.path.join(area.cache_root(), "dem")
+        jobs = []
+        for i, (extent, crs, map_w_mm) in enumerate(maps):
+            job = _Map(i, extent, crs, map_w_mm)
+            if len(job.cells) > MAX_CELLS:
+                say(i, "area too large for relief: drawn without it")
+            else:
+                jobs.append(job)
+        if not jobs:
+            return out
+        dataset, headers = _dataset(sorted(set().union(*(j.cells for j in jobs))), root)
+        present = [h for h in headers.values() if h is not None]
+        if not present:
+            log("[relief] only sea here: no relief")
+            return out
+        if len({len(h.levels) for h in present}) != 1:
+            raise ReliefError("cells with different levels")
+        n_levels = len(present[0].levels)
+        passed = []
+        for job in jobs:  # the probe: the coarsest level only; detail blocks are requested after it passes
+            share = _gate(job, dataset, headers, n_levels - 1, root)
+            if share is None:
+                say(job.i, "mostly water here: no relief")
+            elif share < GATE_SHARE:
+                say(job.i, "flat here: no relief")
+            else:
+                passed.append((job, share))
+        plans = [(job, share) + _plan(job, dataset, headers, n_levels, root) for job, share in passed]
+        todo = list(dict.fromkeys(b for *_, blocks in plans for b in blocks))
+        if todo:
+            size = sum(_block_bytes(headers, *b) for b in todo)
+            log(f"[relief] downloading {len(todo)} blocks, {size / 2 ** 20:.1f} MB (one time, cached)")
+        for job, share, L, _ in plans:
+            out[job.i] = Relief(_detail(job, dataset, headers, L, root), dataset, L, share)
+    except (ReliefError, OSError, zlib.error, ValueError) as ex:
+        log(f"[relief] skipped ({type(ex).__name__}): the poster is drawn without relief; run the same command again "
+            f"later to add it")
+        return [None] * len(maps)
+    return out
