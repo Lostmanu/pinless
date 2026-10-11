@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import math
 import os
 import re
 import sys
@@ -92,6 +93,9 @@ def main(argv=None):
     if a.bbox is not None and not _bbox_ok(a.bbox):
         p.error("--bbox needs four numbers south,west,north,east in degrees, with south below north and west below "
                 "east")
+    if not all(_zone_ok(z) for z in a.zone):
+        p.error("--zone needs LAT,LON,RADIUS_M: the latitude first (-90 to 90), then the longitude (-180 to 180), then "
+                "a radius in metres above 0")
     styles = {"classic": render.STYLES, "sport": render_sport.STYLES, "editorial": render_editorial.STYLES,
               "atlas": render_editorial.STYLES, "race": render_editorial.STYLES}
     if a.style and a.style not in styles[a.layout]:
@@ -165,6 +169,14 @@ def main(argv=None):
         total_m += float(np.hypot(*np.diff(xy, axis=0).T).sum())
         tracks.append((x.id, xy))
     user_zones = frame.user_zones(a, tr)
+    if a.layout == "editorial":
+        aspect = render_editorial.map_aspect(a.size, a.graphs)
+    else:
+        aspect = 1 / 1.22 if a.layout == "classic" else (render.SIZES[a.size][0] - 28 * render.SIZES[a.size][0] / 297) / (268 * render.SIZES[a.size][0] / 297)
+    off = frame.zone_off_map(user_zones, render.fit_extent((s, w, n, e), crs, aspect))
+    if off:
+        print(frame.ZONE_OFF_MAP.format(k=off))
+        return 2
     # privacy per activity, keeping activity ids for the heat (each activity counts once per pixel)
     pieces_all = []
     try:
@@ -175,10 +187,6 @@ def main(argv=None):
     pieces_all = pieces  # (activity_index, LineString): each activity counts once per pixel in the heat
     print(f"[privacy] zones suggested {prep.zones_suggested} · user zones {prep.zones_user} · "
           f"km in {prep.km_in:.0f} -> out {prep.km_out:.0f} · leak check {prep.leak_check}")
-    if a.layout == "editorial":
-        aspect = render_editorial.map_aspect(a.size, a.graphs)
-    else:
-        aspect = 1 / 1.22 if a.layout == "classic" else (render.SIZES[a.size][0] - 28 * render.SIZES[a.size][0] / 297) / (268 * render.SIZES[a.size][0] / 297)
     extent = frame.extent_for(pieces, (s, w, n, e), crs, aspect, a.fit)
     try:
         basemap = frame.basemap_for(extent, crs, a, print)
@@ -221,6 +229,16 @@ def _bbox_ok(text):
     except ValueError:
         return False
     return -90 <= s < n <= 90 and -180 <= w < e <= 180
+
+
+def _zone_ok(text):
+    """--zone: three finite numbers LAT,LON,RADIUS_M, the latitude within -90 to 90, the longitude within -180 to 180
+    and the radius above 0 metres."""
+    try:
+        la, lo, r = (float(v) for v in text.split(","))
+    except ValueError:
+        return False
+    return -90 <= la <= 90 and -180 <= lo <= 180 and 0 < r < math.inf
 
 
 def _select(acts, type_, year):

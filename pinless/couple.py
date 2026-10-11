@@ -102,6 +102,11 @@ def run(acts_a, acts_b, sel_a, sel_b, a, log=print):
 
     ta, tb = [project(x) for x in sel_a], [project(x) for x in sel_b]
     user = frame.user_zones(a, tr)
+    aspect = render_editorial.map_aspect(a.size, False)
+    off = frame.zone_off_map(user, render.fit_extent(bbox, crs, aspect))
+    if off:  # a --zone that misses the map hides nothing on it: never a silent 'user zones 1'
+        log(frame.ZONE_OFF_MAP.format(k=off))
+        return 2
     # a file in both exports is drawn for each person but is nobody's own run when it comes to how often a place must
     # be a start or an end: copies of the other's runs would raise a person's threshold and unhide a single loop
     copies, _ = same_activities(sel_a, sel_b)
@@ -128,7 +133,6 @@ def run(acts_a, acts_b, sel_a, sel_b, a, log=print):
         whose = " and ".join(f"{m}'s" for m in missing)
         log(f"[together] no clock in {whose} activities: runs together not counted")
 
-    aspect = render_editorial.map_aspect(a.size, False)
     extent = frame.extent_for(pieces, bbox, crs, aspect, a.fit)
     clipped = privacy.clip_to_extent(pieces, extent)
     for o, name in enumerate((na, nb)):  # before any request: a poster never silently shows only one of the two

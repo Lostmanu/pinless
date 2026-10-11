@@ -143,7 +143,7 @@ Stray GPS fixes at the start or end of a file (a watch that opens with yesterday
 | `--style huella\|carbon\|midnight\|...`, `--size A4\|A3\|50x70` | One of twelve styles; paper |
 | `--lang en\|es` | Labels in English or Spanish |
 | `--out`, `--pdf`, `--svg`, `--preview` | Outputs |
-| `--zone LAT,LON,R` | Extra private zone (with `--with`, it hides both people's lines) |
+| `--zone LAT,LON,R` | Extra private zone, latitude first, radius in metres (with `--with`, it hides both people's lines). On a single map, a zone that does not touch the map stops the export: it would hide nothing |
 | `--with EXPORT`, `--with-name NAME` | A second person's export and name: one poster for two, one ink each |
 | `--with-type Run` | Activity type in the second export, when it names the sport differently (default: `--type`) |
 

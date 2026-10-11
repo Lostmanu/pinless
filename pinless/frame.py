@@ -3,6 +3,7 @@ the headline and the year label. Only the area's bounding box goes out (OpenStre
 about 1 km for the city name, as in cli.main."""
 from __future__ import annotations
 
+import math
 import os
 
 import numpy as np
@@ -51,6 +52,22 @@ def user_zones(a, tr):
         zx, zy = tr.transform(lo, la)
         out.append((zx, zy, r))
     return out
+
+
+ZONE_OFF_MAP = ("--zone number {k} does not touch this map: check it is LAT,LON,RADIUS_M with the latitude first, and "
+                "that the place is in this area")
+
+
+def zone_off_map(zones_xy, extent):
+    """The number (from 1) of the first --zone whose circle does not reach the map extent, or None. Such a zone hides
+    nothing: given with the latitude and the longitude swapped, it would leave on the poster the very place it was
+    meant to hide while the log said 'user zones 1', so the callers refuse it."""
+    x0, x1, y0, y1 = extent
+    for k, (x, y, r) in enumerate(zones_xy, 1):
+        gap = math.hypot(max(x0 - x, 0.0, x - x1), max(y0 - y, 0.0, y - y1))
+        if not gap <= r:  # also a point the projection cannot place (inf or nan)
+            return k
+    return None
 
 
 def extent_for(pieces, bbox, crs, aspect, fit):

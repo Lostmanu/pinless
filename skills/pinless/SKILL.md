@@ -37,6 +37,8 @@ description: Make a print-ready poster of a runner's year from their Strava expo
    Never run it again with a smaller `--trim` or `--zone-radius`. With `--with`, a STOP or a refusal that names the
    second person refers to the second export (for example: nothing of theirs inside the map, or nothing left after
    the privacy cuts): suggest `--place "<City, Country>"` for a city both ran in, never weaker privacy.
+   If it says a `--zone` does not touch the map, ask the user to check that zone (latitude first, then longitude);
+   never drop it to get a poster.
    For `--layout race`, a STOP that says the run starts or ends at a private place means it began at home or work:
    suggest another run. Add `--allow-private-ends` only if the user asks for that run anyway, and tell them the print
    will show only a stretch well clear of that place and describe only that stretch. If the log says the run is a

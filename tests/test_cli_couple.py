@@ -84,6 +84,14 @@ def _never(*a, **k):
     (BASE + ["--bbox", "40.48,-3.78,40.36,-3.62"], "--bbox needs four numbers"),
     (["a.zip", "--bbox", "40.36,-3.78,40.48"], "--bbox needs four numbers"),
     (["a.zip", "--bbox", "40.36,-3.78,40.48,nan"], "--bbox needs four numbers"),
+    (BASE + ["--zone", "40.41,-3.69,nan"], "--zone needs LAT,LON,RADIUS_M"),
+    (BASE + ["--zone", "nan,nan,400"], "--zone needs LAT,LON,RADIUS_M"),
+    (["a.zip", "--zone", "40.41,-3.69,400", "--zone", "40.41,-3.69"], "--zone needs LAT,LON,RADIUS_M"),
+    (["a.zip", "--zone", "40.41,-183.69,400"], "--zone needs LAT,LON,RADIUS_M"),
+    (["a.zip", "--zone", "-93.70,40.41,400"], "--zone needs LAT,LON,RADIUS_M"),
+    (["a.zip", "--zone", "40.41,-3.69,0"], "--zone needs LAT,LON,RADIUS_M"),
+    (["a.zip", "--layout", "atlas", "--zone", "40.41,-3.69,inf"], "--zone needs LAT,LON,RADIUS_M"),
+    (["a.zip", "--layout", "race", "--zone", "40.41,-3.69,-50"], "--zone needs LAT,LON,RADIUS_M"),
 ])
 def test_cli_couple_flags_are_checked(argv, message, monkeypatch, tmp_path, capsys):
     same = tmp_path / "export.zip"
@@ -320,6 +328,30 @@ def test_a_zone_given_with_with_hides_both_people_s_lines(monkeypatch, tmp_path,
     assert "[together] no clock in Lucía's and Marcos's activities" in out
     assert seen["year"] == "2024–2025", "the year label spans both people's runs"
     assert f"{lat:.3f}" not in out and f"{lon:.3f}" not in out
+
+
+def test_a_zone_that_misses_the_map_is_refused_before_any_request(monkeypatch, tmp_path, capsys):
+    """A --zone given as LON,LAT (Madrid's -3.70,40.42 read as a point off Somalia), or anywhere off the map, hides
+    nothing on it: the poster would show the place it was meant to hide while the log said 'user zones 1'. It is
+    refused before anything is cut, fetched or written, on the poster for two and on the single poster, and the
+    message names the zone by its number, never by its coordinates."""
+    p = (800.0, 900.0)  # a friend's door both people run past
+    acts_a = madrid_runs() + _acts([through(p), through(p, 0.6)], 900)
+    acts_b = _partner() + _acts([through(p, 1.0)], 1900, hour=18)
+    (lon, lat), = _lonlat([p])
+    right, swapped = f"{lat:.5f},{lon:.5f},400", f"{lon:.5f},{lat:.5f},400"
+    for argv in (BASE, ["a.zip"]):
+        for zones, k in (([swapped], 1), ([right, swapped], 2), ([right, "40.42,-3.10,400"], 2)):
+            _by_path(monkeypatch, {"a.zip": acts_a, "b.zip": acts_b})
+            monkeypatch.setattr(area, "fetch_basemap", _never)
+            monkeypatch.setattr(area, "city_name", _never)
+            monkeypatch.setattr(privacy, "apply", _never)
+            extra = [x for z in zones for x in ("--zone", z)]
+            assert cli.main(argv + ["--bbox", BOX, *extra, "--pdf", str(tmp_path / "p.pdf"),
+                                    "--out", str(tmp_path / "p.png")]) == 2, (argv, zones)
+            out = capsys.readouterr().out
+            assert f"--zone number {k} does not touch this map" in out and "latitude first" in out
+            assert not re.search(r"\d\.\d{3}", out) and not list(tmp_path.iterdir())
 
 
 def test_a_person_with_nothing_left_on_the_map_stops_the_export_before_any_request(monkeypatch, tmp_path, capsys):
