@@ -17,7 +17,7 @@ import numpy as np
 from pyproj import Transformer
 from shapely.geometry import LineString, box
 
-from . import area, atlas, colouring, ingest, privacy, race, render, render_sport, render_editorial, stats
+from . import atlas, colouring, frame, ingest, privacy, race, render, render_sport, render_editorial, stats
 from .localtime import local_start
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -116,14 +116,7 @@ def main(argv=None):
         code = race.run(sel, [x for x in acts if x.type.lower() == a.type.lower()], a)
         print(f"[done] {time.time() - t0:.0f}s")
         return code
-    if a.bbox:
-        s, w, n, e = map(float, a.bbox.split(","))
-    elif a.place:
-        s, w, n, e = area.geocode_bbox(a.place)
-        print(f"[area] {a.place}")
-    else:
-        s, w, n, e = area.auto_bbox(sel)
-        print("[area] found where you run most")
+    s, w, n, e = frame.area_box(sel, a, print)
     area_ll = box(w, s, e, n)
     sel = [x for x in sel if LineString(x.lonlat).intersects(area_ll)]
     if not sel:
@@ -139,11 +132,7 @@ def main(argv=None):
         xy = np.column_stack([xs, ys])
         total_m += float(np.hypot(*np.diff(xy, axis=0).T).sum())
         tracks.append((x.id, xy))
-    user_zones = []
-    for z in a.zone:
-        la, lo, r = map(float, z.split(","))
-        zx, zy = tr.transform(lo, la)
-        user_zones.append((zx, zy, r))
+    user_zones = frame.user_zones(a, tr)
     # privacy per activity, keeping activity ids for the heat (each activity counts once per pixel)
     pieces_all = []
     try:
@@ -158,33 +147,14 @@ def main(argv=None):
         aspect = render_editorial.map_aspect(a.size, a.graphs)
     else:
         aspect = 1 / 1.22 if a.layout == "classic" else (render.SIZES[a.size][0] - 28 * render.SIZES[a.size][0] / 297) / (268 * render.SIZES[a.size][0] / 297)
-    if a.fit and pieces:
-        pts = np.concatenate([np.asarray(pc.coords) for _, pc in pieces])
-        lo, hi = np.percentile(pts, 0.7, axis=0), np.percentile(pts, 99.3, axis=0)
-        pad = 0.07 * max(hi - lo)
-        inv = Transformer.from_crs(crs, 4326, always_xy=True)
-        (w2, e2), (s2, n2) = inv.transform([lo[0] - pad, hi[0] + pad], [lo[1] - pad, hi[1] + pad])
-        extent = render.fit_extent((max(s, s2), max(w, w2), min(n, n2), min(e, e2)), crs, aspect)
-    else:
-        extent = render.fit_extent((s, w, n, e), crs, aspect)
-    exp_ll = Transformer.from_crs(crs, 4326, always_xy=True).transform([extent[0], extent[1]], [extent[2], extent[3]])
-    big = (min(exp_ll[1]) - 0.01, min(exp_ll[0]) - 0.01, max(exp_ll[1]) + 0.01, max(exp_ll[0]) + 0.01)
-    if a.cache:
-        folder = os.path.join(ROOT, "cache", a.cache)
-    else:
-        try:
-            folder = area.fetch_basemap(big)
-        except RuntimeError as ex:  # every OpenStreetMap server busy
-            print(f"[osm] STOP: {ex}. Run the same command again later.")
-            return 4
-    basemap = render.load_basemap(folder, big, crs)
-    if not a.title:
-        a.title = (a.place.split(",")[0] if a.place else area.city_name((s + n) / 2, (w + e) / 2, lang=a.lang))
-        if a.title:
-            print(f"[area] headline: {a.title}")
-    years = sorted({t.year for x in sel if (t := local_start(x))})
-    span = f"{years[0]}–{years[-1]}" if len(years) > 1 else (str(years[0]) if years else "")  # one year: "2025"
-    stats_ = {"n": len(sel), "km": total_m / 1000, "year_label": str(a.year) if a.year else span}
+    extent = frame.extent_for(pieces, (s, w, n, e), crs, aspect, a.fit)
+    try:
+        basemap = frame.basemap_for(extent, crs, a, print)
+    except RuntimeError as ex:  # every OpenStreetMap server busy
+        print(f"[osm] STOP: {ex}. Run the same command again later.")
+        return 4
+    frame.headline(a, (s, w, n, e), print)
+    stats_ = {"n": len(sel), "km": total_m / 1000, "year_label": frame.year_label(sel, a)}
     if a.layout in ("sport", "editorial"):
         st_ = stats.compute(sel, [t for _, t in tracks], basemap[0],
                             private_pieces_xy=[np.asarray(pc.coords) for _, pc in pieces],
