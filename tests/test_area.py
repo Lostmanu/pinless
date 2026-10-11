@@ -215,3 +215,23 @@ def test_the_city_lookup_sends_its_point_rounded_to_about_a_kilometre(monkeypatc
     assert area.city_name(40.41629, -3.69729) == "Madrid"
     assert len(sent) == 1 and "lat=40.42&lon=-3.70&" in sent[0], "rounded to 0.01 degrees"
     assert "4162" not in sent[0] and "6972" not in sent[0]
+
+
+def test_the_area_for_two_keeps_the_partner_who_records_fewer_points():
+    """The box is the 1st to 99th percentile of each person's own points near the winner, joined: pooled, a partner
+    whose watch records ten times fewer points is about 2 % of them and a third of their runs fell outside."""
+    lat, lon = 40.42, -3.70
+    dlon = 4.5 / (111.32 * np.cos(np.radians(lat)))  # 4.5 km east
+
+    def loops(n, r_km, pts, east=0.0):
+        r = r_km / 111.32
+        return [Activity(id=f"{east}{i}", type="Run", start=dt.datetime(2025, 1, 1),
+                         lonlat=_loop(lat + r * np.sin(0.3 * i), lon + east + r * np.cos(0.3 * i), r, n=pts),
+                         source="x") for i in range(n)]
+
+    a, b = loops(200, 1.5, 1000), loops(40, 1.0, 100, east=dlon)
+    s, w, n, e = area.auto_bbox(a + b, groups=[0] * len(a) + [1] * len(b))
+    for acts in (a, b):
+        pts = np.concatenate([np.asarray(x.lonlat) for x in acts])
+        inside = (pts[:, 0] >= w) & (pts[:, 0] <= e) & (pts[:, 1] >= s) & (pts[:, 1] <= n)
+        assert inside.mean() >= 0.99, inside.mean()

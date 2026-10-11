@@ -32,7 +32,8 @@ def auto_bbox(activities, radius_km=7.0, cell_km=1.0, q=(1.0, 99.0), pad_frac=0.
 
     groups (one label per activity, e.g. 0 and 1 for two people): the area where EVERY group runs. Each group's score
     is divided by its best score, and a centre scores the smallest of those shares, so a place only one person runs
-    cannot win. Raises ValueError when no area has runs of every group."""
+    cannot win. The box holds the 1st to 99th percentile of each group's own points near the winner, so a person
+    whose watch records fewer points is not cut. Raises ValueError when no area has runs of every group."""
     if groups is not None:
         return _auto_bbox_groups(activities, groups, radius_km, cell_km, q, pad_frac, max_candidates)
     tracks = [np.asarray(a.lonlat) for a in activities if len(a.lonlat) > 1]
@@ -97,10 +98,22 @@ def _auto_bbox_groups(activities, groups, radius_km, cell_km, q, pad_frac, max_c
         raise ValueError("no area where every group runs")
     cx, cy = candidates[best]
     clon, clat = (cx + 0.5) * cell_km / kx, (cy + 0.5) * cell_km / ky
-    d = np.hypot((pts[:, 0] - clon) * kx, (pts[:, 1] - clat) * ky)
-    near = pts[d <= radius_km]
-    lo = np.percentile(near, q[0], axis=0)
-    hi = np.percentile(near, q[1], axis=0)
+    # the percentiles of each group's own points, joined: pooled, a partner whose watch records ten times fewer
+    # points would be a small share of them, and the 99th percentile would cut through their runs
+    lows, highs = [], []
+    for g in labels:
+        own = np.concatenate([t for t, h in labelled if h == g])
+        if len(own) > 400_000:
+            own = own[:: len(own) // 400_000 + 1]
+        d = np.hypot((own[:, 0] - clon) * kx, (own[:, 1] - clat) * ky)
+        # a group whose cells in the neighbourhood lie just beyond radius_km still has its points within one more cell
+        near = own[d <= radius_km] if (d <= radius_km).any() else own[d <= radius_km + 2 * cell_km]
+        if len(near):
+            lows.append(np.percentile(near, q[0], axis=0))
+            highs.append(np.percentile(near, q[1], axis=0))
+    if not lows:
+        raise ValueError("no area where every group runs")
+    lo, hi = np.min(lows, axis=0), np.max(highs, axis=0)
     pad_lon, pad_lat = (hi - lo) * pad_frac
     return (float(lo[1] - pad_lat), float(lo[0] - pad_lon), float(hi[1] + pad_lat), float(hi[0] + pad_lon))
 
