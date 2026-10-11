@@ -545,3 +545,248 @@ def test_a_sample_outside_the_elevation_data_raises_instead_of_clamping():
     for lon, lat in ((-3.01, 40.9), (-2.69, 40.9), (-2.9, 41.01), (-2.9, 40.69)):
         with pytest.raises(relief.ReliefError):
             relief._sample(mos, np.array([lon]), np.array([lat]))
+
+
+# --- drawing ----------------------------------------------------------------------------------------------------------
+
+def _lstar(hex_or_rgb):
+    """CIE L*, written again here so the test does not trust the code it checks."""
+    from matplotlib.colors import to_rgb
+    c = np.asarray(to_rgb(hex_or_rgb) if isinstance(hex_or_rgb, str) else hex_or_rgb, dtype=float)
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    y = float(lin @ [0.2126, 0.7152, 0.0722])
+    return 116 * (y ** (1 / 3) if y > 216 / 24389 else (24389 / 27 * y + 16) / 116) - 16
+
+
+def test_every_style_relief_stays_quieter_than_its_routes():
+    from matplotlib.colors import to_rgb
+    from pinless.render_editorial import STYLES, relief_colours
+    assert len(STYLES) == 12
+    for name, S in STYLES.items():
+        bg = np.asarray(to_rgb(S["bg"]))
+        lb = _lstar(bg)
+        route = abs(lb - _lstar(S["heat"][0]))
+        if lb >= 50:
+            t_shadow, t_light = min(7, 0.30 * route), min(2.5, 0.15 * route)
+        else:
+            t_shadow, t_light = min(5, 0.5 * lb, 0.30 * route), min(6, 0.30 * route)
+        (shadow, a_s), (light, a_l) = relief_colours(S)
+        d_s = abs(_lstar((1 - a_s) * bg + a_s * np.asarray(shadow)) - lb)
+        d_l = abs(_lstar((1 - a_l) * bg + a_l * np.asarray(light)) - lb)
+        assert d_s <= t_shadow + 1e-9 and d_l <= t_light + 1e-9, f"{name}: louder than the rule"
+        assert max(d_s, d_l) >= 1, f"{name}: the relief would not show"
+        assert a_s <= 0.35 and a_l <= 0.60, name
+        assert _lstar(shadow) < lb < _lstar(light), f"{name}: shadows darken, lights lighten"
+
+
+def _synthetic_relief(shape, dataset="glo30"):
+    H, W = shape
+    yy, xx = np.mgrid[0:H, 0:W]
+    shade = np.clip(np.sin(xx / 37.0) * np.cos(yy / 29.0) * 1.2, -1, 1).astype(np.float32)
+    return relief.Relief(shade, dataset, 0, 0.5)
+
+
+def _empty():
+    import geopandas as gpd
+    return gpd.GeoDataFrame({"highway": [], "name": []}, geometry=[])
+
+
+STATS = {"km": 12.0, "n": 2, "hours": 1.0, "best5k_s": 1500, "best10k_s": 3100, "longest_km": 10.0, "streets": 7}
+
+
+def _editorial_extent(size="A4"):
+    from pinless import render_editorial
+    aspect = render_editorial.map_aspect(size)
+    return (0.0, 12000.0, 0.0, 12000.0 / aspect), render.SIZES[size][0] * (1 - 36 / 297)
+
+
+def test_pdf_and_svg_hold_one_relief_image_the_size_of_the_map(tmp_path):
+    import base64
+    import re
+    from shapely.geometry import LineString
+    from pinless import render_editorial
+    extent, map_w = _editorial_extent("A4")
+    shape = relief.raster_shape(map_w, extent)
+    assert shape == (927, 1090)
+    pieces = [(0, LineString([(1000, 1000), (11000, 9000)]))]
+    for with_relief in (True, False):
+        pdf, svg = tmp_path / f"p{with_relief}.pdf", tmp_path / f"p{with_relief}.svg"
+        info = render_editorial.render(pieces, (_empty(), _empty(), _empty()), extent, STATS,
+                                       str(tmp_path / "p.png"), size="A4", dpi=30, city="X", year="2025",
+                                       pdf_path=str(pdf), svg_path=str(svg),
+                                       relief=_synthetic_relief(shape) if with_relief else None)
+        assert info["relief"] is with_relief
+        objects = re.split(rb"\d+ 0 obj", pdf.read_bytes())
+        images = [o for o in objects if b"/Subtype /Image" in o]
+        text = svg.read_text(encoding="utf-8")
+        tags = re.findall(r"<image [^>]*>", text)
+        if not with_relief:
+            assert not images and not tags, "no relief: no image at all"
+            continue
+        assert len(images) == 2, "the image and its soft mask"
+        for o in images:
+            w, h = int(re.search(rb"/Width (\d+)", o).group(1)), int(re.search(rb"/Height (\d+)", o).group(1))
+            assert (h, w) == shape
+        assert len(tags) == 1
+        data = re.search(r'data:image/png;base64,([^"]+)"', tags[0]).group(1)
+        with Image.open(io.BytesIO(base64.b64decode(data))) as im:
+            assert im.size[::-1] == shape, "the SVG embeds the array as it is"
+    with pytest.raises(ValueError):
+        render_editorial.render(pieces, (_empty(), _empty(), _empty()), extent, STATS, str(tmp_path / "x.png"),
+                                size="A4", dpi=20, relief=_synthetic_relief((shape[0] + 1, shape[1])))
+
+
+def test_flat_relief_is_transparent():
+    from pinless.render_editorial import STYLES, relief_colours, relief_rgba
+    rgba = relief_rgba(np.zeros((5, 7), np.float32), relief_colours(STYLES["huella"]))
+    assert rgba.shape == (5, 7, 4) and rgba.dtype == np.uint8 and not rgba[..., 3].any()
+    strong = relief_rgba(np.array([[-1.0, -0.3, 0.3, 1.0]], np.float32), relief_colours(STYLES["huella"]))
+    (_, a_s), (_, a_l) = relief_colours(STYLES["huella"])
+    assert strong[0, :, 3].tolist() == [round(255 * a_s), round(255 * a_s * 0.5), round(255 * a_l * 0.5),
+                                        round(255 * a_l)]
+
+
+def test_water_stays_flat_and_relief_sits_between_streets_and_routes(monkeypatch, tmp_path):
+    import geopandas as gpd
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import to_rgb
+    from shapely.geometry import LineString, Polygon
+    from pinless import render_editorial
+    extent, map_w = _editorial_extent("A4")
+    shape = relief.raster_shape(map_w, extent)
+    rel = relief.Relief(np.full(shape, -0.9, np.float32), "glo30", 0, 0.5)  # steep everywhere
+    lake = Polygon([(4000, 3000), (8000, 3000), (8000, 7000), (4000, 7000)])
+    water = gpd.GeoDataFrame({"natural": ["water"]}, geometry=[lake])
+    streets = gpd.GeoDataFrame({"highway": ["primary"]}, geometry=[LineString([(0, 500), (12000, 600)])])
+    figs, real_close = [], plt.close
+    monkeypatch.setattr(plt, "close", lambda fig: figs.append(fig))
+    out = tmp_path / "w.png"
+    S = render_editorial.STYLES["huella"]
+    render_editorial.render([(0, LineString([(500, 9000), (11500, 9500)]))], (streets, _empty(), water), extent,
+                            STATS, str(out), size="A4", dpi=60, city="X", year="2025", relief=rel)
+    fig = figs[0]
+    ax = next(a for a in fig.axes if a.images)
+    (im,) = ax.images
+    assert im.get_zorder() == 3.5
+    zs = sorted({p.get_zorder() for p in ax.patches})
+    assert 3 in zs and 5 in zs and max(z for z in zs if z < 3.5) == 3 and min(z for z in zs if z > 3.5) >= 4.8
+    real_close(fig)
+    with Image.open(out) as img:
+        px = np.asarray(img.convert("RGB"))
+    # the map box on the page, at 60 dpi
+    k = 210 / 297
+    to_px = lambda mm: mm / 25.4 * 60
+    x_mm = 18 * k + (6000 - extent[0]) / (extent[1] - extent[0]) * map_w
+    y_mm = 94 * k + (extent[3] - 5000) / (extent[3] - extent[2]) * 222 * k
+    centre = px[int(round(to_px(y_mm))), int(round(to_px(x_mm)))]
+    assert tuple(centre) == tuple(round(c * 255) for c in to_rgb(S["water"])), "the water stays flat"
+    x_mm = 18 * k + (1500 - extent[0]) / (extent[1] - extent[0]) * map_w
+    y_mm = 94 * k + (extent[3] - 5000) / (extent[3] - extent[2]) * 222 * k
+    slope = px[int(round(to_px(y_mm))), int(round(to_px(x_mm)))]
+    assert tuple(slope) != tuple(round(c * 255) for c in to_rgb(S["bg"])), "the slope is shaded"
+
+
+def _footer_spy(monkeypatch):
+    from pinless import atlas, render_editorial, render_race
+    boxes = []
+    real = render_editorial.place_text
+
+    def spy(value, x, y, k, pt=9, font=None, align="left", max_w=None, height=None, clear=None):
+        out = real(value, x, y, k, pt, font, align, max_w, height, clear)
+        w, h = out[2], out[3]
+        x0 = x - (w if align == "right" else w / 2 if align == "center" else 0)
+        boxes.append((str(value), x0, y, x0 + w, y + h))
+        return out
+
+    for mod in (render_editorial, atlas, render_race):
+        monkeypatch.setattr(mod, "place_text", spy)
+    return boxes
+
+
+def _check_footer(boxes, legend_y, osm_y, dataset, lang, more_note=None, mode="heat"):
+    foot = [b for b in boxes if b[2] >= 395]
+    osm = [b for b in foot if b[0].startswith("© OpenStreetMap")]
+    notices = [b for b in foot if "Copernicus" in b[0]]
+    assert len(osm) == 1
+    if dataset is None:
+        assert not notices and osm[0][2] == osm_y, "no relief: the footer of today"
+    else:
+        assert [b[0] for b in notices] == [relief.notice(dataset, lang)], "the notice exactly once"
+        assert osm[0][2] == pytest.approx(osm_y - 3.4) and notices[0][2] == osm_y
+    band = ("legend line", 217.0, legend_y + 0.4, 278.5 if mode == "month" else 268.0, legend_y + 1.6)
+    for i, a in enumerate(foot + [band]):
+        for b in foot[i + 1:]:
+            overlap = a[1] < b[3] and b[1] < a[3] and a[2] < b[4] and b[2] < a[4]
+            assert not overlap, f"{a[0][:30]!r} overlaps {b[0][:30]!r}"
+    if more_note and notices:
+        note = next(b for b in foot if b[0].startswith("+") and len(b[0]) > 1)  # not the legend's own +
+        assert notices[0][3] < note[1], "the notice ends left of the +N note"
+    assert all(b[4] <= 416 for b in foot), "the bottom margin of today"
+
+
+def _acts_for_colours():
+    import datetime as dt
+    from pinless.ingest import Activity
+    return [Activity(id=str(i), type="Run", start=dt.datetime(2025, 3 + i, 1, 8, tzinfo=dt.timezone.utc),
+                     lonlat=[(-3.70, 40.41)] * 2, source="x", times=[0, 600], ele=[600, 650]) for i in range(2)]
+
+
+FOOTER_CASES = [  # (lang, dataset, editorial legends, race legends); es + GLO-90 is the widest notice
+    ("en", None, ("heat",), ("pace",)), ("es", None, ("month",), ("elevation",)),
+    ("en", "glo30", ("pace",), ("pace",)), ("es", "glo30", ("month",), ("elevation",)),
+    ("es", "glo90", ("heat", "month", "pace"), ("pace", "elevation")), ("en", "glo90", ("month",), ("elevation",))]
+
+
+@pytest.mark.parametrize("lang,dataset,ed_modes,race_modes", FOOTER_CASES)
+def test_footer_credits_fit_and_appear_only_with_relief(monkeypatch, tmp_path, lang, dataset, ed_modes, race_modes):
+    import datetime as dt
+    from shapely.geometry import LineString
+    from pinless import atlas, render_editorial, render_race
+    from matplotlib.figure import Figure
+    from pinless.ingest import Activity
+    boxes = _footer_spy(monkeypatch)
+    monkeypatch.setattr(Figure, "savefig", lambda self, *a, **k: None)  # the boxes are all placed before saving
+    extent, map_w = _editorial_extent("A4")
+    rel = _synthetic_relief(relief.raster_shape(map_w, extent), dataset) if dataset else None
+    pieces = [(0, LineString([(1000, 1000), (11000, 9000)])), (1, LineString([(1000, 9000), (11000, 1000)]))]
+    tracks = [np.array([[1000, 1000], [11000, 9000]]), np.array([[1000, 9000], [11000, 1000]])]
+    for mode in ed_modes:
+        boxes.clear()
+        render_editorial.render(pieces, (_empty(), _empty(), _empty()), extent, STATS, str(tmp_path / "e.png"),
+                                size="A4", dpi=10, city="X", year="2025", lang=lang, color_by=mode,
+                                activities=_acts_for_colours(), tracks_xy=tracks, relief=rel)
+        _check_footer(boxes, 399, 409, dataset, lang, mode=mode)
+    # the race print, pace and elevation legends
+    xy = np.column_stack([np.linspace(0, 5000, 501), 800 * np.sin(np.linspace(0, 3, 501))])
+    act = Activity(id="r", type="Run", start=dt.datetime(2025, 4, 6, 7, tzinfo=dt.timezone.utc),
+                   lonlat=[(-3.70, 40.41)] * 501, source="x", times=list(np.linspace(0, 1500, 501)),
+                   ele=list(600 + 40 * np.sin(np.linspace(0, 6, 501))))
+    r_ext = (-500.0, 5500.0, -2500.0, -2500.0 + 6000.0 / render_race.map_aspect("A4"))
+    r_rel = _synthetic_relief(relief.raster_shape(map_w, r_ext), dataset) if dataset else None
+    for mode in race_modes:
+        boxes.clear()
+        render_race.render(act, xy, [(0, LineString(xy[30:-30]))], (_empty(), _empty(), _empty()), r_ext,
+                           str(tmp_path / "r.png"), size="A4", dpi=10, title="T", city="Madrid", date=act.start,
+                           color_by=mode, lang=lang, relief=r_rel)
+        _check_footer(boxes, 404, 412, dataset, lang, mode=mode)
+    # the atlas, with the +N note
+    acts = [Activity(id=str(i), type="Run", start=dt.datetime(2025, 1 + i % 12, 3, 8),
+                     lonlat=[(lon + 0.01 * np.cos(t), 40.41 + 0.01 * np.sin(t)) for t in np.linspace(0, 6.28, 60)],
+                     source="x") for i, lon in enumerate([-3.70] * 4 + [2.35] * 2)]
+    cities = atlas.group_by_city(acts)
+    from pyproj import Transformer as _T
+    for c in cities:
+        c.crs = render.utm_crs(c.lon, c.lat)
+        tr = _T.from_crs(4326, c.crs, always_xy=True)
+        c.tracks = [np.column_stack(tr.transform(*np.asarray(a.lonlat).T)) for a in c.acts]
+        c.pieces = [(i, LineString(t)) for i, t in enumerate(c.tracks)]
+        c.name, c.country = "Somewhere", "Nowhere"
+    cells = atlas.layout(len(cities))
+    extents = [atlas.fit(c, w / h) for c, (_, _, w, h) in zip(cities, cells)]
+    k = 210 / 297
+    reliefs = [_synthetic_relief(relief.raster_shape(w * k, e), dataset) if dataset else None
+               for (_, _, w, _), e in zip(cells, extents)]
+    boxes.clear()
+    atlas.render_atlas(cities, cells, extents, [None] * len(cities), str(tmp_path / "a.png"), size="A4", dpi=10,
+                       lang=lang, more=3, reliefs=reliefs)
+    _check_footer(boxes, 404, 412, dataset, lang, more_note=True)

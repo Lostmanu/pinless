@@ -18,14 +18,16 @@ import numpy as np
 import pandas as pd
 import shapely
 from matplotlib.path import Path as MPath
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, to_rgb
 from matplotlib.font_manager import FontProperties
 from matplotlib.patches import PathPatch
 from matplotlib.textpath import TextPath
 from matplotlib.transforms import Affine2D
+from shapely.geometry import box as _box
 from shapely.geometry.polygon import orient
 
 from . import colouring, privacy
+from . import relief as _relief
 from .graphs import draw_band
 from .render import MAJOR, MINOR, MM, SIZES, _hw, heat_raster
 from .render_sport import _num
@@ -193,6 +195,99 @@ def draw_basemap(ax, basemap, extent, S, k, map_w_mm, sw=1.0):
                                    joinstyle="round", zorder=3))
 
 
+def _lstar(rgb):
+    """CIE L* of an sRGB colour (components in [0, 1])."""
+    c = np.asarray(rgb, dtype=float)
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    Y = float(lin @ [0.2126, 0.7152, 0.0722])
+    f = Y ** (1 / 3) if Y > (6 / 29) ** 3 else Y / (3 * (6 / 29) ** 2) + 4 / 29
+    return 116 * f - 16
+
+
+def _relief_alpha(bg, colour, target, cap):
+    """The alpha at which colour over bg (sRGB compositing) changes L* by target (bisection), or cap if it never
+    gets there."""
+    bg, colour = np.asarray(bg, dtype=float), np.asarray(colour, dtype=float)
+    l0 = _lstar(bg)
+
+    def d(a):
+        return abs(_lstar((1 - a) * bg + a * colour) - l0)
+
+    if d(cap) <= target:
+        return cap
+    lo, hi = 0.0, cap
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if d(mid) < target else (lo, mid)
+    return lo
+
+
+def relief_colours(S):
+    """((shadow rgb, alpha), (light rgb, alpha)) of the relief in a style, calibrated so the relief stays quieter
+    than the faintest route ink: in L*, light styles darken by at most min(7, 0.30 route) and lighten by min(2.5,
+    0.15 route); dark styles darken by min(5, 0.5 L*bg, 0.30 route) and lighten by min(6, 0.30 route), where route is
+    the L* contrast of the first route colour. S["relief"] overrides it."""
+    if "relief" in S:
+        return S["relief"]
+    bg = to_rgb(S["bg"])
+    lb = _lstar(bg)
+    route = abs(lb - _lstar(to_rgb(S["heat"][0])))
+    if lb >= 50:
+        shadow, ts, light, tl = S["ink"], min(7, 0.30 * route), "#ffffff", min(2.5, 0.15 * route)
+    else:
+        shadow, ts, light, tl = "#000000", min(5, 0.5 * lb, 0.30 * route), S["ink"], min(6, 0.30 * route)
+    return ((to_rgb(shadow), _relief_alpha(bg, to_rgb(shadow), ts, 0.35)),
+            (to_rgb(light), _relief_alpha(bg, to_rgb(light), tl, 0.60)))
+
+
+def relief_rgba(shade, colours):
+    """uint8 (H, W, 4): the shadow colour where the shade is negative, the light colour elsewhere, with alpha
+    growing with the shade up to the side's alpha at relief.FULL_AT. Flat ground (0) is fully transparent."""
+    (shadow, a_s), (light, a_l) = colours
+    s = np.asarray(shade, dtype=np.float32)
+    neg = s < 0
+    rgba = np.empty(s.shape + (4,), np.uint8)
+    rgba[..., :3] = np.where(neg[..., None], np.round(np.asarray(shadow) * 255), np.round(np.asarray(light) * 255))
+    rgba[..., 3] = np.round(255 * np.where(neg, a_s, a_l) * np.minimum(1.0, np.abs(s) / _relief.FULL_AT))
+    return rgba
+
+
+def draw_relief(ax, relief, extent, S, water, k, map_w_mm):
+    """The relief as ONE image of exactly the map box (interpolation 'none': a PDF or SVG embeds that array as it
+    is), between the streets (zorder 3) and the routes (4.8 and up), clipped off the water polygons that are drawn.
+    Returns whether anything was drawn."""
+    if relief.shade.shape != _relief.raster_shape(map_w_mm, extent):
+        raise ValueError("the relief raster does not match the map")
+    x0, x1, y0, y1 = extent
+    clip = _box(x0, y0, x1, y1)
+    if water is not None and len(water):
+        tol = (x1 - x0) / map_w_mm * PRINT_TOL_MM  # as draw_basemap: the clip follows the drawn water exactly
+        polys = [p for g in _clip_simplify(water.geometry[water.geometry.type.isin(["Polygon", "MultiPolygon"])],
+                                           extent, tol) for p in _parts(g, ("Polygon",))]
+        if polys:
+            clip = shapely.difference(clip, shapely.union_all(polys))
+    path = _poly_path(list(_parts(clip, ("Polygon",)))) if not clip.is_empty else None
+    if path is None:
+        return False
+    im = ax.imshow(relief_rgba(relief.shade, relief_colours(S)), extent=extent, origin="upper",
+                   interpolation="none", zorder=3.5)
+    im.set_clip_path(PathPatch(path, transform=ax.transData))
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
+    return True
+
+
+def footer_credits(text, S, lang, y, osm_max_w, relief_max_w, dataset=None):
+    """The credit lines at the foot of a print: OpenStreetMap at y; with relief, the Copernicus notice takes that
+    line and OpenStreetMap moves up one, so the bottom margin never changes."""
+    osm = "© OpenStreetMap contributors · ODbL · openstreetmap.org/copyright"
+    if dataset is None:
+        text(18, y, osm, pt=6.2, color=S["sub"], max_w=osm_max_w)
+        return
+    text(18, y - 3.4, osm, pt=6.2, color=S["sub"], max_w=osm_max_w)
+    text(18, y, _relief.notice(dataset, lang), pt=6.2, color=S["sub"], max_w=relief_max_w)
+
+
 def draw_routes(ax, segments, counts, cap, cmap, k, base=0.55, gain=0.42, scale=1.0, glow=0.0, values=None):
     """Routes weighted by how often they were run and coloured by `values` in [0, 1] (default: the same frequency),
     in LEVELS steps, thinnest first. Consecutive segments of a step are joined back into polylines; the geometry
@@ -345,9 +440,10 @@ def _density_segments(pieces, extent, acc, with_ids=False):
 
 def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", dpi=300,
            name="", city="", year="", lang="es", pdf_path=None, svg_path=None,
-           headline="city", preview_path=None, color_by="heat", activities=None, tracks_xy=None, graphs=False):
+           headline="city", preview_path=None, color_by="heat", activities=None, tracks_xy=None, graphs=False,
+           relief=None):
     """activities and tracks_xy (the runs the pieces come from, in the same order) are needed by colourings other
-    than heat and single."""
+    than heat and single. relief: a relief.Relief for this map (relief.prepare_many), drawn under the routes."""
     if headline not in ("city", "name"):
         raise ValueError("headline must be city or name")
     if headline == "name" and not name.strip():
@@ -399,6 +495,7 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
     ax.set_aspect("equal")
     ax.axis("off")
     draw_basemap(ax, basemap, extent, S, k, map_w)  # map_w: millimetres of paper
+    drawn = draw_relief(ax, relief, extent, S, basemap[2], k, map_w) if relief is not None else False
 
     # Fixed physical density resolution makes PDF and PNG frequencies independent
     # of export DPI. No blur is added around removed sensitive regions.
@@ -440,8 +537,7 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
     rule(392)
     text(18, 399, "CADA SALIDA DEJA HUELLA." if es else "EVERY RUN LEAVES A TRACE.", pt=6.8)
     draw_legend(page.plot, text, k, S, cmap, legend, lang, 399)
-    text(18, 409, "© OpenStreetMap contributors · ODbL · openstreetmap.org/copyright", pt=6.2,
-         color=S["sub"], max_w=238)
+    footer_credits(text, S, lang, 409, 238, 238, relief.dataset if drawn else None)
 
     # No timestamps, activity ids, source paths, sensor values or author metadata.
     fig.savefig(out_path, dpi=dpi, facecolor=S["bg"], metadata={"Software": "Pinless"})
@@ -458,4 +554,4 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
         fig.savefig(preview_path, dpi=1600 * 25.4 / hmm, facecolor=S["bg"],
                     pil_kwargs={"quality": 88, "optimize": True})
     plt.close(fig)
-    return {"W": W, "H": H, "cap": cap, "max": int(acc.max()) if acc.size else 0, "legend": legend}
+    return {"W": W, "H": H, "cap": cap, "max": int(acc.max()) if acc.size else 0, "legend": legend, "relief": drawn}

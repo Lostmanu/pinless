@@ -25,6 +25,7 @@ from . import area, colouring, privacy, render
 from .render import MM, SIZES, heat_raster
 from .render_editorial import (DISPLAY, REGULAR, STYLES, TEXT, _density_segments, draw_basemap, draw_legend,
                                draw_routes, place_text, route_colours)
+from .render_editorial import draw_relief, footer_credits
 from .localtime import local_start
 from .render_sport import _num
 
@@ -234,8 +235,9 @@ def totals(cities):
 
 def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", size="A3", dpi=300, name="", title="",
                  year="", lang="en", more=0, pdf_path=None, svg_path=None, preview_path=None, summary=None,
-                 color_by="heat"):
-    """cities: the drawn ones. summary: totals() over every city (defaults to the drawn ones); more: cities not drawn."""
+                 color_by="heat", reliefs=None):
+    """cities: the drawn ones. summary: totals() over every city (defaults to the drawn ones); more: cities not drawn.
+    reliefs: one relief.Relief or None per drawn city (relief.prepare_many), drawn under its routes."""
     S = STYLES[style]
     es = lang == "es"
     wmm, hmm = SIZES[size]
@@ -275,6 +277,7 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
     cap = max(3.0, float(np.percentile(every, 98.5)))
     values, legend, cmap = route_colours(color_by, [d[3] for d in dens], S)
 
+    any_relief, dataset = False, None
     for i, (c, (x, y, w, h), ext, bm, (acc, segments, counts, _), vals) in enumerate(
             zip(cities, cells, extents, basemaps, dens, values)):
         ax = fig.add_axes([x * k / wmm, 1 - (y + h) * k / hmm, w * k / wmm, h * k / hmm], zorder=1)
@@ -285,6 +288,9 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
         sw = min(1.0, max(0.55, math.sqrt(w / (RIGHT - LEFT))))  # thinner streets in small maps
         if bm is not None:
             draw_basemap(ax, bm, ext, S, k, w * k, sw)  # w * k: millimetres of paper
+        if reliefs and reliefs[i]:
+            any_relief |= draw_relief(ax, reliefs[i], ext, S, bm[2] if bm is not None else None, k, w * k)
+            dataset = reliefs[i].dataset
         draw_routes(ax, segments, counts, cap, cmap, k, base=0.5, scale=max(sw, 0.8), glow=S.get("glow", 0.0),
                     values=vals)
         # caption
@@ -311,7 +317,7 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
     rule(398)
     T(18, 404, "CADA SALIDA DEJA HUELLA." if es else "EVERY RUN LEAVES A TRACE.", pt=6.8)
     draw_legend(page.ax.plot, T, k, S, cmap, legend, lang, 404)
-    T(18, 412, "© OpenStreetMap contributors · ODbL · openstreetmap.org/copyright", pt=6.2, color=S["sub"], max_w=200)
+    footer_credits(T, S, lang, 412, 200, 220, dataset if any_relief else None)
     if more:
         note = (f"+{more} CIUDAD{'' if more == 1 else 'ES'} SIN MAPA" if es
                 else f"+{more} MORE {'CITY' if more == 1 else 'CITIES'} NOT DRAWN")

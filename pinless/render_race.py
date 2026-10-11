@@ -22,6 +22,7 @@ from .atlas import _Page as Page
 from .colouring import fmt_pace
 from .render import MM, SIZES
 from .render_editorial import DISPLAY, REGULAR, STYLES, _line_path, draw_basemap, draw_routes, place_text
+from .render_editorial import draw_relief, footer_credits
 from .render_sport import _num
 from .stats import fmt_time
 
@@ -115,10 +116,11 @@ def vertex_positions(coords, xy, dist, pairs):
 
 def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella", size="A3", dpi=300, title="",
            city="", name="", date=None, lang="en", color_by="pace", pdf_path=None, svg_path=None, preview_path=None,
-           times=None, ele=None, stretch=None):
+           times=None, ele=None, stretch=None, relief=None):
     """activity: the run; track_xy: its (end-cleaned) projected track, with times and ele aligned to it (default: the
     activity's); pieces: the privacy-cut pieces (index, LineString), drawn; stretch: (start_m, end_m) along the track
-    that the numbers describe (default: all of it); date: the local datetime of the run."""
+    that the numbers describe (default: all of it); date: the local datetime of the run; relief: a relief.Relief for
+    the map (relief.prepare_many), drawn under the course."""
     S = STYLES[style]
     es = lang == "es"
     wmm, hmm = SIZES[size]
@@ -157,6 +159,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     ax.set_aspect("equal")
     ax.axis("off")
     draw_basemap(ax, basemap, extent, S, k, map_w)
+    drawn = draw_relief(ax, relief, extent, S, basemap[2], k, map_w) if relief is not None else False
     cut = privacy.clip_to_extent(pieces, extent)
     coords = [c for c in (np.asarray(p.coords) for _, p in cut) if len(c) > 1]
     segments = np.concatenate([np.stack((c[:-1], c[1:]), axis=1) for c in coords]) if coords else np.empty((0, 2, 2))
@@ -257,7 +260,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
         hi_t = fmt_pace(legend["lo"]) if legend["mode"] == "pace" else f"{legend['hi']:.0f} m"
         T(218, 407.6, lo_t, pt=4.6, color=S["sub"])
         T(268, 407.6, hi_t, pt=4.6, color=S["sub"], align="right")
-    T(18, 412, "© OpenStreetMap contributors · ODbL · openstreetmap.org/copyright", pt=6.2, color=S["sub"], max_w=200)
+    footer_credits(T, S, lang, 412, 200, 238, relief.dataset if drawn else None)
 
     fig.savefig(out_path, dpi=dpi, facecolor=S["bg"], metadata={"Software": "Pinless"})
     if pdf_path:
@@ -270,4 +273,4 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     if preview_path:
         fig.savefig(preview_path, dpi=1600 * 25.4 / hmm, facecolor=S["bg"], pil_kwargs={"quality": 88, "optimize": True})
     plt.close(fig)
-    return {"km": km, "secs": secs, "legend": legend, "splits": (full, last), "fastest": fastest}
+    return {"km": km, "secs": secs, "legend": legend, "splits": (full, last), "fastest": fastest, "relief": drawn}
