@@ -23,6 +23,10 @@ import numpy as np
 USER_AGENT = "pinless/0.1 (+https://github.com/Lostmanu/pinless)"
 
 
+class NoSharedArea(ValueError):
+    """auto_bbox with groups: no area where every group runs."""
+
+
 def auto_bbox(activities, radius_km=7.0, cell_km=1.0, q=(1.0, 99.0), pad_frac=0.06, max_candidates=400, groups=None):
     """Bounding box (south, west, north, east) of the area where you run most.
 
@@ -33,7 +37,7 @@ def auto_bbox(activities, radius_km=7.0, cell_km=1.0, q=(1.0, 99.0), pad_frac=0.
     groups (one label per activity, e.g. 0 and 1 for two people): the area where EVERY group runs. Each group's score
     is divided by its best score, and a centre scores the smallest of those shares, so a place only one person runs
     cannot win. The box holds the 1st to 99th percentile of each group's own points near the winner, so a person
-    whose watch records fewer points is not cut. Raises ValueError when no area has runs of every group."""
+    whose watch records fewer points is not cut. Raises NoSharedArea when no area has runs of every group."""
     if groups is not None:
         return _auto_bbox_groups(activities, groups, radius_km, cell_km, q, pad_frac, max_candidates)
     tracks = [np.asarray(a.lonlat) for a in activities if len(a.lonlat) > 1]
@@ -72,7 +76,7 @@ def _auto_bbox_groups(activities, groups, radius_km, cell_km, q, pad_frac, max_c
     labelled = [(np.asarray(a.lonlat), g) for a, g in zip(activities, groups) if len(a.lonlat) > 1]
     labels = sorted(set(groups))
     if not labelled or {g for _, g in labelled} != set(labels):
-        raise ValueError("no area where every group runs")
+        raise NoSharedArea("no area where every group runs")
     pts = np.concatenate([t for t, _ in labelled])
     if len(pts) > 400_000:  # keep it fast on very long histories
         pts = pts[:: len(pts) // 400_000 + 1]
@@ -95,7 +99,7 @@ def _auto_bbox_groups(activities, groups, radius_km, cell_km, q, pad_frac, max_c
     worst, total = share.min(axis=1), share.sum(axis=1)
     best = max(range(len(candidates)), key=lambda i: (worst[i], total[i], -i))  # ties: the first cell in order
     if worst[best] <= 0:
-        raise ValueError("no area where every group runs")
+        raise NoSharedArea("no area where every group runs")
     cx, cy = candidates[best]
     clon, clat = (cx + 0.5) * cell_km / kx, (cy + 0.5) * cell_km / ky
     # the percentiles of each group's own points, joined: pooled, a partner whose watch records ten times fewer
@@ -112,7 +116,7 @@ def _auto_bbox_groups(activities, groups, radius_km, cell_km, q, pad_frac, max_c
             lows.append(np.percentile(near, q[0], axis=0))
             highs.append(np.percentile(near, q[1], axis=0))
     if not lows:
-        raise ValueError("no area where every group runs")
+        raise NoSharedArea("no area where every group runs")
     lo, hi = np.min(lows, axis=0), np.max(highs, axis=0)
     pad_lon, pad_lat = (hi - lo) * pad_frac
     return (float(lo[1] - pad_lat), float(lo[0] - pad_lon), float(hi[1] + pad_lat), float(hi[0] + pad_lon))

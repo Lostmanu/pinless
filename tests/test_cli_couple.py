@@ -80,6 +80,10 @@ def _never(*a, **k):
     (BASE + ["--color-by", "heat"], "--color-by does not apply"),
     (BASE + ["--graphs"], "--graphs is not available with --with"),
     (["SAME", "--with", "SAME", "--name", "Lucía", "--with-name", "Marcos"], "the same export as the first one"),
+    (BASE + ["--bbox", "40.36,-3.78,40.48"], "--bbox needs four numbers"),
+    (BASE + ["--bbox", "40.48,-3.78,40.36,-3.62"], "--bbox needs four numbers"),
+    (["a.zip", "--bbox", "40.36,-3.78,40.48"], "--bbox needs four numbers"),
+    (["a.zip", "--bbox", "40.36,-3.78,40.48,nan"], "--bbox needs four numbers"),
 ])
 def test_cli_couple_flags_are_checked(argv, message, monkeypatch, tmp_path, capsys):
     same = tmp_path / "export.zip"
@@ -158,6 +162,22 @@ def test_a_partner_without_runs_in_the_area_is_named_and_refused(monkeypatch, tm
     _by_path(monkeypatch, {"a.zip": madrid_runs(), "b.zip": _moved(_partner(), 3.3, -0.9)})
     assert cli.main(BASE + ["--out", str(tmp_path / "p.png")]) == 2, "no area both run in"
     assert "never share an area" in capsys.readouterr().out and not list(tmp_path.iterdir())
+
+
+def test_a_place_that_openstreetmap_cannot_find_is_not_a_missing_shared_area(monkeypatch, tmp_path, capsys):
+    from osmnx._errors import InsufficientResponseError
+
+    def nowhere(place):
+        raise InsufficientResponseError("Nominatim geocoder returned 0 results")
+
+    for argv in (BASE, ["a.zip"]):  # the poster for two, and the single poster
+        _by_path(monkeypatch, {"a.zip": madrid_runs(), "b.zip": _partner()})
+        monkeypatch.setattr(area, "geocode_bbox", nowhere)
+        monkeypatch.setattr(area, "fetch_basemap", _never)
+        assert cli.main(argv + ["--place", "Atlantis, Nowhere", "--out", str(tmp_path / "p.png")]) == 2
+        out = capsys.readouterr().out
+        assert "did not find that --place" in out and "never share an area" not in out
+        assert not list(tmp_path.iterdir())
 
 
 def test_couple_leak_check_fails_closed(monkeypatch, tmp_path, capsys):

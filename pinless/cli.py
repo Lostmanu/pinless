@@ -89,6 +89,9 @@ def main(argv=None):
             p.error("--with is the same export as the first one")
     if a.color_by is None:
         a.color_by = "heat"
+    if a.bbox is not None and not _bbox_ok(a.bbox):
+        p.error("--bbox needs four numbers south,west,north,east in degrees, with south below north and west below "
+                "east")
     styles = {"classic": render.STYLES, "sport": render_sport.STYLES, "editorial": render_editorial.STYLES,
               "atlas": render_editorial.STYLES, "race": render_editorial.STYLES}
     if a.style and a.style not in styles[a.layout]:
@@ -141,7 +144,11 @@ def main(argv=None):
         code = race.run(sel, [x for x in acts if x.type.lower() == a.type.lower()], a)
         print(f"[done] {time.time() - t0:.0f}s")
         return code
-    s, w, n, e = frame.area_box(sel, a, print)
+    try:
+        s, w, n, e = frame.area_box(sel, a, print)
+    except frame.PlaceNotFound:
+        print(frame.PLACE_NOT_FOUND)
+        return 2
     area_ll = box(w, s, e, n)
     sel = [x for x in sel if LineString(x.lonlat).intersects(area_ll)]
     if not sel:
@@ -205,6 +212,15 @@ def main(argv=None):
     print(f"[render] {a.out} {info['W']}x{info['H']} map px · heat cap {info['cap']:.0f} · max overlap {info['max']} · "
           f"{time.time() - t0:.0f}s")
     return 0
+
+
+def _bbox_ok(text):
+    """--bbox: four finite numbers south,west,north,east in degrees, south below north and west below east."""
+    try:
+        s, w, n, e = (float(v) for v in text.split(","))
+    except ValueError:
+        return False
+    return -90 <= s < n <= 90 and -180 <= w < e <= 180
 
 
 def _select(acts, type_, year):

@@ -18,7 +18,7 @@ import numpy as np
 from pyproj import Transformer
 from shapely.geometry import LineString, box
 
-from . import frame, privacy, render, render_editorial, stats
+from . import area, frame, privacy, render, render_editorial, stats
 
 
 def _fingerprint(act):
@@ -71,8 +71,11 @@ def run(acts_a, acts_b, sel_a, sel_b, a, log=print):
 
     try:
         bbox = frame.area_box(sel_a + sel_b, a, log, groups=[0] * len(sel_a) + [1] * len(sel_b))
-    except ValueError:
+    except area.NoSharedArea:
         log("your runs never share an area: choose one with --place \"City, Country\" or --bbox")
+        return 2
+    except frame.PlaceNotFound:
+        log(frame.PLACE_NOT_FOUND)
         return 2
     s, w, n, e = bbox
     area_ll = box(w, s, e, n)

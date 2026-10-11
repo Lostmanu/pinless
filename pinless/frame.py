@@ -11,16 +11,28 @@ from pyproj import Transformer
 from . import area, render
 from .localtime import local_start
 
+
+class PlaceNotFound(ValueError):
+    """--place: OpenStreetMap found no such place, or did not answer."""
+
+
+PLACE_NOT_FOUND = ("[area] OpenStreetMap did not find that --place (or did not answer): check the name, for example "
+                   "\"Valencia, Spain\", or pass --bbox")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def area_box(acts, a, log=print, groups=None):
     """(south, west, north, east): --bbox, --place, or where the activities are most (with groups: where every group
-    is). Raises ValueError when groups never share an area."""
+    is). Raises area.NoSharedArea when groups never share an area, and PlaceNotFound when OpenStreetMap does not
+    find --place or does not answer."""
     if a.bbox:
         s, w, n, e = map(float, a.bbox.split(","))
     elif a.place:
-        s, w, n, e = area.geocode_bbox(a.place)
+        try:
+            s, w, n, e = area.geocode_bbox(a.place)
+        except ValueError as ex:  # osmnx: nothing found (InsufficientResponseError), or a server error status
+            raise PlaceNotFound(str(a.place)) from ex
         log(f"[area] {a.place}")
     elif groups is not None:
         s, w, n, e = area.auto_bbox(acts, groups=groups)
