@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from pathlib import Path
+from typing import NamedTuple
 
 import matplotlib
 
@@ -18,7 +19,7 @@ import numpy as np
 import pandas as pd
 import shapely
 from matplotlib.path import Path as MPath
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from matplotlib.font_manager import FontProperties
 from matplotlib.patches import PathPatch
 from matplotlib.textpath import TextPath
@@ -112,10 +113,42 @@ STYLES = {
         "heat": ["#8fd0e8", "#3fa9d1", "#0b6e99", "#0a4a6e", "#062a40"],
     },
 }
+# A poster for two: five inks per style, in the order first person, mostly first, both, mostly second, second.
+# "both" is the style's ink (the darkest line on light paper, the brightest on dark paper) and the first person
+# always takes the warm ink. Checked in CIEDE2000, also under simulated colour blindness (tests/test_couple_poster.py).
+WHO = {
+    "huella": ["#c4462c", "#683525", "#222820", "#264550", "#2b6b8f"],
+    "carbon": ["#e58a4e", "#edc5a5", "#f2eddf", "#c3dddb", "#7cc4d6"],
+    "midnight": ["#ffb45c", "#f4dcc1", "#eef2f7", "#b6e2fa", "#4fc3ff"],
+    "blueprint": ["#ffd45c", "#f7ecc9", "#f3f7fc", "#f7cff1", "#ff7ad9"],
+    "ink": ["#d1462f", "#642c20", "#111111", "#223351", "#1f5fa8"],
+    "graphite": ["#ff7a45", "#ffc3a9", "#f1f1ef", "#bfdaf6", "#59b8ff"],
+    "neon": ["#ffb020", "#ffdbbd", "#f6f0ff", "#c9e8ff", "#3ad6ff"],
+    "lavender": ["#b8641a", "#673e30", "#2a2140", "#3f2e7e", "#5b3fd1"],
+    "sunset": ["#c9510c", "#763526", "#2a1d2e", "#3a3b72", "#3c5fc4"],
+    "forest": ["#9e7020", "#4d451f", "#1f2d1f", "#243f4d", "#2c5f9e"],
+    "blush": ["#d4583b", "#853b30", "#3a1f24", "#464663", "#3b6fa8"],
+    "ocean": ["#c55a22", "#7a4533", "#0f2a3d", "#185a7e", "#1a86b8"],
+}
+for _name, _inks in WHO.items():
+    STYLES[_name]["who"] = _inks
 
 
 LEVELS = 32  # route colour and weight steps: finer than the eye separates on paper, one path per step in a PDF/SVG
 PRINT_TOL_MM = 0.04  # geometry is simplified to this, on paper: far below what a print shows
+SHARED_MM = 0.5  # two lines this close on paper read as one street
+COUPLE_BASE = 0.62  # the thinnest couple stroke (pt x k): a hairline keeps its hue
+
+
+class Couple(NamedTuple):
+    """What a poster for two draws besides the pieces: the two names, whose each piece's activity is (owner[i] is 0
+    for the first person, 1 for the second), each person's stats.compute numbers, stats.together and how many
+    streets both ran (None when the basemap names none)."""
+    names: tuple
+    owner: np.ndarray
+    stats: tuple
+    together: dict
+    streets_both: int | None
 
 
 def _clip_simplify(geoms, extent, tol):
@@ -237,10 +270,26 @@ def route_colours(color_by, raws, S):
     return vals, legend, cmap
 
 
-def draw_legend(plot, text, k, S, cmap, legend, lang, y):
-    """The key at the bottom right: what the line colour means. plot/text draw in A3-grid millimetres."""
+def draw_legend(plot, text, k, S, cmap, legend, lang, y, names=None):
+    """The key at the bottom right: what the line colour means. plot/text draw in A3-grid millimetres.
+    names: the two names of a poster for two (mode "who")."""
     es = lang == "es"
     mode = legend.get("mode", "heat")
+    if mode == "who":  # weight: how often either ran a street; colour: whose street it is, in five steps
+        text(150, y, "REPETICIÓN" if es else "REPETITION", pt=5.8, color=S["sub"], align="right")
+        for i, v in enumerate((0.0, 1 / 3, 2 / 3, 1.0)):
+            x = 153 + i * 6.6
+            plot([x * k, (x + 5) * k], [(y + 1) * k, (y + 1) * k], color=S["sub"], lw=(COUPLE_BASE + 0.95 * v) * k,
+                 solid_capstyle="round")
+        text(212, y, "QUIÉN" if es else "WHO", pt=5.8, color=S["sub"], align="right")
+        for i, colour in enumerate(S["who"]):
+            x = 218 + i * 10.2
+            plot([x * k, (x + 8) * k], [(y + 1) * k, (y + 1) * k], color=colour, lw=1.6 * k, solid_capstyle="butt")
+        first, second = (n.strip().upper() for n in names)
+        text(218, y + 3.6, first, pt=4.6, color=S["sub"], max_w=16)
+        text(242.4, y + 3.6, "LOS DOS" if es else "BOTH", pt=4.6, color=S["sub"], align="center", max_w=16)
+        text(266.8, y + 3.6, second, pt=4.6, color=S["sub"], align="right", max_w=16)
+        return
     names = {"heat": ("REPETICIÓN", "REPETITION"), "single": ("REPETICIÓN", "REPETITION"), "month": ("MES", "MONTH"),
              "pace": ("RITMO", "PACE"), "elevation": ("ALTITUD", "ELEVATION")}
     text(212, y, names[mode][0 if es else 1], pt=5.8, color=S["sub"], align="right")
@@ -311,10 +360,105 @@ def place_text(value, x, y, k, pt=9, font=None, align="left", max_w=None, height
     return path, trans, width / k, (top - bottom) * scale / k
 
 
+def place_runs(parts, x, y, k, pt=9, font=None, align="left", max_w=None, height=None, clear=None):
+    """A line of text in several colours, set like one string: parts is [(text, colour), ...]. The scale and the
+    transform are those of the joined string (place_text), so max_w, height and clear apply to the whole line; each
+    part starts where the text before it ends (the advance of that prefix, measured against an "H").
+    Returns ([(path, transform, colour), ...], width in mm)."""
+    texts = [str(t) for t, _ in parts]
+    _, trans, width, _ = place_text("".join(texts), x, y, k, pt, font, align, max_w, height, clear)
+    h_right = TextPath((0, 0), "H", size=pt * k, prop=font).get_extents().x1
+    out = []
+    for i, (t, (_, colour)) in enumerate(zip(texts, parts)):
+        if not t.strip():
+            continue
+        prefix = TextPath((0, 0), "".join(texts[:i]) + "H", size=pt * k, prop=font) if i else None
+        adv = prefix.get_extents().x1 - h_right if i else 0.0
+        out.append((TextPath((adv, 0), t, size=pt * k, prop=font), trans, colour))
+    return out, width
+
+
+MISSING = fmt_time(None)  # the mark of a number that is not known
+
+
+def couple_cells(couple, lang):
+    """Every string (and the split) of the numbers of a poster for two. A run together counts for each person in
+    their own km; with no clock, or no run together, the two cells show total runs and recorded hours instead."""
+    es = lang == "es"
+    st_a, st_b = couple.stats
+    na, nb = (n.strip().upper() for n in couple.names)
+    km_a, km_b = st_a["km"], st_b["km"]
+    total = km_a + km_b
+    wa = float(np.clip(km_a / total * 138.8, 3.0, 135.8)) if total > 0 else 69.4
+
+    def runs(n):
+        return ("SALIDA" if n == 1 else "SALIDAS") if es else ("RUN" if n == 1 else "RUNS")
+
+    tog = couple.together or {}
+    if tog.get("known") and tog.get("runs", 0) > 0:
+        cells = [(str(tog["runs"]), "SALIDAS JUNTOS" if es else "RUNS TOGETHER"),
+                 (_num(tog["km"], lang), "KM CODO CON CODO" if es else "KM SIDE BY SIDE")]
+    else:
+        cells = [(str(st_a["n"] + st_b["n"]), "SALIDAS" if es else "RUNS"),
+                 (_num(st_a["hours"] + st_b["hours"], lang), "HORAS REGISTRADAS" if es else "RECORDED HOURS")]
+    return {
+        "total": _num(total, lang), "wa": wa,
+        "first": f"{na}  {_num(km_a, lang)} KM · {st_a['n']} {runs(st_a['n'])}",
+        "second": f"{_num(km_b, lang)} KM · {st_b['n']} {runs(st_b['n'])}  {nb}",
+        "cells": cells,
+        "records": [((fmt_time(st_a.get("best5k_s")), fmt_time(st_b.get("best5k_s"))), "MEJOR 5K" if es else "BEST 5K"),
+                    ((fmt_time(st_a.get("best10k_s")), fmt_time(st_b.get("best10k_s"))),
+                     "MEJOR 10K" if es else "BEST 10K"),
+                    ((_num(st_a["longest_km"], lang, 1), _num(st_b["longest_km"], lang, 1)),
+                     "TIRADA MÁS LARGA · KM" if es else "LONGEST RUN · KM")],
+        "streets": (MISSING if couple.streets_both is None else str(couple.streets_both),
+                    "CALLES DE LOS DOS" if es else "STREETS YOU BOTH RAN"),
+    }
+
+
 def map_aspect(size="A3", graphs=False):
     wmm, _ = SIZES[size]
     k = wmm / 297
     return (wmm - 36 * k) / ((190 if graphs else 222) * k)  # the graphs band takes 32 mm from the map
+
+
+def _segments(pieces):
+    """The original segments of the pieces, (n, 2, 2), and the activity of each one. The geometry is untouched."""
+    segments, ids = [], []
+    for act, line in pieces:
+        c = np.asarray(line.coords)
+        if len(c) > 1:
+            segments.append(np.stack((c[:-1], c[1:]), axis=1))
+            ids.append(np.full(len(c) - 1, act))
+    if not segments:
+        return np.empty((0, 2, 2)), np.empty(0, dtype=int)
+    return np.concatenate(segments), np.concatenate(ids)
+
+
+def _probe_px(segments, extent, shape):
+    """Pixel rows and columns (n, 3) of three probes per segment: both ends and the midpoint."""
+    x0, x1, y0, y1 = extent
+    h, w = shape
+    probes = np.stack((segments[:, 0], segments.mean(axis=1), segments[:, 1]), axis=1)
+    px = np.clip(((probes[:, :, 0] - x0) / (x1 - x0) * w).astype(int), 0, w - 1)
+    py = np.clip(((y1 - probes[:, :, 1]) / (y1 - y0) * h).astype(int), 0, h - 1)
+    return py, px
+
+
+def _dilate(acc, r):
+    """The maximum over the (2r+1) x (2r+1) square around each pixel (separable; the dtype is kept)."""
+    out = acc.copy()
+    for axis in (0, 1):
+        src = out.copy()
+        n = src.shape[axis]
+        for s in range(1, min(r, n - 1) + 1):
+            if axis == 0:
+                np.maximum(out[s:], src[:-s], out=out[s:])
+                np.maximum(out[:-s], src[s:], out=out[:-s])
+            else:
+                np.maximum(out[:, s:], src[:, :-s], out=out[:, s:])
+                np.maximum(out[:, :-s], src[:, s:], out=out[:, :-s])
+    return out
 
 
 def _density_segments(pieces, extent, acc, with_ids=False):
@@ -323,35 +467,68 @@ def _density_segments(pieces, extent, acc, with_ids=False):
     No interpolation, simplification or quantization changes the geometry.
     Sampling at both ends and the midpoint gives a stable frequency measure.
     """
-    x0, x1, y0, y1 = extent
-    h, w = acc.shape
-    segments, ids = [], []
-    for act, line in pieces:
-        c = np.asarray(line.coords)
-        if len(c) > 1:
-            segments.append(np.stack((c[:-1], c[1:]), axis=1))
-            ids.append(np.full(len(c) - 1, act))
-    if not segments:
+    segments, ids = _segments(pieces)
+    if not len(segments):
         return (np.empty((0, 2, 2)), np.empty(0)) + ((np.empty(0, dtype=int),) if with_ids else ())
-    segments = np.concatenate(segments)
-    probes = np.stack((segments[:, 0], segments.mean(axis=1), segments[:, 1]), axis=1)
-    px = np.clip(((probes[:, :, 0] - x0) / (x1 - x0) * w).astype(int), 0, w - 1)
-    py = np.clip(((y1 - probes[:, :, 1]) / (y1 - y0) * h).astype(int), 0, h - 1)
+    py, px = _probe_px(segments, extent, acc.shape)
     density = np.median(acc[py, px], axis=1)
     if with_ids:  # the activity of each segment, for colourings that depend on the run
-        return segments, np.maximum(density, 1), np.concatenate(ids)
+        return segments, np.maximum(density, 1), ids
     return segments, np.maximum(density, 1)
+
+
+def who_classes(a, b, owner_is_b):
+    """Whose street a segment is, from how many of each person's activities pass within SHARED_MM on paper (exact
+    integer counts a and b, t = a + b): 0 first person (b under 10 %), 1 mostly first (under 35 %), 2 both (35-65 %),
+    3 mostly second (up to 90 %), 4 second. Exactly symmetric: who_classes(b, a) == 4 - who_classes(a, b). With no
+    count at all (t = 0) a segment takes its owner's class."""
+    a, b = np.asarray(a, dtype=np.int64), np.asarray(b, dtype=np.int64)
+    t = a + b
+    c = np.select([10 * b < t, 100 * b < 35 * t, 100 * b <= 65 * t, 10 * b <= 9 * t], [0, 1, 2, 3], 4)
+    return np.where(t == 0, np.where(owner_is_b, 4, 0), c)
+
+
+def who_values(pieces, owner, extent, W, H, k, width_px):
+    """(segments, weight, colour values in [0, 1], classes) for a poster of two. owner[i]: 0 or 1 for activity i.
+
+    Each person's activities are counted once per pixel, apart. The colour belongs to the street, not the line: it
+    comes from both counts within SHARED_MM on paper (the same in metres at every paper size), so both lines of a
+    shared street get the same class, and one run of the second person on a street the first ran 20 times takes
+    the first person's ink. Weight: the line's own count plus the other person's count within SHARED_MM, so both
+    lines of a street both ran a and b times weigh a + b."""
+    owner = np.asarray(owner)
+    segments, ids = _segments(pieces)
+    if not len(segments):
+        return segments, np.empty(0), np.empty(0), np.empty(0, dtype=int)
+    acc_a = heat_raster([(i, p) for i, p in pieces if owner[i] == 0], extent, W, H, width_px)
+    acc_b = heat_raster([(i, p) for i, p in pieces if owner[i] == 1], extent, W, H, width_px)
+    r = max(1, int(round(SHARED_MM * k * 220 / 25.4)))  # 4 px at A3, 7 at 50x70
+    py, px = _probe_px(segments, extent, acc_a.shape)
+
+    def med(img):  # the median of three integer probes is the middle one: an exact integer
+        return np.sort(img[py, px].astype(np.int64), axis=1)[:, 1]
+
+    a_own, b_own = med(acc_a), med(acc_b)
+    a_d, b_d = med(_dilate(acc_a, r)), med(_dilate(acc_b, r))
+    is_b = owner[ids] == 1
+    weight = np.maximum(1, np.where(is_b, b_own + a_d, a_own + b_d))
+    classes = who_classes(a_d, b_d, is_b)
+    return segments, weight, (classes + 0.5) / 5, classes
 
 
 def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", dpi=300,
            name="", city="", year="", lang="es", pdf_path=None, svg_path=None,
-           headline="city", preview_path=None, color_by="heat", activities=None, tracks_xy=None, graphs=False):
+           headline="city", preview_path=None, color_by="heat", activities=None, tracks_xy=None, graphs=False,
+           couple=None):
     """activities and tracks_xy (the runs the pieces come from, in the same order) are needed by colourings other
-    than heat and single."""
+    than heat and single. couple: a Couple, for a poster of two people (pieces of both, owner[i] says whose); then
+    the colour only says whose street it is, color_by is ignored, stats may be None and graphs is not available."""
     if headline not in ("city", "name"):
         raise ValueError("headline must be city or name")
     if headline == "name" and not name.strip():
         raise ValueError("a name is required for the name headline")
+    if couple is not None and graphs:
+        raise ValueError("the graphs band is not available on a poster for two")
     S = STYLES[style]
     pieces = privacy.clip_to_extent(pieces, extent)  # only what is drawn is written (no hidden PDF/SVG lines)
     wmm, hmm = SIZES[size]
@@ -375,14 +552,29 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
     def rule(y, left=18, right=279, width=0.45, color=None):
         page.plot([left * k, right * k], [y * k, y * k], color=color or S["rule"], lw=width * k)
 
+    def runs(parts, x, y, pt=9, font=TEXT, align="left", max_w=None, height=None, clear=None):
+        """A line in several colours, set like one string (place_runs)."""
+        items, w = place_runs(parts, x, y, k, pt, font, align, max_w, height, clear)
+        for path, trans, colour in items:
+            page.add_patch(PathPatch(path, transform=trans + page.transData, color=colour, lw=0, snap=False))
+        return w
+
     es = lang == "es"
+    who = S["who"] if couple is not None else None
+    # in a poster for two, colour only says who: each name in its own ink, the rest in the paper's ink and grey
+    pair = None if couple is None else [(couple.names[0].strip().upper(), who[0]), (" & ", S["sub"]),
+                                        (couple.names[1].strip().upper(), who[4])]
     text(18, 13, "P I N L E S S", pt=8.4)
-    text(279, 13, "ARCHIVO DE RUNNING" if es else "RUNNING ARCHIVE", pt=6.6,
-         align="right", color=S["sub"])
+    text(279, 13, ("ARCHIVO DE RUNNING A DOS" if es else "RUNNING ARCHIVE FOR TWO") if couple is not None else
+         ("ARCHIVO DE RUNNING" if es else "RUNNING ARCHIVE"), pt=6.6, align="right", color=S["sub"])
     title = name if headline == "name" else city or ("MI CIUDAD" if es else "MY CITY")
-    text(18, 24, title.upper(), pt=235, font=DISPLAY,
-         max_w=215, height=57, clear=(15, 36, 17.0))  # an accent must not touch the PINLESS label
-    text(279, 27, str(year), pt=43, font=REGULAR, color=S["accent"], align="right", max_w=39)
+    if couple is not None and headline == "name":  # both names on one line, shrunk to fit
+        runs(pair, 18, 24, pt=235, font=DISPLAY, max_w=215, height=57, clear=(15, 36, 17.0))
+    else:
+        text(18, 24, title.upper(), pt=235, font=DISPLAY,
+             max_w=215, height=57, clear=(15, 36, 17.0))  # an accent must not touch the PINLESS label
+    text(279, 27, str(year), pt=43, font=REGULAR, color=S["accent"] if couple is None else S["ink"], align="right",
+         max_w=39)
     text(279, 47, "TEMPORADA" if es else "SEASON", pt=6.0, align="right", color=S["sub"])
     if headline == "name":
         text(18, 83.5, city.upper(), pt=11.2, max_w=125)
@@ -390,7 +582,10 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
              color=S["sub"], align="right")
     else:
         text(18, 84, "UN AÑO EN MOVIMIENTO" if es else "A YEAR IN MOTION", pt=7.2, color=S["sub"])
-        text(279, 83.5, name.upper(), pt=13.2, align="right", max_w=105)
+        if couple is None:
+            text(279, 83.5, name.upper(), pt=13.2, align="right", max_w=105)
+        else:
+            runs(pair, 279, 83.5, pt=13.2, align="right", max_w=105)
 
     m, map_top, map_w, map_h = 18 * k, 94 * k, wmm - 36 * k, (190 if graphs else 222) * k
     ax = fig.add_axes([m / wmm, 1 - (map_top + map_h) / hmm, map_w / wmm, map_h / hmm], zorder=1)
@@ -404,6 +599,9 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
     # of export DPI. No blur is added around removed sensitive regions.
     W = int(round(map_w * MM * 220))
     H = int(round(map_h * MM * 220))
+    if couple is not None:
+        return _render_couple(fig, ax, page, text, runs, rule, pieces, extent, couple, S, k, W, H, lang, wmm, hmm, dpi,
+                              out_path, pdf_path, svg_path, preview_path)
     acc = heat_raster(pieces, extent, W, H, max(1, int(round(0.22 * 220 / 25.4 * k))))
     segments, counts, ids = _density_segments(pieces, extent, acc, with_ids=True)
     cap = max(3.0, float(np.percentile(counts, 98.5))) if len(counts) else 1
@@ -443,6 +641,12 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
     text(18, 409, "© OpenStreetMap contributors · ODbL · openstreetmap.org/copyright", pt=6.2,
          color=S["sub"], max_w=238)
 
+    _save(fig, S, hmm, dpi, out_path, pdf_path, svg_path, preview_path)
+    return {"W": W, "H": H, "cap": cap, "max": int(acc.max()) if acc.size else 0, "legend": legend}
+
+
+def _save(fig, S, hmm, dpi, out_path, pdf_path, svg_path, preview_path):
+    """The same files for every editorial poster, then the figure is closed."""
     # No timestamps, activity ids, source paths, sensor values or author metadata.
     fig.savefig(out_path, dpi=dpi, facecolor=S["bg"], metadata={"Software": "Pinless"})
     if pdf_path:
@@ -458,4 +662,50 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
         fig.savefig(preview_path, dpi=1600 * 25.4 / hmm, facecolor=S["bg"],
                     pil_kwargs={"quality": 88, "optimize": True})
     plt.close(fig)
-    return {"W": W, "H": H, "cap": cap, "max": int(acc.max()) if acc.size else 0, "legend": legend}
+
+
+def _render_couple(fig, ax, page, text, runs, rule, pieces, extent, couple, S, k, W, H, lang, wmm, hmm, dpi, out_path,
+                   pdf_path, svg_path, preview_path):
+    """The routes, numbers and key of a poster for two (render, couple=...): pieces are already cut to the map."""
+    es = lang == "es"
+    who = S["who"]
+    segments, weight, values, classes = who_values(pieces, couple.owner, extent, W, H, k,
+                                                   max(1, int(round(0.22 * 220 / 25.4 * k))))
+    cap = max(3.0, float(np.percentile(weight, 98.5))) if len(weight) else 1
+    cmap = ListedColormap(who)
+    # thinnest first; within a weight the commonest colour on top (draw_routes)
+    draw_routes(ax, segments, weight, cap, cmap, k, base=COUPLE_BASE, glow=S.get("glow", 0.0), values=values)
+    length = np.hypot(*(segments[:, 1] - segments[:, 0]).T) if len(segments) else np.zeros(0)
+    total = float(length.sum())
+    who_frac = [float(length[classes == c].sum()) / total if total else 0.0 for c in range(5)]
+
+    cc = couple_cells(couple, lang)
+    rule(323)
+    km_w, _ = text(18, 331, cc["total"], pt=109, font=DISPLAY, max_w=119, height=28)
+    text(18 + km_w + 4, 348, "km", pt=24, font=REGULAR, color=S["ink"])
+    wa = cc["wa"]  # the split of the km: the first person's part, a 1.2 mm gap, the second person's
+    page.plot([18 * k, (18 + wa) * k], [362.2 * k, 362.2 * k], color=who[0], lw=2.2 * k, solid_capstyle="butt")
+    page.plot([(18 + wa + 1.2) * k, 158 * k], [362.2 * k, 362.2 * k], color=who[4], lw=2.2 * k,
+              solid_capstyle="butt")
+    text(18, 365.5, cc["first"], pt=6.2, color=who[0], max_w=68)
+    text(158, 365.5, cc["second"], pt=6.2, color=who[4], align="right", max_w=68)
+    for x, (value, label) in zip((180, 239), cc["cells"]):
+        text(x, 334, value, pt=56, font=DISPLAY, max_w=39, height=17)
+        text(x, 357, label, pt=6.4, color=S["sub"], max_w=40)
+    rule(371, width=0.32)
+    for i, ((va, vb), label) in enumerate(cc["records"]):
+        x = 18 + i * 65.25
+        runs([(va, who[0]), (" · ", S["sub"]), (vb, who[4])], x, 375, pt=25, font=DISPLAY, max_w=58, height=6.4)
+        text(x, 385.5, label, pt=6.3, color=S["sub"], max_w=58)
+    value, label = cc["streets"]
+    text(213.75, 375, value, pt=25, font=DISPLAY, max_w=58, height=6.4)
+    text(213.75, 385.5, label, pt=6.3, color=S["sub"], max_w=58)
+    rule(392)
+    text(18, 399, "DOS HUELLAS, UN MAPA." if es else "TWO TRACES, ONE MAP.", pt=6.8)
+    legend = {"mode": "who"}
+    draw_legend(page.plot, text, k, S, cmap, legend, lang, 399, names=couple.names)
+    text(18, 409, "© OpenStreetMap contributors · ODbL · openstreetmap.org/copyright", pt=6.2,
+         color=S["sub"], max_w=238)
+    _save(fig, S, hmm, dpi, out_path, pdf_path, svg_path, preview_path)
+    return {"W": W, "H": H, "cap": cap, "max": int(weight.max()) if len(weight) else 0, "legend": legend,
+            "who_frac": who_frac}

@@ -1,4 +1,5 @@
 """pinless EXPORT [--year 2025] [--name Lucía] [--place "Madrid"] [--layout editorial|atlas|race] [--style huella]
+pinless EXPORT --with EXPORT2 --name Lucía --with-name Marcos   (one poster for two, one ink each)
 
 With no area options it finds where you run most, fetches that area's OpenStreetMap data once (cached) and names the
 city. Everything else runs locally: the export never leaves the machine; only the area's bounding box is sent to
@@ -12,12 +13,13 @@ import os
 import re
 import sys
 import time
+from collections import Counter
 
 import numpy as np
 from pyproj import Transformer
 from shapely.geometry import LineString, box
 
-from . import atlas, colouring, frame, ingest, privacy, race, render, render_sport, render_editorial, stats
+from . import atlas, colouring, couple, frame, ingest, privacy, race, render, render_sport, render_editorial, stats
 from .localtime import local_start
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,7 +45,7 @@ def main(argv=None):
                         "stretch more, with its numbers limited to what is drawn")
     p.add_argument("--graphs", action="store_true",
                    help="editorial: add km per month, time of day and direction charts under the map")
-    p.add_argument("--color-by", default="heat", choices=colouring.MODES,
+    p.add_argument("--color-by", default=None, choices=colouring.MODES,
                    help="route colour: heat (how often), single, month, pace or elevation (editorial and atlas); "
                         "race: pace (default), elevation or single")
     p.add_argument("--name", default="", help="runner name for sport/editorial layouts (gifts)")
@@ -55,7 +57,8 @@ def main(argv=None):
     p.add_argument("--size", default="A3", choices=sorted(render.SIZES))
     p.add_argument("--dpi", type=int, default=300)
     p.add_argument("--lang", default="en", choices=["en", "es"])
-    p.add_argument("--zone", action="append", default=[], help="extra private zone lat,lon,radius_m (repeatable)")
+    p.add_argument("--zone", action="append", default=[],
+                   help="extra private zone lat,lon,radius_m (repeatable); with --with it hides both people's lines")
     p.add_argument("--trim", type=float, default=300.0)
     p.add_argument("--zone-radius", type=float, default=500.0)
     p.add_argument("--fit", action="store_true", help="crop the map to where the activities are (within the bbox)")
@@ -63,7 +66,29 @@ def main(argv=None):
     p.add_argument("--pdf", default=None)
     p.add_argument("--svg", default=None, help="vector export for the editorial layout")
     p.add_argument("--preview", default=None, help="lightweight editorial JPEG preview (1600 px high)")
+    p.add_argument("--with", dest="with_export", default=None, metavar="EXPORT",
+                   help="a second person's Strava export: one poster for two, one ink each (editorial)")
+    p.add_argument("--with-name", default="", help="the second person's name (required with --with)")
+    p.add_argument("--with-type", default=None,
+                   help="activity type in the second export, when it names the sport differently (default: --type)")
     a = p.parse_args(argv)
+    if (a.with_name or a.with_type) and not a.with_export:
+        p.error("--with-name and --with-type need --with")
+    if a.with_export:
+        if a.layout != "editorial":
+            p.error("couple mode (--with) is available for the editorial layout")
+        if not a.name.strip() or not a.with_name.strip():
+            p.error("--with needs both names, for the headline and the key: --name and --with-name")
+        if a.name.strip().casefold() == a.with_name.strip().casefold():
+            p.error("the two names label the two inks: they must differ")
+        if a.color_by is not None:
+            p.error("in couple mode the colour says whose street it is: --color-by does not apply")
+        if a.graphs:
+            p.error("--graphs is not available with --with yet")
+        if os.path.exists(a.export) and os.path.exists(a.with_export) and os.path.samefile(a.export, a.with_export):
+            p.error("--with is the same export as the first one")
+    if a.color_by is None:
+        a.color_by = "heat"
     styles = {"classic": render.STYLES, "sport": render_sport.STYLES, "editorial": render_editorial.STYLES,
               "atlas": render_editorial.STYLES, "race": render_editorial.STYLES}
     if a.style and a.style not in styles[a.layout]:
@@ -99,12 +124,12 @@ def main(argv=None):
         p.error("--preview requires the editorial, atlas or race layout and a .jpg or .jpeg filename")
     t0 = time.time()
 
+    if a.with_export:
+        return _couple_main(a, t0)
     acts, rep = ingest.read_export(a.export)
     print(f"[ingest] files {rep.files_seen} · used {rep.used} · no GPS {rep.no_gps} · unreadable {rep.unreadable} · "
           f"unsupported {rep.unsupported}")
-    # the year of each run where it was run: a New Year's Eve run in Madrid at 00:30 belongs to the new year
-    sel = [x for x in acts if x.type.lower() == a.type.lower()
-           and (a.year is None or ((t := local_start(x)) is not None and t.year == a.year))]
+    sel = _select(acts, a.type, a.year)
     if not sel:
         print("no activities match the type/year filters")
         return 2
@@ -179,6 +204,39 @@ def main(argv=None):
     print(f"[render] {a.out} {info['W']}x{info['H']} map px · heat cap {info['cap']:.0f} · max overlap {info['max']} · "
           f"{time.time() - t0:.0f}s")
     return 0
+
+
+def _select(acts, type_, year):
+    """The activities of a type (case-insensitive) and, when given, a year. The year of each run is the one where it
+    was run: a New Year's Eve run in Madrid at 00:30 belongs to the new year."""
+    return [x for x in acts if x.type.lower() == type_.lower()
+            and (year is None or ((t := local_start(x)) is not None and t.year == year))]
+
+
+def _couple_main(a, t0):
+    """--with: read both exports, name each person (never a path), select, then couple.run."""
+    names = (a.name.strip(), a.with_name.strip())
+    types = (a.type, a.with_type or a.type)
+    read = []
+    for name, path in zip(names, (a.export, a.with_export)):
+        acts, rep = ingest.read_export(path)
+        print(f"[ingest] {name}: files {rep.files_seen} · used {rep.used} · no GPS {rep.no_gps} · unreadable "
+              f"{rep.unreadable} · unsupported {rep.unsupported}")
+        read.append(acts)
+    sels = []
+    for k, (name, acts, type_) in enumerate(zip(names, read, types)):
+        sel = _select(acts, type_, a.year)
+        if not sel:
+            kinds = ", ".join(f"{t} {n}" for t, n in Counter(x.type for x in acts).most_common(6))
+            print(f"{name}: no {type_} activities{f' in {a.year}' if a.year else ''} "
+                  f"({'this export has: ' + kinds if kinds else 'this export has no GPS activities'})."
+                  + (" Choose the type with --type." if k == 0 else
+                     " If this export names the sport differently, pass it with --with-type."))
+            return 2
+        sels.append(sel)
+    code = couple.run(read[0], read[1], sels[0], sels[1], a)
+    print(f"[done] {time.time() - t0:.0f}s")
+    return code
 
 
 if __name__ == "__main__":
