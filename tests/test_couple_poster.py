@@ -8,7 +8,7 @@ import pytest
 from matplotlib.colors import to_rgba
 from shapely.geometry import LineString
 
-from _colour import contrast, de, de2000, rgb
+from _colour import contrast, de, de2000, lab, rgb
 from pinless import render_editorial as re_
 from pinless.render import MM, SIZES
 
@@ -190,6 +190,10 @@ def test_every_style_has_five_who_inks_that_print_and_survive_colour_blindness(s
     assert min(de(first, both), de(second, both)) >= 20
     assert min(de(x, both, k) for x in (first, second) for k in ("protan", "deutan", "tritan")) >= 12
     assert min(de(c[i], c[i + 1]) for i in range(4)) >= 12, "neighbouring classes are told apart"
+    assert min(de(c[i], c[i + 1], k) for i in range(4) for k in ("protan", "deutan", "tritan")) >= 6
+    lightness = [lab(x)[0] for x in c]
+    assert min(abs(lightness[1] - lightness[2]), abs(lightness[3] - lightness[2])) >= 15,         "a thin 'mostly' line does not print as the shared street's ink"
+    assert de(c[1], c[3]) >= 20, "mostly one and mostly the other are told apart"
     assert min(de(first, street_), de(second, street_)) >= 30, "the inks stand out from the major streets"
 
 

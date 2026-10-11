@@ -115,20 +115,22 @@ STYLES = {
 }
 # A poster for two: five inks per style, in the order first person, mostly first, both, mostly second, second.
 # "both" is the style's ink (the darkest line on light paper, the brightest on dark paper) and the first person
-# always takes the warm ink. Checked in CIEDE2000, also under simulated colour blindness (tests/test_couple_poster.py).
+# always takes the warm ink. Each "mostly" ink is a deeper (light paper) or quieter (dark paper) tone of its person's
+# ink, at least 15 L* from "both": a thin line of it must not print as the shared street's black or white. Checked
+# in CIEDE2000, also under simulated colour blindness (tests/test_couple_poster.py).
 WHO = {
-    "huella": ["#c4462c", "#683525", "#222820", "#264550", "#2b6b8f"],
-    "carbon": ["#e58a4e", "#edc5a5", "#f2eddf", "#c3dddb", "#7cc4d6"],
-    "midnight": ["#ffb45c", "#f4dcc1", "#eef2f7", "#b6e2fa", "#4fc3ff"],
-    "blueprint": ["#ffd45c", "#f7ecc9", "#f3f7fc", "#f7cff1", "#ff7ad9"],
-    "ink": ["#d1462f", "#642c20", "#111111", "#223351", "#1f5fa8"],
-    "graphite": ["#ff7a45", "#ffc3a9", "#f1f1ef", "#bfdaf6", "#59b8ff"],
-    "neon": ["#ffb020", "#ffdbbd", "#f6f0ff", "#c9e8ff", "#3ad6ff"],
-    "lavender": ["#b8641a", "#673e30", "#2a2140", "#3f2e7e", "#5b3fd1"],
-    "sunset": ["#c9510c", "#763526", "#2a1d2e", "#3a3b72", "#3c5fc4"],
-    "forest": ["#9e7020", "#4d451f", "#1f2d1f", "#243f4d", "#2c5f9e"],
-    "blush": ["#d4583b", "#853b30", "#3a1f24", "#464663", "#3b6fa8"],
-    "ocean": ["#c55a22", "#7a4533", "#0f2a3d", "#185a7e", "#1a86b8"],
+    "huella": ["#c4462c", "#94011a", "#222820", "#384a5d", "#2b6b8f"],
+    "carbon": ["#e58a4e", "#e3baab", "#f2eddf", "#b4c5cc", "#7cc4d6"],
+    "midnight": ["#ffb45c", "#d8c4a7", "#eef2f7", "#adc2d9", "#4fc3ff"],
+    "blueprint": ["#ffd45c", "#d9c0a2", "#f3f7fc", "#fdadd3", "#ff7ad9"],
+    "ink": ["#d1462f", "#7a0116", "#111111", "#042e6e", "#1f5fa8"],
+    "graphite": ["#ff7a45", "#edbaaf", "#f1f1ef", "#b5c3dd", "#59b8ff"],
+    "neon": ["#ffb020", "#d9c49b", "#f6f0ff", "#a8c4d3", "#3ad6ff"],
+    "lavender": ["#b8641a", "#7f2d01", "#2a2140", "#642c8a", "#5b3fd1"],
+    "sunset": ["#c9510c", "#871300", "#2a1d2e", "#393594", "#3c5fc4"],
+    "forest": ["#9e7020", "#713f00", "#1f2d1f", "#444a6b", "#2c5f9e"],
+    "blush": ["#d4583b", "#97081b", "#3a1f24", "#27487f", "#3b6fa8"],
+    "ocean": ["#c55a22", "#901a05", "#0f2a3d", "#005988", "#1a86b8"],
 }
 for _name, _inks in WHO.items():
     STYLES[_name]["who"] = _inks
