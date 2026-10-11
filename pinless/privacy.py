@@ -256,7 +256,9 @@ def pair_places(groups, zone_r=500.0, eps=180.0, min_share=0.04, min_pts_floor=2
     zones = merge_places(centres, eps, zone_r)
     counts = {"per": [len(found) for found in per],
               "pooled_new": sum(1 for c, _ in pooled if all(np.hypot(*(c - o)) > eps for o in own)),
-              "zones": len(zones), "merged": len(centres) - len(zones)}
+              "zones": len(zones)}
+    # how many of the places counted above (each person's, and the new shared ones) were joined into another's zone
+    counts["merged"] = sum(counts["per"]) + counts["pooled_new"] - counts["zones"]
     return zones, [np.asarray(c) for c in centres], counts
 
 

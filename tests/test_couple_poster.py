@@ -259,7 +259,7 @@ def test_couple_numbers_and_fallbacks():
     assert es["total"] == "2.448" and es["first"] == "LUCÍA  1.746 KM · 184 SALIDAS"
     assert es["second"] == "702 KM · 96 SALIDAS  MARCOS"
     assert es["wa"] == pytest.approx(1746 / 2448 * 138.8)
-    assert es["cells"] == [("30", "SALIDAS JUNTOS"), ("328", "KM CODO CON CODO")]
+    assert es["cells"] == [("30", "SALIDAS JUNTAS"), ("328", "KM CODO CON CODO")]
     assert es["records"][0] == (("23:45", "26:50"), "MEJOR 5K")
     assert es["records"][1][0][1] == re_.MISSING, "no 10K: the missing mark"
     assert es["records"][2][0] == ("24,3", "15,0") and es["streets"] == ("63", "CALLES DE LOS DOS")
@@ -272,5 +272,10 @@ def test_couple_numbers_and_fallbacks():
                 {"runs": 0, "km": 0.0, "known": False, "no_clock": (184, 0)}):
         cells = re_.couple_cells(_couple(together=tog), "en")["cells"]
         assert cells == [("280", "RUNS"), ("230", "RECORDED HOURS")], "no run together: total runs and hours"
+    odd = re_.couple_cells(_couple(st=(stats_(km=630.6, n=1234), stats_(km=7.6, n=1)), streets_both=1234), "es")
+    assert odd["total"] == "639" and odd["first"] == "LUCÍA  631 KM · 1.234 SALIDAS", "the parts add up to the total"
+    assert odd["second"] == "8 KM · 1 SALIDA  MARCOS" and odd["streets"][0] == "1.234"
+    big = re_.couple_cells(_couple(together={"runs": 1234, "km": 4567.0, "known": True, "no_clock": (0, 0)}), "en")
+    assert big["cells"] == [("1,234", "RUNS TOGETHER"), ("4,567", "KM SIDE BY SIDE")], "counts formatted like km"
     printed = [es["total"], es["first"], es["second"], *map(str, es["cells"]), *map(str, es["records"])]
     assert not any(re.search(r"\d[.,]\d{4}", x) for x in printed), "only rounded numbers are printed"

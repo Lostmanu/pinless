@@ -12,6 +12,7 @@ ran it. Logs carry names and counts only: never coordinates, paths, dates, activ
 from __future__ import annotations
 
 import datetime as dt
+import os
 from collections import Counter
 
 import numpy as np
@@ -123,7 +124,7 @@ def run(acts_a, acts_b, sel_a, sel_b, a, log=print):
     else:
         missing = [nm for nm, k, sel in ((na, tog["no_clock"][0], sel_a), (nb, tog["no_clock"][1], sel_b))
                    if k == len(sel)]
-        whose = " or ".join(f"{m}'s" for m in missing)
+        whose = " and ".join(f"{m}'s" for m in missing)
         log(f"[together] no clock in {whose} activities: runs together not counted")
 
     aspect = render_editorial.map_aspect(a.size, False)
@@ -164,6 +165,6 @@ def run(acts_a, acts_b, sel_a, sel_b, a, log=print):
         headline=a.headline, preview_path=a.preview, activities=sel_a + sel_b, tracks_xy=ta + tb,
         couple=render_editorial.Couple(names=(na, nb), owner=owner, stats=(st[0], st[1]), together=tog,
                                        streets_both=streets_both))
-    log(f"[render] {a.out} {info['W']}x{info['H']} map px · heat cap {info['cap']:.0f} · drawn km by who: "
+    log(f"[render] {os.path.basename(a.out)} {info['W']}x{info['H']} map px · heat cap {info['cap']:.0f} · drawn km by who: "
         f"{'/'.join(f'{100 * f:.0f}' for f in info['who_frac'])} %")
     return 0

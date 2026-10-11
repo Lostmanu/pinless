@@ -173,6 +173,7 @@ def test_a_place_split_across_two_exports_is_hidden():
     assert far(per_person_only, p) < 20, "control: without the pooled rule a line passing there is drawn"
     pieces, _, zones, counts = couple_cut(ta, tb, rng=random.Random(6))
     assert counts["pooled_new"] == 1 and far(pieces, p) >= 200
+    assert counts["per"] == [1, 1] and counts["zones"] == 3 and counts["merged"] == 0, "the log's numbers add up"
     ta, tb, p = _split_place(5)  # 5/12 + 5/12 = 0.83: not enough evidence, no zone there
     zones, _, _ = privacy.pair_places([ta, tb])
     assert not any(np.hypot(x - p[0], y - p[1]) < 250 for x, y, _ in zones)

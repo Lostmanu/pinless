@@ -235,8 +235,11 @@ def _couple_main(a, t0):
     names = (a.name.strip(), a.with_name.strip())
     types = (a.type, a.with_type or a.type)
     read = []
-    for name, path in zip(names, (a.export, a.with_export)):
+    for name, path, flag in zip(names, (a.export, a.with_export), ("the first export", "--with")):
         acts, rep = ingest.read_export(path)
+        if not rep.files_seen and not os.path.exists(path):  # a mistyped path reads as an empty export
+            print(f"{name}: there is no file or folder at the path given for {flag}")
+            return 2
         print(f"[ingest] {name}: files {rep.files_seen} · used {rep.used} · no GPS {rep.no_gps} · unreadable "
               f"{rep.unreadable} · unsupported {rep.unsupported}")
         read.append(acts)

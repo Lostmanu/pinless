@@ -137,6 +137,14 @@ def test_the_same_export_twice_is_refused_before_any_network(monkeypatch, tmp_pa
     assert "same activities (20 of 20)" in capsys.readouterr().out and not (tmp_path / "q.png").exists()
 
 
+def test_a_mistyped_export_path_is_named_as_missing(monkeypatch, tmp_path, capsys):
+    _by_path(monkeypatch, {"a.zip": madrid_runs(), "b.zip": []})  # neither file exists: the stub reads b.zip as empty
+    assert cli.main(BASE + ["--out", str(tmp_path / "p.png")]) == 2
+    out = capsys.readouterr().out
+    assert "Marcos: there is no file or folder at the path given for --with" in out and "--with-type" not in out
+    assert "b.zip" not in out and not list(tmp_path.iterdir())
+
+
 def test_the_same_export_guard_at_its_edges():
     a = madrid_runs(n_home=60, n_work=40)
     own = _partner(n=15)  # 20 runs of the second person's own
@@ -227,6 +235,7 @@ def test_cli_couple_end_to_end_offline(monkeypatch, tmp_path, capsys):
     assert not re.search(r"\d\.\d{4}", out) and "40.4" not in out and "-3.7" not in out, "no coordinates"
     assert all(f.exists() and f.stat().st_size > 0 for f in files)
     assert c.streets_both is None and "no street names in this map" in out, "an empty basemap names no street"
+    assert "[render] p.png " in out and str(tmp_path) not in out, "the file name, never its folder"
 
 
 def test_streets_you_both_ran_are_counted_on_the_drawn_lines(monkeypatch, tmp_path, capsys):

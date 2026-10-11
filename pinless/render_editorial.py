@@ -138,6 +138,7 @@ LEVELS = 32  # route colour and weight steps: finer than the eye separates on pa
 PRINT_TOL_MM = 0.04  # geometry is simplified to this, on paper: far below what a print shows
 SHARED_MM = 0.5  # two lines this close on paper read as one street
 COUPLE_BASE = 0.62  # the thinnest couple stroke (pt x k): a hairline keeps its hue
+ROUTE_GAIN = 0.42  # how much a route thickens from its rarest to its commonest weight (pt x k); the key uses it too
 
 
 class Couple(NamedTuple):
@@ -226,7 +227,7 @@ def draw_basemap(ax, basemap, extent, S, k, map_w_mm, sw=1.0):
                                    joinstyle="round", zorder=3))
 
 
-def draw_routes(ax, segments, counts, cap, cmap, k, base=0.55, gain=0.42, scale=1.0, glow=0.0, values=None):
+def draw_routes(ax, segments, counts, cap, cmap, k, base=0.55, gain=ROUTE_GAIN, scale=1.0, glow=0.0, values=None):
     """Routes weighted by how often they were run and coloured by `values` in [0, 1] (default: the same frequency),
     in LEVELS steps, thinnest first. Consecutive segments of a step are joined back into polylines; the geometry
     itself is untouched. glow > 0 lays a wide, faint stroke of the same colour under each step (vector, so the PDF
@@ -279,7 +280,7 @@ def draw_legend(plot, text, k, S, cmap, legend, lang, y, names=None):
         text(150, y, "REPETICIÓN" if es else "REPETITION", pt=5.8, color=S["sub"], align="right")
         for i, v in enumerate((0.0, 1 / 3, 2 / 3, 1.0)):
             x = 153 + i * 6.6
-            plot([x * k, (x + 5) * k], [(y + 1) * k, (y + 1) * k], color=S["sub"], lw=(COUPLE_BASE + 0.95 * v) * k,
+            plot([x * k, (x + 5) * k], [(y + 1) * k, (y + 1) * k], color=S["sub"], lw=(COUPLE_BASE + ROUTE_GAIN * v) * k,
                  solid_capstyle="round")
         text(212, y, "QUIÉN" if es else "WHO", pt=5.8, color=S["sub"], align="right")
         for i, colour in enumerate(S["who"]):
@@ -296,7 +297,7 @@ def draw_legend(plot, text, k, S, cmap, legend, lang, y, names=None):
     if mode in ("heat", "single"):
         for i, v in enumerate(np.linspace(0, 1, 6)):
             plot([(218 + i * 8.4) * k, (225 + i * 8.4) * k], [(y + 1) * k, (y + 1) * k],
-                 color=cmap(v if mode == "heat" else 0.85), lw=(0.55 + 0.95 * v) * k, solid_capstyle="round")
+                 color=cmap(v if mode == "heat" else 0.85), lw=(0.55 + ROUTE_GAIN * v) * k, solid_capstyle="round")
         text(279, y - 1, "+", pt=8, align="right", color=S["sub"])
     elif mode == "month":
         letters = "EFMAMJJASOND" if es else "JFMAMJJASOND"
@@ -390,28 +391,29 @@ def couple_cells(couple, lang):
     km_a, km_b = st_a["km"], st_b["km"]
     total = km_a + km_b
     wa = float(np.clip(km_a / total * 138.8, 3.0, 135.8)) if total > 0 else 69.4
+    ra, rb = int(round(km_a)), int(round(km_b))  # each person's km rounded once: the two printed parts add up
 
     def runs(n):
         return ("SALIDA" if n == 1 else "SALIDAS") if es else ("RUN" if n == 1 else "RUNS")
 
     tog = couple.together or {}
     if tog.get("known") and tog.get("runs", 0) > 0:
-        cells = [(str(tog["runs"]), "SALIDAS JUNTOS" if es else "RUNS TOGETHER"),
+        cells = [(_num(tog["runs"], lang), "SALIDAS JUNTAS" if es else "RUNS TOGETHER"),
                  (_num(tog["km"], lang), "KM CODO CON CODO" if es else "KM SIDE BY SIDE")]
     else:
-        cells = [(str(st_a["n"] + st_b["n"]), "SALIDAS" if es else "RUNS"),
+        cells = [(_num(st_a["n"] + st_b["n"], lang), "SALIDAS" if es else "RUNS"),
                  (_num(st_a["hours"] + st_b["hours"], lang), "HORAS REGISTRADAS" if es else "RECORDED HOURS")]
     return {
-        "total": _num(total, lang), "wa": wa,
-        "first": f"{na}  {_num(km_a, lang)} KM · {st_a['n']} {runs(st_a['n'])}",
-        "second": f"{_num(km_b, lang)} KM · {st_b['n']} {runs(st_b['n'])}  {nb}",
+        "total": _num(ra + rb, lang), "wa": wa,
+        "first": f"{na}  {_num(ra, lang)} KM · {_num(st_a['n'], lang)} {runs(st_a['n'])}",
+        "second": f"{_num(rb, lang)} KM · {_num(st_b['n'], lang)} {runs(st_b['n'])}  {nb}",
         "cells": cells,
         "records": [((fmt_time(st_a.get("best5k_s")), fmt_time(st_b.get("best5k_s"))), "MEJOR 5K" if es else "BEST 5K"),
                     ((fmt_time(st_a.get("best10k_s")), fmt_time(st_b.get("best10k_s"))),
                      "MEJOR 10K" if es else "BEST 10K"),
                     ((_num(st_a["longest_km"], lang, 1), _num(st_b["longest_km"], lang, 1)),
                      "TIRADA MÁS LARGA · KM" if es else "LONGEST RUN · KM")],
-        "streets": (MISSING if couple.streets_both is None else str(couple.streets_both),
+        "streets": (MISSING if couple.streets_both is None else _num(couple.streets_both, lang),
                     "CALLES DE LOS DOS" if es else "STREETS YOU BOTH RAN"),
     }
 
@@ -605,7 +607,7 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
     km_w, _ = text(18, 331, _num(stats["km"], lang), pt=109, font=DISPLAY, max_w=119, height=28)
     text(18 + km_w + 4, 348, "km", pt=24, font=REGULAR, color=S["accent"])
     text(18, 364, "KILÓMETROS RECORRIDOS" if es else "KILOMETRES COVERED", pt=6.8, color=S["sub"])
-    for x, value, label in ((180, str(stats["n"]), "SALIDAS" if es else "RUNS"),
+    for x, value, label in ((180, _num(stats["n"], lang), "SALIDAS" if es else "RUNS"),
                             (239, _num(stats["hours"], lang), "HORAS REGISTRADAS" if es else "RECORDED HOURS")):
         text(x, 334, value, pt=56, font=DISPLAY, max_w=39, height=17)
         text(x, 357, label, pt=6.4, color=S["sub"], max_w=40)
@@ -614,7 +616,7 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
         (fmt_time(stats.get("best5k_s")), "MEJOR 5K" if es else "BEST 5K"),
         (fmt_time(stats.get("best10k_s")), "MEJOR 10K" if es else "BEST 10K"),
         (_num(stats["longest_km"], lang, 1) + " km", "TIRADA MÁS LARGA" if es else "LONGEST RUN"),
-        (str(stats.get("streets", "—")), "CALLES DISTINTAS" if es else "DISTINCT STREETS"),
+        (_num(stats["streets"], lang) if "streets" in stats else "—", "CALLES DISTINTAS" if es else "DISTINCT STREETS"),
     )
     for i, (value, label) in enumerate(records):
         x = 18 + i * 65.25
