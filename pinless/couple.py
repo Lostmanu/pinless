@@ -39,6 +39,18 @@ def same_activities(acts_a, acts_b):
     return shared, shared / min(len(acts_a), len(acts_b))
 
 
+SAME_MIN = 3  # fewest files in both exports that, with half of the smaller one, make them the same export
+
+
+def same_export(acts_a, acts_b):
+    """(refuse, shared): the two exports are one person's activities twice when the smaller one is wholly inside the
+    other, or when at least SAME_MIN of its activities and half of it are. A few files in both (a partner who uploaded
+    the other's run when a watch died) are allowed."""
+    shared, frac = same_activities(acts_a, acts_b)
+    whole = shared and shared == min(len(acts_a), len(acts_b))
+    return bool(whole or (shared >= SAME_MIN and frac >= 0.5)), shared
+
+
 def _km(tracks):
     return sum(float(np.hypot(*np.diff(t, axis=0).T).sum()) for t in tracks if len(t) > 1) / 1000
 
@@ -48,8 +60,8 @@ def run(acts_a, acts_b, sel_a, sel_b, a, log=print):
     na, nb = a.name.strip(), a.with_name.strip()
     types = (a.type, a.with_type or a.type)
 
-    shared, frac = same_activities(acts_a, acts_b)
-    if shared and frac >= 0.5:
+    refuse, shared = same_export(acts_a, acts_b)
+    if refuse:
         log(f"the two exports hold the same activities ({shared} of {min(len(acts_a), len(acts_b))}): pass each "
             f"person's own export")
         return 2
@@ -85,8 +97,12 @@ def run(acts_a, acts_b, sel_a, sel_b, a, log=print):
 
     ta, tb = [project(x) for x in sel_a], [project(x) for x in sel_b]
     user = frame.user_zones(a, tr)
+    # a file in both exports is drawn for each person but is nobody's own run when it comes to how often a place must
+    # be a start or an end: copies of the other's runs would raise a person's threshold and unhide a single loop
+    copies, _ = same_activities(sel_a, sel_b)
     try:
-        zones, witnesses, counts = privacy.pair_places([ta, tb], zone_r=a.zone_radius)
+        zones, witnesses, counts = privacy.pair_places([ta, tb], zone_r=a.zone_radius,
+                                                       n_runs=(len(ta) - copies, len(tb) - copies))
         pieces, rep = privacy.apply(ta + tb, trim_m=a.trim, zone_r=a.zone_radius, user_zones_xy=user,
                                     places_xy=zones, witnesses_xy=witnesses)
     except privacy.PrivacyError as ex:

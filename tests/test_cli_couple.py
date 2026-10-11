@@ -12,9 +12,53 @@ from shapely.geometry import Point
 from pinless import area, cli, couple, ingest, privacy, render, render_editorial
 from pinless.ingest import Activity
 from test_cli_editorial import _lonlat, madrid_runs, stub_world
+from test_couple_privacy import line, loop, loops_from, through
 
 BASE = ["a.zip", "--with", "b.zip", "--name", "Lucía", "--with-name", "Marcos"]
 HA, HB = (0.0, 0.0), (1500.0, -1800.0)  # the two homes, metres from the map's reference point
+BOX = "40.36,-3.80,40.50,-3.58"  # about 8 km west to 10 km east and 6 km south to 9 km north of that point
+UTC = dt.timezone.utc
+
+
+def _acts(tracks, first_id, day0=dt.date(2025, 1, 6), hour=7, pace=0.3):
+    """Activities with a clock from tracks in metres east/north of the reference point, one a day."""
+    out = []
+    for i, xy in enumerate(tracks):
+        d = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))])
+        start = dt.datetime.combine(day0 + dt.timedelta(days=i), dt.time(hour), tzinfo=UTC)
+        out.append(Activity(id=str(first_id + i), type="Run", start=start, lonlat=_lonlat(xy), source="x",
+                            times=list(d * pace)))
+    return out
+
+
+def _to_map(*points):
+    """Metres east/north of the reference point to the poster's projected metres."""
+    tr = Transformer.from_crs(4326, render.utm_crs(-3.70, 40.42), always_xy=True)
+    return [np.array(tr.transform(*ll)) for ll in _lonlat(points)]
+
+
+def _spy_drawn(monkeypatch):
+    """Every route vertex the poster draws (PathPatch at zorder 5), and what render received."""
+    seen, drawn, real, real_patch = {}, [], render_editorial.render, render_editorial.PathPatch
+
+    def spy(*args, **kw):
+        info = real(*args, **kw)
+        seen.update(kw, info=info, extent=args[2], pieces=args[0])
+        return info
+
+    def patch(path, *a, **k):
+        if k.get("zorder") == 5:
+            drawn.append(np.asarray(path.vertices))
+        return real_patch(path, *a, **k)
+
+    monkeypatch.setattr(render_editorial, "render", spy)
+    monkeypatch.setattr(render_editorial, "PathPatch", patch)
+    return seen, drawn
+
+
+def _gap(drawn, p):
+    pts = np.concatenate(drawn)
+    return float(np.hypot(pts[:, 0] - p[0], pts[:, 1] - p[1]).min())
 
 
 def _never(*a, **k):
@@ -83,6 +127,21 @@ def test_the_same_export_twice_is_refused_before_any_network(monkeypatch, tmp_pa
     _by_path(monkeypatch, {"a.zip": acts_a, "b.zip": acts_b})
     assert cli.main(BASE + ["--dpi", "20", "--out", str(tmp_path / "p.png")]) == 0
     assert "[couple] 1 activity is in both exports" in capsys.readouterr().out
+    _by_path(monkeypatch, {"a.zip": acts, "b.zip": acts[:20]})  # a part of one export is still the same export
+    assert cli.main(BASE + ["--out", str(tmp_path / "q.png")]) == 2
+    assert "same activities (20 of 20)" in capsys.readouterr().out and not (tmp_path / "q.png").exists()
+
+
+def test_the_same_export_guard_at_its_edges():
+    a = madrid_runs(n_home=60, n_work=40)
+    own = _partner(n=15)  # 20 runs of the second person's own
+    assert couple.same_export(a, a[:40]) == (True, 40), "the smaller export wholly inside the other"
+    assert couple.same_export(a, own + a[:20]) == (True, 20), "half of the smaller export"
+    assert couple.same_export(a, own + a[:19]) == (False, 19), "just under half"
+    assert couple.same_export(a, own[:1] + a[5:6]) == (False, 1), "a new partner with one borrowed file"
+    assert couple.same_export(a, own[:1] + a[:2]) == (False, 2), "two borrowed files are still a few"
+    assert couple.same_export(a, a[5:6]) == (True, 1), "nothing of their own"
+    assert couple.same_export(a, own) == (False, 0)
 
 
 def _moved(acts, dlon, dlat):
@@ -146,3 +205,20 @@ def test_cli_couple_end_to_end_offline(monkeypatch, tmp_path, capsys):
     assert "Lucía" in out and "Marcos" in out and "[privacy] places: Lucía" in out
     assert not re.search(r"\d\.\d{4}", out) and "40.4" not in out and "-3.7" not in out, "no coordinates"
     assert all(f.exists() and f.stat().st_size > 0 for f in files)
+
+
+def test_files_in_both_exports_do_not_unhide_a_single_loop(monkeypatch, tmp_path, capsys):
+    """39 of the first person's runs are also in the second export (allowed: under half of it). They are drawn for
+    each, but they are not the second person's own runs: counted, they would raise that person's threshold from 2
+    to 3 ends and a single loop from a lodging would no longer be a place."""
+    lodging = (5000.0, 2000.0)
+    ta = loops_from(HA, 120)
+    own_b = [loop(*lodging, 1400, phase=0.4), through(lodging, angle=1.2)]
+    own_b += [line((-7500 + 450 * i, -5800), (-7300 + 450 * i, 8200), noise=4.0) for i in range(38)]  # no two ends meet
+    acts_a = _acts(ta, 0)
+    _by_path(monkeypatch, {"a.zip": acts_a, "b.zip": _acts(own_b, 5000, hour=18) + acts_a[:39]})
+    seen, drawn = _spy_drawn(monkeypatch)
+    assert cli.main(BASE + ["--bbox", BOX, "--dpi", "20", "--out", str(tmp_path / "p.png")]) == 0
+    assert "[couple] 39 activities are in both exports" in capsys.readouterr().out
+    lodging_xy, = _to_map(lodging)
+    assert _gap(drawn, lodging_xy) >= 200

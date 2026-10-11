@@ -172,18 +172,25 @@ def _outside(xy, forbidden):
     return runs
 
 
-def find_places(tracks_xy, eps=180.0, min_share=0.04, min_pts_floor=3):
-    """The persistent start/end clusters of the tracks: [(centre_xy, n), ...] (in memory only)."""
+def find_places(tracks_xy, eps=180.0, min_share=0.04, min_pts_floor=3, n_runs=None):
+    """The persistent start/end clusters of the tracks: [(centre_xy, n), ...] (in memory only).
+    n_runs: how many runs the threshold is a share of (default: all the tracks; a poster for two leaves out the
+    activities found in both exports, so copies of the other person's runs never raise it)."""
     ends = np.array([p for t in tracks_xy if len(t) > 1 for p in (t[0], t[-1])])
-    return _clusters(ends, eps, max(min_pts_floor, int(min_share * len(tracks_xy))))
+    return _clusters(ends, eps, _threshold(len(tracks_xy) if n_runs is None else n_runs, min_share, min_pts_floor))
 
 
-def pooled_places(groups, eps=180.0, min_share=0.04, min_pts_floor=2):
+def _threshold(n_runs, min_share, min_pts_floor):
+    return max(min_pts_floor, int(min_share * n_runs))
+
+
+def pooled_places(groups, eps=180.0, min_share=0.04, min_pts_floor=2, n_runs=None):
     """Places where the ends of several people's tracks meet: a cluster of everyone's start/end points is a place when
     a/tA + b/tB + ... >= 1, where a is how many of them are the first person's and tA that person's own threshold
     (as in find_places). It never accepts less evidence than one full personal threshold, and it catches a place
     where each person ends too few times to make it a place alone (a union of the tracks would need tA + tB).
-    groups: one list of tracks per person. [(centre_xy, n), ...], in memory only."""
+    groups: one list of tracks per person; n_runs: as in find_places, one per person. [(centre_xy, n), ...], in memory
+    only."""
     ends, labels = [], []
     for g, tracks in enumerate(groups):
         for t in tracks:
@@ -193,7 +200,8 @@ def pooled_places(groups, eps=180.0, min_share=0.04, min_pts_floor=2):
     if not ends:
         return []
     labels = np.asarray(labels)
-    thr = [max(min_pts_floor, int(min_share * len(tracks))) for tracks in groups]
+    n_runs = [len(tracks) for tracks in groups] if n_runs is None else n_runs
+    thr = [_threshold(n, min_share, min_pts_floor) for n in n_runs]
 
     def accept(idx):
         n = np.bincount(labels[idx], minlength=len(groups))
@@ -234,13 +242,15 @@ def merge_places(centres, eps=180.0, zone_r=500.0, grow=2.5):
     return out
 
 
-def pair_places(groups, zone_r=500.0, eps=180.0, min_share=0.04, min_pts_floor=2):
+def pair_places(groups, zone_r=500.0, eps=180.0, min_share=0.04, min_pts_floor=2, n_runs=None):
     """The private places of a poster for several people: each person's own places (their own threshold, so a quiet
     partner's home or gym is found), the places where their ends meet (pooled_places), one zone per place
-    (merge_places). Returns (zones [(x, y, r)], witnesses [every original centre, for the leak check], counts).
-    Nothing is written anywhere."""
-    per = [find_places(g, eps, min_share, min_pts_floor) for g in groups]
-    pooled = pooled_places(groups, eps, min_share, min_pts_floor)
+    (merge_places). n_runs: each person's number of runs for their threshold, without the activities found in both
+    exports (default: len of each group). Returns (zones [(x, y, r)], witnesses [every original centre, for the leak
+    check], counts). Nothing is written anywhere."""
+    n_runs = [len(g) for g in groups] if n_runs is None else list(n_runs)
+    per = [find_places(g, eps, min_share, min_pts_floor, n) for g, n in zip(groups, n_runs)]
+    pooled = pooled_places(groups, eps, min_share, min_pts_floor, n_runs)
     own = [c for found in per for c, _ in found]
     centres = own + [c for c, _ in pooled]
     zones = merge_places(centres, eps, zone_r)
