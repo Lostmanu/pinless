@@ -541,3 +541,11 @@ def test_relief_reaches_the_poster_for_two_from_the_map_box_only(monkeypatch, tm
     (extent, crs, width), = maps
     assert len(extent) == 4 and width == pytest.approx(297 * (1 - 36 / 297)), "one map: its box, CRS and paper width"
     capsys.readouterr()
+
+
+def test_negative_coordinates_after_zone_and_bbox_are_values_on_every_python():
+    from pinless.cli import _glue_negative_values
+    argv = ["a.zip", "--zone", "-33.87,151.21,500", "--bbox", "-34.1,150.9,-33.6,151.4", "--zone", "40.4,-3.7,300",
+            "--title", "-x"]
+    assert _glue_negative_values(argv) == ["a.zip", "--zone=-33.87,151.21,500", "--bbox=-34.1,150.9,-33.6,151.4",
+                                           "--zone", "40.4,-3.7,300", "--title", "-x"]

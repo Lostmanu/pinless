@@ -27,6 +27,21 @@ from .localtime import local_start
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _glue_negative_values(argv):
+    """`--zone -33.87,151.21,500` and `--bbox -34.1,150.9,-33.6,151.4` (south of the equator, west of Greenwich) as
+    `--zone=-33.87,...`: before Python 3.14 argparse takes a value that starts with '-' and is not a plain number for
+    another option and stops with 'expected one argument'."""
+    out, i = [], 0
+    while i < len(argv):
+        if argv[i] in ("--zone", "--bbox") and i + 1 < len(argv) and re.match(r"-[\d.]", argv[i + 1]):
+            out.append(f"{argv[i]}={argv[i + 1]}")
+            i += 2
+        else:
+            out.append(argv[i])
+            i += 1
+    return out
+
+
 def main(argv=None):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(prog="pinless")
@@ -78,7 +93,7 @@ def main(argv=None):
     p.add_argument("--with-name", default="", help="the second person's name (required with --with)")
     p.add_argument("--with-type", default=None,
                    help="activity type in the second export, when it names the sport differently (default: --type)")
-    a = p.parse_args(argv)
+    a = p.parse_args(_glue_negative_values(sys.argv[1:] if argv is None else list(argv)))
     if (a.with_name or a.with_type) and not a.with_export:
         p.error("--with-name and --with-type need --with")
     if a.with_export:
