@@ -5,7 +5,7 @@ from pinless import ingest
 
 GPX = b"""<?xml version="1.0"?><gpx xmlns="http://www.topografix.com/GPX/1/1"><trk><type>running</type><trkseg>
 <trkpt lat="40.41" lon="-3.70"><ele>650.5</ele><time>2025-04-06T08:30:00Z</time></trkpt>
-<trkpt lat="40.42" lon="-3.70"><ele>655.0</ele><time>2025-04-06T08:31:00Z</time></trkpt>
+<trkpt lat="40.411" lon="-3.70"><ele>655.0</ele><time>2025-04-06T08:31:00Z</time></trkpt>
 </trkseg></trk></gpx>"""
 TCX = b"""<?xml version="1.0"?><TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
 <Activities><Activity Sport="Running"><Lap><Track>
@@ -28,3 +28,15 @@ def test_elevation_and_names_are_read(tmp_path):
     assert rep.used == 2
     assert by_id["1"].name == "Valencia Half" and by_id["1"].ele == [650.5, 655.0] and by_id["1"].times == [0.0, 60.0]
     assert by_id["2"].ele is None, "a point without altitude: no elevation rather than a broken profile"
+
+
+def test_stray_fixes_are_dropped_on_import(tmp_path):
+    stale = '<trkpt lat="40.44" lon="-3.66"><time>2025-04-06T08:29:{:02d}Z</time></trkpt>'
+    run = '<trkpt lat="{:.5f}" lon="-3.70"><time>2025-04-06T08:30:{:02d}Z</time></trkpt>'
+    pts = [stale.format(s) for s in (58, 59)] + [run.format(40.41 + 0.00003 * i, i) for i in range(40)]
+    gpx = ('<?xml version="1.0"?><gpx xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>' + "".join(pts)
+           + "</trkseg></trk></gpx>").encode()
+    (tmp_path / "a.gpx").write_bytes(gpx)
+    (act,), rep = ingest.read_export(str(tmp_path))
+    assert act.lonlat[0] == (-3.70, 40.41) and len(act.lonlat) == 40, "the stale fix, recorded twice, is gone"
+    assert act.times[0] == 0.0 and act.start.second == 0 and act.start.minute == 30

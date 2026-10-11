@@ -20,6 +20,8 @@ dependencies = [
   "numpy>=1.26",
   "pillow>=10",
   "fitdecode>=0.10",
+  "tzfpy>=2.1",
+  "tzdata",
 ]
 
 [project.optional-dependencies]

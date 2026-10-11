@@ -32,8 +32,24 @@ It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros
 - The numbers: distance, runs, recorded hours, best 5K, best 10K, longest run and how many different streets you ran.
 - Your name as the inscription, or as the headline (`--headline name`) when it is a gift.
 - PNG at 300 dpi, vector PDF and SVG, at A4, A3 or 50x70 cm. A light JPEG preview with `--preview`.
-- Two editorial styles: `huella` (warm paper, clay red) and `carbon` (dark green, copper), plus the earlier `classic` and `sport` layouts.
-- An atlas of every city you ran in, with `--layout atlas` (below).
+- Twelve styles (below), plus the earlier `classic` and `sport` layouts.
+- Routes coloured by how often you ran them, or by month, pace or elevation (`--color-by`).
+- An optional band of charts: kilometres per month, the time of day you run and the direction of your streets (`--graphs`).
+- An atlas of every city you ran in (`--layout atlas`) and a finisher print of one race (`--layout race`), both below.
+
+## Styles
+
+<p align="center"><img src="docs/styles.jpg" width="100%" alt="The same Madrid poster in twelve styles"></p>
+
+`--style` picks one of `huella`, `carbon`, `midnight`, `blueprint`, `ink`, `graphite`, `neon`, `lavender`, `sunset`, `forest`, `blush` and `ocean`. They work for the poster, the atlas and the race print. The dark ones (`midnight`, `graphite`, `neon`) give the routes a soft glow, still drawn as vectors.
+
+## Colour and charts
+
+<p align="center"><img src="docs/colour-modes.jpg" width="100%" alt="One poster coloured by repetition, by month, by pace and by elevation"></p>
+
+The line weight always grows with how often you ran a street; `--color-by` decides what the colour says: `heat` (how often, the default), `single` (one ink), `month` (when in the year), `pace` (how fast each run was) or `elevation` (how high, from your watch). `--graphs` adds kilometres per month, a 24-hour rose of when you start and a rose of the directions you run, all in the local time and place of each run.
+
+<p align="center"><img src="docs/poster-graphs.jpg" width="49%" alt="Poster with the band of charts under the map"></p>
 
 ## Atlas: every city you ran in
 
@@ -49,6 +65,21 @@ pinless export_12345678.zip --layout atlas --name "Lucia" --year 2025 --pdf atla
 
 One small map per city on the same print: the city where you ran most comes first, then the others in the order you first ran there, each with its name, country, kilometres and runs. Line colour means the same in every map, so a street you ran fifty times at home is darker than a one-off loop by the hotel. Up to 9 maps by default (`--max-cities`, at most 12); the smallest cities are left out of the maps, the print says how many, and the totals still count them.
 
+## Race: one run as a finisher print
+
+<p align="center">
+  <img src="docs/race.jpg" width="40%" alt="Finisher print of a half marathon in Madrid with its elevation profile, time, pace and kilometre splits">
+  <img src="docs/wall-race.jpg" width="58%" alt="The race print in a black frame hung above a sideboard">
+</p>
+
+```bash
+pinless export_12345678.zip --layout race --activity 2025-04-06 --title "Spring Half Marathon" --name "Lucia"
+```
+
+The course coloured by your pace along it (or `--color-by elevation` or `single`), its elevation profile, distance, time, pace, climb and every kilometre split, with its date. The headline is the city unless you give one with `--title`: the activity's own name is not printed by default, because names often say where a run starts ("from Mum's"). `--activity` takes `longest` (the default), `latest`, a date or an activity id.
+
+A run that starts or ends at one of your private places (a long run from home) is refused, since one course drawn from your door points at it. Pick another run, or pass `--allow-private-ends`: the print then shows one unbroken stretch of the run that stays more than 1.6 to 2.6 zone radii (800 to 1300 m by default, drawn at random each time) from those places, wherever the run comes back to them, shortened by a random 200 to 800 m at each end that one lies beyond, and its distance, time, pace, profile, climb and splits describe only that stretch.
+
 ## Privacy
 
 A heatmap of your runs shows where you live. Pinless removes that before drawing anything:
@@ -56,10 +87,11 @@ A heatmap of your runs shows where you live. Pinless removes that before drawing
 1. It trims the first and last 300 m of every activity.
 2. It finds every place where your runs often start or end (home, work, the gym) and deletes all points inside an irregular zone around each one, including runs that only pass by. In the atlas this is done city by city, the private places of every city also protect the others (a long run grouped elsewhere can still start at home), and where you ran only a few times a single loop run is enough to hide where it started (a hotel, a family home).
 3. It checks the result. If any line still touches a zone, nothing is exported.
-4. It never prints coordinates, start points, activity names or dates, and nothing outside the visible map is written into the PNG, PDF or SVG. The favourite street is never one within 1 km of a private zone.
+   The race print works on a single course and always draws one unbroken stretch of it. A course that only passes one of your private places is drawn whole, since a gap in it would point at the very place it hides. A run that starts or ends at a private place (within 1.5 zone radii, in its first or last 300 m) is refused unless you pass `--allow-private-ends`, which keeps a stretch well clear of that place, as above; a `--zone` is always kept clear the same way. For the race print, a private place is also where two or more of your other runs start or end close to where this one does, within 1.5 zone radii of its first or last 300 m (a new home, a holiday flat, before years of history learn it). A loop from a place none of your other runs starts from (a first run from a hotel) cannot be told from a race start: it is drawn whole, and Pinless says so, so you can add a `--zone` there.
+4. It never prints coordinates or start points, and nothing outside the visible map is written into the PNG, PDF or SVG. Dates are printed only on the race print, where they are the point, and never an activity's own name: the race headline is the city or what you write with `--title`. The favourite street is never one within 1 km of a private zone.
 5. Your files never leave your computer. Only the bounding box of the area is sent out: to OpenStreetMap's Nominatim for the city name and to its Overpass service for the streets (in the atlas, each city's box, and its centre rounded to about 1 km for the name). When the main Overpass server is busy, Pinless tries the public mirror overpass.private.coffee; to use another server, set `PINLESS_OVERPASS` to its API address.
 
-A run that starts in one place and ends in another, once, only has its ends trimmed. This reduces the risk; it is not a guarantee of anonymity. A map of where you run still says something about you. Look at the poster before you share it, and hide more places with `--zone LAT,LON,RADIUS_M` (repeatable).
+Stray GPS fixes at the start or end of a file (a watch that opens with yesterday's position, then jumps) are dropped on import. A run that starts in one place and ends in another, once, only has its ends trimmed. This reduces the risk; it is not a guarantee of anonymity. A map of where you run still says something about you. Look at the poster before you share it, and hide more places with `--zone LAT,LON,RADIUS_M` (repeatable).
 
 ## Options
 
@@ -70,8 +102,9 @@ A run that starts in one place and ends in another, once, only has its ends trim
 | `--place "Valencia, Spain"` | Use a named place instead of the area where you run most |
 | `--bbox S,W,N,E` | Use an exact box |
 | `--title`, `--name`, `--headline city\|name` | Headline text and inscription |
-| `--layout editorial\|atlas`, `--max-cities 9` | One city, or one small map per city |
-| `--style huella\|carbon`, `--size A4\|A3\|50x70` | Look and paper |
+| `--layout editorial\|atlas\|race`, `--max-cities 9`, `--activity longest`, `--allow-private-ends` | One city, one small map per city, or one race |
+| `--color-by heat\|single\|month\|pace\|elevation`, `--graphs` | What the line colour says; the band of charts |
+| `--style huella\|carbon\|midnight\|...`, `--size A4\|A3\|50x70` | One of twelve styles; paper |
 | `--lang en\|es` | Labels in English or Spanish |
 | `--out`, `--pdf`, `--svg`, `--preview` | Outputs |
 | `--zone LAT,LON,R` | Extra private zone |

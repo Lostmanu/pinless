@@ -1,4 +1,4 @@
-"""pinless EXPORT [--year 2025] [--name Lucía] [--place "Madrid"] [--layout editorial|atlas] [--style huella]
+"""pinless EXPORT [--year 2025] [--name Lucía] [--place "Madrid"] [--layout editorial|atlas|race] [--style huella]
 
 With no area options it finds where you run most, fetches that area's OpenStreetMap data once (cached) and names the
 city. Everything else runs locally: the export never leaves the machine; only the area's bounding box is sent to
@@ -7,7 +7,9 @@ OpenStreetMap services.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import os
+import re
 import sys
 import time
 
@@ -15,7 +17,8 @@ import numpy as np
 from pyproj import Transformer
 from shapely.geometry import LineString, box
 
-from . import area, atlas, ingest, privacy, render, render_sport, render_editorial, stats
+from . import area, atlas, colouring, ingest, privacy, race, render, render_sport, render_editorial, stats
+from .localtime import local_start
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -27,17 +30,28 @@ def main(argv=None):
     p.add_argument("--bbox", default=None, help="south,west,north,east (degrees); default: where you run most")
     p.add_argument("--place", default=None, help="use a named place as the area, e.g. \"Valencia, Spain\"")
     p.add_argument("--cache", default=None, help="pre-fetched OSM folder name under ./cache (tools/fetch_osm.py)")
-    p.add_argument("--title", default="", help="headline city text; default: --place or the city found at the area centre")
-    p.add_argument("--year", type=int, default=None)
+    p.add_argument("--title", default="", help="headline text; default: --place or the city found at the area centre")
+    p.add_argument("--year", type=int, default=None, help="only activities that started that year (local time)")
     p.add_argument("--type", default="Run")
-    p.add_argument("--layout", default="editorial", choices=["classic", "sport", "editorial", "atlas"],
-                   help="atlas: one small map per city you ran in")
+    p.add_argument("--layout", default="editorial", choices=["classic", "sport", "editorial", "atlas", "race"],
+                   help="atlas: one small map per city you ran in; race: one activity as a finisher print")
     p.add_argument("--max-cities", type=int, default=9, help="atlas: most cities on the print (1-12)")
+    p.add_argument("--activity", default="longest",
+                   help="race: longest (default), latest, a date YYYY-MM-DD or an activity id")
+    p.add_argument("--allow-private-ends", action="store_true",
+                   help="race: draw a run that starts or ends at a private place, without that end and a random "
+                        "stretch more, with its numbers limited to what is drawn")
+    p.add_argument("--graphs", action="store_true",
+                   help="editorial: add km per month, time of day and direction charts under the map")
+    p.add_argument("--color-by", default="heat", choices=colouring.MODES,
+                   help="route colour: heat (how often), single, month, pace or elevation (editorial and atlas); "
+                        "race: pace (default), elevation or single")
     p.add_argument("--name", default="", help="runner name for sport/editorial layouts (gifts)")
     p.add_argument("--headline", default="city", choices=["city", "name"],
                    help="editorial headline: city (default) or runner name")
     p.add_argument("--style", default=None,
-                   help="classic: nightrun|ink · sport: volt|pista · editorial and atlas: huella|carbon")
+                   help="classic: nightrun|ink · sport: volt|pista · editorial, atlas and race: huella, carbon, "
+                        "midnight, blueprint, ink, graphite, neon, lavender, sunset, forest, blush, ocean")
     p.add_argument("--size", default="A3", choices=sorted(render.SIZES))
     p.add_argument("--dpi", type=int, default=300)
     p.add_argument("--lang", default="en", choices=["en", "es"])
@@ -51,11 +65,27 @@ def main(argv=None):
     p.add_argument("--preview", default=None, help="lightweight editorial JPEG preview (1600 px high)")
     a = p.parse_args(argv)
     styles = {"classic": render.STYLES, "sport": render_sport.STYLES, "editorial": render_editorial.STYLES,
-              "atlas": render_editorial.STYLES}
+              "atlas": render_editorial.STYLES, "race": render_editorial.STYLES}
     if a.style and a.style not in styles[a.layout]:
         p.error(f"style {a.style!r} is not available for {a.layout}; choose {', '.join(styles[a.layout])}")
-    if a.svg and a.layout not in ("editorial", "atlas"):
-        p.error("--svg is available for the editorial and atlas layouts")
+    if a.graphs and a.layout != "editorial":
+        p.error("--graphs is available for the editorial layout")
+    if a.color_by != "heat" and a.layout not in ("editorial", "atlas", "race"):
+        p.error("--color-by is available for the editorial, atlas and race layouts")
+    if a.svg and a.layout not in ("editorial", "atlas", "race"):
+        p.error("--svg is available for the editorial, atlas and race layouts")
+    if (a.activity != "longest" or a.allow_private_ends) and a.layout != "race":
+        p.error("--activity and --allow-private-ends are for the race layout")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.activity):
+        try:
+            dt.date.fromisoformat(a.activity)
+        except ValueError:
+            p.error(f"--activity {a.activity}: not a real date (YYYY-MM-DD)")
+    if a.layout == "race" and a.color_by not in ("heat", "pace", "elevation", "single"):
+        p.error("the race layout colours its course by pace (default), elevation or single")
+    if a.layout == "race" and (a.bbox or a.place or a.cache or a.fit or a.headline != "city" or a.graphs):
+        p.error("the race layout frames its course by itself: --bbox, --place, --cache, --fit, --headline and --graphs "
+                "do not apply")
     if a.layout == "atlas" and (a.bbox or a.place or a.cache or a.fit or a.headline != "city"):
         p.error("the atlas finds every city by itself: --bbox, --place, --cache, --fit and --headline do not apply")
     if not 1 <= a.max_cities <= 12:
@@ -64,20 +94,26 @@ def main(argv=None):
         p.error("--headline name is available for the editorial layout")
     if a.headline == "name" and not a.name.strip():
         p.error("--headline name requires --name")
-    if a.preview and (a.layout not in ("editorial", "atlas") or
+    if a.preview and (a.layout not in ("editorial", "atlas", "race") or
                       os.path.splitext(a.preview)[1].lower() not in (".jpg", ".jpeg")):
-        p.error("--preview requires the editorial or atlas layout and a .jpg or .jpeg filename")
+        p.error("--preview requires the editorial, atlas or race layout and a .jpg or .jpeg filename")
     t0 = time.time()
 
     acts, rep = ingest.read_export(a.export)
     print(f"[ingest] files {rep.files_seen} · used {rep.used} · no GPS {rep.no_gps} · unreadable {rep.unreadable} · "
           f"unsupported {rep.unsupported}")
-    sel = [x for x in acts if x.type.lower() == a.type.lower() and (a.year is None or (x.start and x.start.year == a.year))]
+    # the year of each run where it was run: a New Year's Eve run in Madrid at 00:30 belongs to the new year
+    sel = [x for x in acts if x.type.lower() == a.type.lower()
+           and (a.year is None or ((t := local_start(x)) is not None and t.year == a.year))]
     if not sel:
         print("no activities match the type/year filters")
         return 2
     if a.layout == "atlas":
         code = atlas.run(sel, a)
+        print(f"[done] {time.time() - t0:.0f}s")
+        return code
+    if a.layout == "race":  # one activity; zones from every activity of that type, whatever the year
+        code = race.run(sel, [x for x in acts if x.type.lower() == a.type.lower()], a)
         print(f"[done] {time.time() - t0:.0f}s")
         return code
     if a.bbox:
@@ -119,7 +155,7 @@ def main(argv=None):
     print(f"[privacy] zones suggested {prep.zones_suggested} · user zones {prep.zones_user} · "
           f"km in {prep.km_in:.0f} -> out {prep.km_out:.0f} · leak check {prep.leak_check}")
     if a.layout == "editorial":
-        aspect = render_editorial.map_aspect(a.size)
+        aspect = render_editorial.map_aspect(a.size, a.graphs)
     else:
         aspect = 1 / 1.22 if a.layout == "classic" else (render.SIZES[a.size][0] - 28 * render.SIZES[a.size][0] / 297) / (268 * render.SIZES[a.size][0] / 297)
     if a.fit and pieces:
@@ -146,7 +182,7 @@ def main(argv=None):
         a.title = (a.place.split(",")[0] if a.place else area.city_name((s + n) / 2, (w + e) / 2, lang=a.lang))
         if a.title:
             print(f"[area] headline: {a.title}")
-    years = sorted({x.start.year for x in sel if x.start})
+    years = sorted({t.year for x in sel if (t := local_start(x))})
     span = f"{years[0]}–{years[-1]}" if len(years) > 1 else (str(years[0]) if years else "")  # one year: "2025"
     stats_ = {"n": len(sel), "km": total_m / 1000, "year_label": str(a.year) if a.year else span}
     if a.layout in ("sport", "editorial"):
@@ -159,11 +195,14 @@ def main(argv=None):
             info = render_editorial.render(pieces_all, basemap, extent, st_, a.out, style=a.style or "huella",
                                            size=a.size, dpi=a.dpi, name=a.name, city=a.title,
                                            year=stats_["year_label"], lang=a.lang, pdf_path=a.pdf, svg_path=a.svg,
-                                           headline=a.headline, preview_path=a.preview)
+                                           headline=a.headline, preview_path=a.preview, color_by=a.color_by,
+                                           activities=sel, tracks_xy=[t for _, t in tracks], graphs=a.graphs)
         else:
             info = render_sport.render(pieces_all, basemap, extent, st_, a.out, style=a.style or "volt", size=a.size, dpi=a.dpi,
                                        name=a.name, city=a.title, year=stats_["year_label"], lang=a.lang, pdf_path=a.pdf)
         info.setdefault("cap", 0)
+        if info.get("legend", {}).get("fallback"):
+            print(f"[colour] no {a.color_by} data in these activities: drawn in one colour")
     else:
         info = render.render(pieces_all, basemap, extent, stats_, a.out, style=a.style or "nightrun", size=a.size, dpi=a.dpi,
                              title=a.title, lang=a.lang, center_ll=((s + n) / 2, (w + e) / 2), pdf_path=a.pdf)

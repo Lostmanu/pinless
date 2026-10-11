@@ -8,9 +8,10 @@ import csv
 import datetime as dt
 import gzip
 import io
+import math
 import os
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from xml.etree import ElementTree as ET
 
 # activities.csv headers vary with the account language; map the ones we need.
@@ -35,6 +36,69 @@ class Activity:
     times: list = None  # seconds since the first point, aligned with lonlat (None if unknown)
     ele: list = None  # metres above sea level, aligned with lonlat (None if the file has none)
     name: str = ""  # the activity's title in the export (a race name, or Strava's "Morning Run")
+
+
+def _step_m(p, q):
+    lat = math.radians((p[1] + q[1]) / 2)
+    return 6371000.0 * math.hypot(math.radians(q[0] - p[0]) * math.cos(lat), math.radians(q[1] - p[1]))
+
+
+def stray_ends(lonlat, secs=None, jump_m=300.0, window_m=500.0):
+    """(lo, hi): the points to keep once the stray fixes at either end are dropped, or (0, 0) if nothing real is left.
+
+    A watch can open with a stale position (yesterday's, or the last one before it found the satellites), recorded
+    once or many times, and then jump to where it really is; it can also close with one. A step is stray when it is
+    impossible for the body: with a clock, faster than 30 m/s over more than 50 m, or longer than jump_m at more than
+    12 m/s or after a pause of over 10 minutes; without one, longer than jump_m and than 8 typical steps (so a sparse
+    recording keeps its long steps). Everything before the last stray step within the first window_m metres of real
+    movement goes, and the same at the end: counted in metres, not points, however many times the stale fix repeats."""
+    n = len(lonlat)
+    if n < 2:
+        return (0, n)
+    steps = [_step_m(lonlat[i], lonlat[i + 1]) for i in range(n - 1)]
+    if secs is not None and (len(secs) != n or any(t is None for t in secs)):
+        secs = None  # an incomplete clock is no clock
+    if secs is not None:
+        dts = [abs(secs[i + 1] - secs[i]) for i in range(n - 1)]
+        stray = [d > 50 and (d / max(t, 1e-3) > 30 or (d > jump_m and (d / max(t, 1e-3) > 12 or t > 600)))
+                 for d, t in zip(steps, dts)]
+    else:
+        limit = max(jump_m, 8 * sorted(steps)[len(steps) // 2])
+        stray = [d > limit for d in steps]
+    lo, moved = 0, 0.0
+    for i in range(n - 1):
+        if stray[i]:
+            lo = i + 1
+        else:
+            moved += steps[i]
+            if moved > window_m:
+                break
+    hi, moved = n, 0.0
+    for i in range(n - 2, lo - 1, -1):
+        if stray[i]:
+            hi = i + 1
+        else:
+            moved += steps[i]
+            if moved > window_m:
+                break
+    return (lo, hi) if hi - lo >= 2 else (0, 0)
+
+
+def clean(act):
+    """The activity without stray fixes at its ends (see stray_ends): the same object when there are none, None when
+    nothing real is left. Repeated until nothing changes: dropping a stale prefix brings the next window closer."""
+    for _ in range(5):
+        lo, hi = stray_ends(act.lonlat, act.times)
+        if (lo, hi) == (0, len(act.lonlat)):
+            return act
+        if hi - lo < 2:
+            return None
+        clock = act.times and len(act.times) == len(act.lonlat) and all(t is not None for t in act.times)
+        times = [t - act.times[lo] for t in act.times[lo:hi]] if clock else None
+        start = act.start + dt.timedelta(seconds=act.times[lo]) if act.start is not None and clock else act.start
+        act = replace(act, lonlat=list(act.lonlat[lo:hi]), times=times, start=start,
+                      ele=list(act.ele[lo:hi]) if act.ele else act.ele)
+    return act
 
 
 @dataclass
@@ -211,8 +275,12 @@ def read_export(path: str):
         if ts and all(t is not None for t in ts) and len(ts) == len(pts):
             secs = [(t - ts[0]).total_seconds() for t in ts]
         heights = ele if ele and len(ele) == len(pts) and all(e is not None for e in ele) else None
-        acts.append(Activity(id=str(m.get("id") or os.path.basename(name).split(".")[0]),
+        act = clean(Activity(id=str(m.get("id") or os.path.basename(name).split(".")[0]),
                              type=(m.get("type") or kind or "Unknown"), start=t0, lonlat=pts, source=name, times=secs,
                              ele=heights, name=m.get("name", "")))
+        if act is None:
+            rep.skip("no_gps", name, "only stray GPS fixes")
+            continue
+        acts.append(act)
         rep.used += 1
     return acts, rep

@@ -100,3 +100,20 @@ def test_favourite_street_is_far_from_true_home_and_work(repeat):
         lat, lon = truth[key]
         px, py = tr.transform(lon, lat)
         assert named.distance(Point(px, py)).min() >= 700, f"favourite street {fav} is close to {key}"
+
+
+def test_a_track_that_crosses_itself_is_not_split_where_it_crosses():
+    """An out and back along one street with GPS noise crosses itself every few metres: the cut must not node the
+    line there and drop the bits between crossings as stubs (it lost 113 km of the Madrid demo that way)."""
+    x = np.linspace(0, 3000, 601)
+    wobble = 3 * np.sin(x / 7.0)
+    zigzag = np.vstack([np.column_stack([x, wobble]), np.column_stack([x[::-1], -wobble[::-1]])])
+    homes = [np.column_stack([np.full(50, -4000.0 + i), np.linspace(0, 2000, 50)]) for i in range(6)]
+    pieces, rep = privacy.apply([zigzag] + homes, trim_m=300.0, zone_r=500.0)
+    mine = [p for i, p in pieces if i == 0]
+    assert rep.zones_suggested >= 1 and len(mine) == 1, "far from every zone: one piece, crossings or not"
+    assert mine[0].length == pytest.approx(privacy.LineString(privacy.trim_ends(zigzag, 300.0)).length)
+    through = np.column_stack([np.linspace(-6000, -2000, 801), np.full(801, 100.0)])  # crosses the zone at (-4000, 0)
+    pieces, _ = privacy.apply([through] + homes, trim_m=300.0, zone_r=500.0)
+    cut = [p for i, p in pieces if i == 0]
+    assert len(cut) == 2 and min(p.distance(Point(-4000, 0)) for p in cut) >= 200

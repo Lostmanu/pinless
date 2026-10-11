@@ -284,5 +284,12 @@ def fetch_basemap(bbox, root=None, log=print):
         except InsufficientResponseError:  # OSM answered: nothing of that kind in the area
             import geopandas as gpd
             gdf = gpd.GeoDataFrame({"name": []}, geometry=[], crs=4326)
+        except RuntimeError:
+            if nombre != "coast":
+                raise
+            # the coast only paints the sea: without a server now, the map is drawn without it and nothing is
+            # cached, so the next run tries again
+            log("[osm] the coastline could not be fetched now: this map has no sea; run again later to add it")
+            continue
         gdf.to_file(path, driver="GPKG")
     return folder

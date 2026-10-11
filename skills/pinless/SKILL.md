@@ -16,11 +16,21 @@ description: Make a print-ready poster of a runner's year from their Strava expo
 ## Steps
 1. Make sure it is installed: `pinless --help`. If not: `pip install git+https://github.com/Lostmanu/pinless`.
 2. Ask only for what you need: the export path, the year, the name to print (optional) and the style
-   (`huella` warm paper or `carbon` dark).
+   (`huella` warm paper, `carbon` dark green; also `midnight`, `blueprint`, `ink`, `graphite`, `neon`, `lavender`,
+   `sunset`, `forest`, `blush`, `ocean`).
 3. Run:
    `pinless "<export.zip>" --year <YEAR> --name "<NAME>" --style <STYLE> --out poster.png --pdf poster.pdf --preview poster.jpg`
    Add `--place "<City, Country>"` only if the user wants a city other than where they run most,
    and `--lang es` for Spanish labels.
    If they want every city they ran in on one print (trips, holidays), add `--layout atlas` instead of `--place`.
+   `--color-by month|pace|elevation|single` changes what the line colour says (default `heat`, how often), and
+   `--graphs` adds charts of km per month, time of day and direction under the map (single-city poster only).
+   For one race as a finisher print: `--layout race --activity <YYYY-MM-DD | latest | longest | id>`, with
+   `--title "<race name>"` if they want its name printed (the activity's own name is never printed by default).
 4. If the command prints `[privacy] STOP`, tell the user nothing was exported and why; do not try to bypass it.
+   For `--layout race`, a STOP that says the run starts or ends at a private place means it began at home or work:
+   suggest another run. Add `--allow-private-ends` only if the user asks for that run anyway, and tell them the print
+   will show only a stretch well clear of that place and describe only that stretch. If the log says the run is a
+   loop from a place no other run starts from, ask whether that place is private (a hotel, a friend's home); if it
+   is, add `--zone`.
 5. Show the user `poster.jpg` and tell them where `poster.pdf` is. Remind them to look at it before sharing.

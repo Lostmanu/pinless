@@ -7,6 +7,7 @@ The PDF/SVG use vector streets, routes and outlined, bundled OFL typography.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from pathlib import Path
 
 import matplotlib
@@ -24,7 +25,8 @@ from matplotlib.textpath import TextPath
 from matplotlib.transforms import Affine2D
 from shapely.geometry.polygon import orient
 
-from . import privacy
+from . import colouring, privacy
+from .graphs import draw_band
 from .render import MAJOR, MINOR, MM, SIZES, _hw, heat_raster
 from .render_sport import _num
 from .stats import fmt_time
@@ -48,6 +50,66 @@ STYLES = {
         "green": "#1a261f", "water": "#1f3028", "water_line": "#2c4137", "rule": "#586055",
         "street": {"major": ("#314134", 0.32), "minor": ("#25352a", 0.17), "path": ("#203126", 0.11)},
         "heat": ["#bc875d", "#d19e6d", "#e0b582", "#eed0a8", "#fff2d7"],
+    },
+    "midnight": {
+        "bg": "#0f1626", "ink": "#eef2f7", "sub": "#8a96ab", "accent": "#5fd4ff",
+        "green": "#121c2f", "water": "#16223a", "water_line": "#22324d", "rule": "#2c3852",
+        "street": {"major": ("#2a3650", 0.32), "minor": ("#1e283d", 0.17), "path": ("#1a2336", 0.11)},
+        "heat": ["#1f6f9c", "#2aa3d6", "#5fd4ff", "#b7f0ff", "#ffffff"], "glow": 0.16,
+    },
+    "blueprint": {
+        "bg": "#1d4a86", "ink": "#f3f7fc", "sub": "#b4c8e3", "accent": "#ffd45c",
+        "green": "#204f8d", "water": "#1a4479", "water_line": "#3c6aa6", "rule": "#5d87bd",
+        "street": {"major": ("#4a76ad", 0.32), "minor": ("#3a679f", 0.17), "path": ("#33609a", 0.11)},
+        "heat": ["#a9c8ee", "#d3e4f8", "#ffffff", "#ffe9a8", "#ffd45c"],
+    },
+    "ink": {
+        "bg": "#fbfaf7", "ink": "#111111", "sub": "#6b6b6b", "accent": "#111111",
+        "green": "#f1f1ec", "water": "#e7eaec", "water_line": "#d6dadd", "rule": "#c9c9c4",
+        "street": {"major": ("#d6d5d0", 0.32), "minor": ("#e2e1dc", 0.17), "path": ("#e9e8e3", 0.11)},
+        "heat": ["#9c9c9c", "#6e6e6e", "#444444", "#222222", "#000000"],
+    },
+    "graphite": {
+        "bg": "#222324", "ink": "#f1f1ef", "sub": "#9b9d9b", "accent": "#ff6b3d",
+        "green": "#26282a", "water": "#2b2f33", "water_line": "#383d42", "rule": "#4a4c4e",
+        "street": {"major": ("#3a3c3e", 0.32), "minor": ("#2e3032", 0.17), "path": ("#2a2c2e", 0.11)},
+        "heat": ["#6a6c6e", "#9a9c9e", "#c9cbcc", "#ebecec", "#ffffff"], "glow": 0.10,
+    },
+    "neon": {
+        "bg": "#0c0812", "ink": "#f6f0ff", "sub": "#9c8fb3", "accent": "#ff3d9a",
+        "green": "#120d1a", "water": "#140f20", "water_line": "#221a33", "rule": "#33284a",
+        "street": {"major": ("#2a2238", 0.32), "minor": ("#1d1729", 0.17), "path": ("#181322", 0.11)},
+        "heat": ["#6a1fa0", "#b5179e", "#f72585", "#ff8c42", "#ffe066"], "glow": 0.20,
+    },
+    "lavender": {
+        "bg": "#efebf5", "ink": "#2a2140", "sub": "#7d7395", "accent": "#6741d9",
+        "green": "#e8e4ef", "water": "#e2e2f0", "water_line": "#d0d0e4", "rule": "#cfc8dc",
+        "street": {"major": ("#dcd5e6", 0.32), "minor": ("#e5dfee", 0.17), "path": ("#eae5f1", 0.11)},
+        "heat": ["#c0b3e8", "#9b87d8", "#7655c7", "#5233a3", "#2f1b66"],
+    },
+    "sunset": {
+        "bg": "#fbf1e6", "ink": "#2a1d2e", "sub": "#8a7468", "accent": "#e8590c",
+        "green": "#f4ecdc", "water": "#ece6e4", "water_line": "#ddd2cf", "rule": "#d8c8b8",
+        "street": {"major": ("#e8dccd", 0.32), "minor": ("#efe5d8", 0.17), "path": ("#f2e9de", 0.11)},
+        "heat": ["#ffb35c", "#ff8a2b", "#f25d1d", "#c2255c", "#5f3dc4"],
+    },
+    "forest": {
+        "bg": "#eef1e8", "ink": "#1f2d1f", "sub": "#6d7a68", "accent": "#2f6b3a",
+        "green": "#e1e8d6", "water": "#dde7e4", "water_line": "#c7d6d1", "rule": "#c3cbbb",
+        "street": {"major": ("#d6dccd", 0.32), "minor": ("#e1e6d9", 0.17), "path": ("#e7ebe0", 0.11)},
+        "heat": ["#a3c39b", "#6fa065", "#3f7a45", "#25522c", "#13301a"],
+    },
+    "blush": {
+        "bg": "#f8ece9", "ink": "#3a1f24", "sub": "#9a7b7f", "accent": "#c2185b",
+        "green": "#f2e6e1", "water": "#ece4e6", "water_line": "#dfd2d5", "rule": "#dccbc8",
+        "street": {"major": ("#ead9d6", 0.32), "minor": ("#f0e2df", 0.17), "path": ("#f3e7e4", 0.11)},
+        "heat": ["#f2a7b8", "#e06688", "#c2185b", "#880e4f", "#4a0629"],
+    },
+    "ocean": {
+        "bg": "#edf4f7", "ink": "#0f2a3d", "sub": "#6b8595", "accent": "#0b6e99",
+        "green": "#e4eeee", "water": "#d3e6ee", "water_line": "#bcd6e2", "rule": "#bfd0d9",
+        "street": {"major": ("#d2dfe6", 0.32), "minor": ("#dde8ed", 0.17), "path": ("#e3ecf0", 0.11)},
+        "heat": ["#8fd0e8", "#3fa9d1", "#0b6e99", "#0a4a6e", "#062a40"],
     },
 }
 
@@ -131,20 +193,79 @@ def draw_basemap(ax, basemap, extent, S, k, map_w_mm, sw=1.0):
                                    joinstyle="round", zorder=3))
 
 
-def draw_routes(ax, segments, counts, cap, cmap, k, base=0.55, gain=0.42, scale=1.0):
-    """Routes coloured and weighted by how often they were run, in LEVELS steps drawn lightest first. Consecutive
-    segments of a step are joined back into polylines; the geometry itself is untouched."""
+def draw_routes(ax, segments, counts, cap, cmap, k, base=0.55, gain=0.42, scale=1.0, glow=0.0, values=None):
+    """Routes weighted by how often they were run and coloured by `values` in [0, 1] (default: the same frequency),
+    in LEVELS steps, thinnest first. Consecutive segments of a step are joined back into polylines; the geometry
+    itself is untouched. glow > 0 lays a wide, faint stroke of the same colour under each step (vector, so the PDF
+    stays sharp): for dark styles."""
     if not len(segments):
         return
     strength = np.clip(np.log1p(counts) / math.log1p(cap), 0, 1)
-    level = np.rint(strength * (LEVELS - 1)).astype(int)
-    for lv in np.unique(level):
-        segs = segments[level == lv]
+    if values is None:  # heat: weight and colour tell the same thing
+        wl = cl = np.rint(strength * (LEVELS - 1)).astype(int)
+    else:  # weight in 8 steps, colour in LEVELS steps
+        wl = (np.rint(strength * 7) * (LEVELS - 1) / 7).astype(int)
+        cl = np.rint(np.clip(values, 0, 1) * (LEVELS - 1)).astype(int)
+    groups = Counter(zip(wl.tolist(), cl.tolist()))
+    # thinnest first; within a weight, the colour most segments share is drawn last, on top of the rarer ones
+    order = sorted(groups) if values is None else sorted(groups, key=lambda g: (g[0], groups[g], g[1]))
+    for w_lv, c_lv in order:
+        segs = segments[(wl == w_lv) & (cl == c_lv)]
         breaks = np.nonzero(np.any(segs[1:, 0] != segs[:-1, 1], axis=1))[0] + 1
         runs = [np.vstack([r[0, 0], r[:, 1]]) for r in np.split(segs, breaks)]
-        s = lv / (LEVELS - 1)
-        ax.add_patch(PathPatch(_line_path(runs), fill=False, edgecolor=cmap(s), linewidth=(base + gain * s) * k * scale,
-                               capstyle="round", joinstyle="round", zorder=5))
+        w, c = w_lv / (LEVELS - 1), cmap(c_lv / (LEVELS - 1))
+        path, width = _line_path(runs), (base + gain * w) * k * scale
+        if glow:
+            ax.add_patch(PathPatch(path, fill=False, edgecolor=c, alpha=glow, linewidth=width * 4.0,
+                                   capstyle="round", joinstyle="round", zorder=4.9))
+        ax.add_patch(PathPatch(path, fill=False, edgecolor=c, linewidth=width, capstyle="round",
+                               joinstyle="round", zorder=5))
+
+
+def route_colours(color_by, raws, S):
+    """(colour values per map, legend, colormap) for colouring.MODES; raws: one colouring.raw_values per map.
+    A mode with no data at all (no clock, no altitude) falls back to one ink; the legend says so ("fallback")."""
+    ink = LinearSegmentedColormap.from_list("route", S["heat"])
+    if color_by == "heat":
+        return [None] * len(raws), {"mode": "heat"}, ink
+    known = any(r is not None and np.isfinite(r).any() for r in raws)
+    if color_by == "single" or not known:
+        legend = {"mode": "single"} if color_by == "single" else {"mode": "single", "fallback": color_by}
+        return [None if r is None else np.full(len(r), 0.85) for r in raws], legend, ink
+    cmap = colouring.SEASONS if color_by == "month" else ink
+    vals, legend = colouring.normalise(color_by, raws)
+    return vals, legend, cmap
+
+
+def draw_legend(plot, text, k, S, cmap, legend, lang, y):
+    """The key at the bottom right: what the line colour means. plot/text draw in A3-grid millimetres."""
+    es = lang == "es"
+    mode = legend.get("mode", "heat")
+    names = {"heat": ("REPETICIÓN", "REPETITION"), "single": ("REPETICIÓN", "REPETITION"), "month": ("MES", "MONTH"),
+             "pace": ("RITMO", "PACE"), "elevation": ("ALTITUD", "ELEVATION")}
+    text(212, y, names[mode][0 if es else 1], pt=5.8, color=S["sub"], align="right")
+    if mode in ("heat", "single"):
+        for i, v in enumerate(np.linspace(0, 1, 6)):
+            plot([(218 + i * 8.4) * k, (225 + i * 8.4) * k], [(y + 1) * k, (y + 1) * k],
+                 color=cmap(v if mode == "heat" else 0.85), lw=(0.55 + 0.95 * v) * k, solid_capstyle="round")
+        text(279, y - 1, "+", pt=8, align="right", color=S["sub"])
+    elif mode == "month":
+        letters = "EFMAMJJASOND" if es else "JFMAMJJASOND"
+        for i in range(12):
+            x = 218 + i * 5.1
+            plot([x * k, (x + 3.8) * k], [(y + 1) * k, (y + 1) * k], color=cmap(i / 11), lw=1.6 * k,
+                 solid_capstyle="round")
+            text(x + 1.9, y + 2.6, letters[i], pt=4.2, color=S["sub"], align="center")
+    else:
+        for i, v in enumerate(np.linspace(0, 1, 6)):
+            plot([(218 + i * 8.4) * k, (225 + i * 8.4) * k], [(y + 1) * k, (y + 1) * k], color=cmap(v), lw=1.3 * k,
+                 solid_capstyle="round")
+        if mode == "pace":  # colour 0 is the slow end
+            lo, hi = colouring.fmt_pace(legend["hi"]), colouring.fmt_pace(legend["lo"])
+        else:
+            lo, hi = f"{legend['lo']:.0f} m", f"{legend['hi']:.0f} m"
+        text(218, y + 2.6, lo, pt=4.6, color=S["sub"])
+        text(268, y + 2.6, hi, pt=4.6, color=S["sub"], align="right")
 
 
 def _outline(path, trans, step):
@@ -190,13 +311,13 @@ def place_text(value, x, y, k, pt=9, font=None, align="left", max_w=None, height
     return path, trans, width / k, (top - bottom) * scale / k
 
 
-def map_aspect(size="A3"):
+def map_aspect(size="A3", graphs=False):
     wmm, _ = SIZES[size]
     k = wmm / 297
-    return (wmm - 36 * k) / (222 * k)
+    return (wmm - 36 * k) / ((190 if graphs else 222) * k)  # the graphs band takes 32 mm from the map
 
 
-def _density_segments(pieces, extent, acc):
+def _density_segments(pieces, extent, acc, with_ids=False):
     """Colour original segments from an activity-per-pixel density field.
 
     No interpolation, simplification or quantization changes the geometry.
@@ -204,24 +325,29 @@ def _density_segments(pieces, extent, acc):
     """
     x0, x1, y0, y1 = extent
     h, w = acc.shape
-    segments = []
-    for _, line in pieces:
+    segments, ids = [], []
+    for act, line in pieces:
         c = np.asarray(line.coords)
         if len(c) > 1:
             segments.append(np.stack((c[:-1], c[1:]), axis=1))
+            ids.append(np.full(len(c) - 1, act))
     if not segments:
-        return np.empty((0, 2, 2)), np.empty(0)
+        return (np.empty((0, 2, 2)), np.empty(0)) + ((np.empty(0, dtype=int),) if with_ids else ())
     segments = np.concatenate(segments)
     probes = np.stack((segments[:, 0], segments.mean(axis=1), segments[:, 1]), axis=1)
     px = np.clip(((probes[:, :, 0] - x0) / (x1 - x0) * w).astype(int), 0, w - 1)
     py = np.clip(((y1 - probes[:, :, 1]) / (y1 - y0) * h).astype(int), 0, h - 1)
     density = np.median(acc[py, px], axis=1)
+    if with_ids:  # the activity of each segment, for colourings that depend on the run
+        return segments, np.maximum(density, 1), np.concatenate(ids)
     return segments, np.maximum(density, 1)
 
 
 def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", dpi=300,
            name="", city="", year="", lang="es", pdf_path=None, svg_path=None,
-           headline="city", preview_path=None):
+           headline="city", preview_path=None, color_by="heat", activities=None, tracks_xy=None, graphs=False):
+    """activities and tracks_xy (the runs the pieces come from, in the same order) are needed by colourings other
+    than heat and single."""
     if headline not in ("city", "name"):
         raise ValueError("headline must be city or name")
     if headline == "name" and not name.strip():
@@ -241,7 +367,9 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
         if not value:
             return (0, 0)
         path, trans, w, h = place_text(value, x, y, k, pt, font, align, max_w, height, clear)
-        page.add_patch(PathPatch(path, transform=trans + page.transData, color=color or S["ink"], lw=0))
+        # snap=False: a glyph made only of straight strokes (E, F, H, L, T) would be snapped to whole pixels and lose
+        # its thin stems at small sizes
+        page.add_patch(PathPatch(path, transform=trans + page.transData, color=color or S["ink"], lw=0, snap=False))
         return w, h
 
     def rule(y, left=18, right=279, width=0.45, color=None):
@@ -264,7 +392,7 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
         text(18, 84, "UN AÑO EN MOVIMIENTO" if es else "A YEAR IN MOTION", pt=7.2, color=S["sub"])
         text(279, 83.5, name.upper(), pt=13.2, align="right", max_w=105)
 
-    m, map_top, map_w, map_h = 18 * k, 94 * k, wmm - 36 * k, 222 * k
+    m, map_top, map_w, map_h = 18 * k, 94 * k, wmm - 36 * k, (190 if graphs else 222) * k
     ax = fig.add_axes([m / wmm, 1 - (map_top + map_h) / hmm, map_w / wmm, map_h / hmm], zorder=1)
     ax.set_xlim(extent[0], extent[1])
     ax.set_ylim(extent[2], extent[3])
@@ -277,10 +405,18 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
     W = int(round(map_w * MM * 220))
     H = int(round(map_h * MM * 220))
     acc = heat_raster(pieces, extent, W, H, max(1, int(round(0.22 * 220 / 25.4 * k))))
-    segments, counts = _density_segments(pieces, extent, acc)
+    segments, counts, ids = _density_segments(pieces, extent, acc, with_ids=True)
     cap = max(3.0, float(np.percentile(counts, 98.5))) if len(counts) else 1
-    cmap = LinearSegmentedColormap.from_list("huella", S["heat"])
-    draw_routes(ax, segments, counts, cap, cmap, k)
+    if color_by in ("heat", "single"):
+        raw = np.zeros(len(segments))
+    elif activities is None:  # nothing to colour by: route_colours falls back to one ink and says so
+        raw = np.full(len(segments), np.nan)
+    else:
+        raw = colouring.raw_values(color_by, ids, segments, activities, tracks_xy)
+    (values,), legend, cmap = route_colours(color_by, [raw], S)
+    draw_routes(ax, segments, counts, cap, cmap, k, glow=S.get("glow", 0.0), values=values)
+    if graphs and activities is not None:  # km per month, time of day, direction: aggregates only
+        draw_band(fig, text, S, k, wmm, hmm, activities, tracks_xy, lang, 289, 29, big_font=DISPLAY)
 
     rule(323)
     km_w, _ = text(18, 331, _num(stats["km"], lang), pt=109, font=DISPLAY, max_w=119, height=28)
@@ -303,11 +439,7 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
         text(x, 385.5, label, pt=6.3, color=S["sub"], max_w=58)
     rule(392)
     text(18, 399, "CADA SALIDA DEJA HUELLA." if es else "EVERY RUN LEAVES A TRACE.", pt=6.8)
-    text(212, 399, "REPETICIÓN" if es else "REPETITION", pt=5.8, color=S["sub"], align="right")
-    for i, v in enumerate(np.linspace(0, 1, 6)):
-        page.plot([(218 + i * 8.4) * k, (225 + i * 8.4) * k], [400 * k, 400 * k],
-                  color=cmap(v), lw=(0.55 + 0.95 * v) * k, solid_capstyle="round")
-    text(279, 398, "+", pt=8, align="right", color=S["sub"])
+    draw_legend(page.plot, text, k, S, cmap, legend, lang, 399)
     text(18, 409, "© OpenStreetMap contributors · ODbL · openstreetmap.org/copyright", pt=6.2,
          color=S["sub"], max_w=238)
 
@@ -326,4 +458,4 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
         fig.savefig(preview_path, dpi=1600 * 25.4 / hmm, facecolor=S["bg"],
                     pil_kwargs={"quality": 88, "optimize": True})
     plt.close(fig)
-    return {"W": W, "H": H, "cap": cap, "max": int(acc.max()) if acc.size else 0}
+    return {"W": W, "H": H, "cap": cap, "max": int(acc.max()) if acc.size else 0, "legend": legend}

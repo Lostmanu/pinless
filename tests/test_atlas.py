@@ -121,7 +121,7 @@ def test_numbers_count_every_city_and_the_maps_skip_the_ones_privacy_empties(mon
                         {"cap": 3.0, "max": 1})
     args = types.SimpleNamespace(zone=[], trim=300.0, zone_radius=500.0, max_cities=2, lang="en", year=None,
                                  style=None, size="A3", dpi=40, name="", title="", out=str(tmp_path / "a.png"),
-                                 pdf=None, svg=None, preview=None)
+                                 pdf=None, svg=None, preview=None, color_by="heat")
     assert atlas.run(acts, args, log=lambda *_: None) == 0
     drawn, s = captured["drawn"], captured["summary"]
     assert [round(c.lat) for c in drawn] == [40, 49], "home and the biggest other city"

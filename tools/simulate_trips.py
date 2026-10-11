@@ -22,6 +22,7 @@ import zipfile
 
 import networkx as nx
 import numpy as np
+import tzfpy
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -80,7 +81,8 @@ def on_trip(day):
 def trip_runs(trip, rng, act_id, dt_s):
     lat, lon = centre_of(trip)
     h = trip["half"]
-    folder = area.fetch_basemap((lat - h, lon - h * 1.4, lat + h, lon + h * 1.4))
+    box_ = (lat - h, lon - h * 1.4, lat + h, lon + h * 1.4)
+    folder = area._cached_cover(area.cache_root(), box_) or area.fetch_basemap(box_)  # streets and parks suffice here
     crs = render.utm_crs(lon, lat)
     G, node_ids, ux, uy, to_utm = sim.build_graph(trip["city"], rng, base=folder, crs=crs)
     main_part = max(nx.weakly_connected_components(G), key=len)  # the download keeps loose fragments: route on the main one
@@ -144,6 +146,8 @@ def main():
     new = []
     for trip in TRIPS:
         runs, act_id = trip_runs(trip, rng, act_id, a.dt)
+        lat, lon = centre_of(trip)
+        sim.to_utc(runs, tzfpy.get_tz(lon, lat))  # local wall-clock time of that city, written as UTC
         new += runs
         print(f"{trip['city']}: {len(runs)} runs, {sum(r['dist_km'] for r in runs):.1f} km")
     for x in new:

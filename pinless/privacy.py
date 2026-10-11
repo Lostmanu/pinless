@@ -15,6 +15,7 @@ import random
 from dataclasses import dataclass, field
 
 import numpy as np
+import shapely
 from shapely.geometry import LineString, MultiLineString, Point, Polygon
 from shapely.ops import unary_union
 
@@ -61,11 +62,12 @@ def _clusters(points: np.ndarray, eps: float, min_pts: int):
         if k in seen:
             continue
         # flood fill over neighbouring non-empty cells
-        stack, comp = [k], []
+        stack, comp, cells = [k], [], []
         seen.add(k)
         while stack:
             c = stack.pop()
             comp.extend(buckets[c])
+            cells.append(c)
             for dx in (-1, 0, 1):
                 for dy in (-1, 0, 1):
                     n = (c[0] + dx, c[1] + dy)
@@ -74,6 +76,16 @@ def _clusters(points: np.ndarray, eps: float, min_pts: int):
                         stack.append(n)
         if len(comp) >= min_pts:
             out.append((points[comp].mean(axis=0), len(comp)))
+            # a chain of cells (home, a few starts on the way, a busy park) can drag that mean far from any of them:
+            # every busy neighbourhood of 3 x 3 cells is a centre too, so home keeps a zone of its own even when its
+            # starts straddle a cell edge
+            block = {c: [i for dx in (-1, 0, 1) for dy in (-1, 0, 1) for i in buckets.get((c[0] + dx, c[1] + dy), ())]
+                     for c in cells}
+            for c in sorted(cells, key=lambda c: (-len(block[c]), c)):
+                if len(block[c]) >= min_pts:
+                    centre = points[block[c]].mean(axis=0)
+                    if all(np.hypot(*(centre - o)) > eps for o, _ in out):
+                        out.append((centre, len(block[c])))
     return out
 
 
@@ -89,15 +101,53 @@ def _irregular_zone(centre, radius, rng: random.Random, n=14):
     return Polygon(pts).buffer(0)
 
 
+def _outside(xy, forbidden):
+    """The runs of a track outside the forbidden area, in track order, as coordinate arrays. Cut segment by segment:
+    an overlay of the whole line would also split it wherever it crosses itself, and the short bits between two
+    crossings (a street run out and back) would then be dropped as stubs."""
+    segs = shapely.linestrings(np.stack([xy[:-1], xy[1:]], axis=1))
+    hit = shapely.intersects(segs, forbidden)
+    runs, cur = [], []
+
+    def flush():
+        if len(cur) > 1:
+            runs.append(np.asarray(cur))
+        cur.clear()
+
+    for k in range(len(segs)):
+        a, b = xy[k], xy[k + 1]
+        if not hit[k]:
+            if not cur:
+                cur.append(a)
+            cur.append(b)
+            continue
+        rest = segs[k].difference(forbidden)
+        parts = [np.asarray(p.coords) for p in getattr(rest, "geoms", [rest]) if not p.is_empty and p.length > 0]
+        parts = [p if np.hypot(*(p[0] - a)) <= np.hypot(*(p[-1] - a)) else p[::-1] for p in parts]
+        for p in sorted(parts, key=lambda p: np.hypot(*(p[0] - a))):
+            if not (cur and np.hypot(*(p[0] - cur[-1])) < 1e-6):
+                flush()
+                cur.append(p[0])
+            cur.append(p[-1])
+        if not (cur and np.hypot(*(cur[-1] - b)) < 1e-6):
+            flush()
+    flush()
+    return runs
+
+
+def find_places(tracks_xy, eps=180.0, min_share=0.04, min_pts_floor=3):
+    """The persistent start/end clusters of the tracks: [(centre_xy, n), ...] (in memory only)."""
+    ends = np.array([p for t in tracks_xy if len(t) > 1 for p in (t[0], t[-1])])
+    return _clusters(ends, eps, max(min_pts_floor, int(min_share * len(tracks_xy))))
+
+
 def apply(tracks_xy: list, trim_m=300.0, zone_r=500.0, eps=180.0, min_share=0.04, user_zones_xy=(), margin_m=200.0,
           min_pts_floor=3):
     """tracks_xy: list of (N,2) arrays in metres. Returns (list of LineString pieces, report). Raises PrivacyError.
     min_pts_floor: fewest start/end points that make a zone; 2 means a single loop run already marks its start."""
     rep = PrivacyReport(activities_in=len(tracks_xy))
     rep.km_in = sum(float(np.hypot(*np.diff(t, axis=0).T).sum()) for t in tracks_xy if len(t) > 1) / 1000
-    ends = np.array([p for t in tracks_xy if len(t) > 1 for p in (t[0], t[-1])])
-    min_pts = max(min_pts_floor, int(min_share * len(tracks_xy)))
-    found = _clusters(ends, eps, min_pts)
+    found = find_places(tracks_xy, eps, min_share, min_pts_floor)
     rng = random.SystemRandom()  # fresh randomness every export; never stored
     centres = [c for c, _ in found]
     zones = [_irregular_zone(c, zone_r, rng) for c in centres]
@@ -109,18 +159,15 @@ def apply(tracks_xy: list, trim_m=300.0, zone_r=500.0, eps=180.0, min_share=0.04
     if not zones:
         rep.notes.append("no persistent start/end cluster found: only end trimming applied")
     forbidden = unary_union(zones) if zones else None
+    if forbidden is not None:
+        shapely.prepare(forbidden)
     pieces = []  # (activity_index, LineString)
     for i, t in enumerate(tracks_xy):
         t2 = trim_ends(t, trim_m)
         if len(t2) < 2:
             continue
-        g = LineString(t2)
-        if forbidden is not None:
-            g = g.difference(forbidden)
-        if g.is_empty:
-            continue
-        parts = [g] if isinstance(g, LineString) else list(getattr(g, "geoms", []))
-        pieces.extend((i, p) for p in parts if isinstance(p, LineString) and p.length > 30)
+        parts = [t2] if forbidden is None else _outside(t2, forbidden)
+        pieces.extend((i, p) for p in map(LineString, parts) if p.length > 30)
     # leak check: fail closed
     if forbidden is not None:
         union = MultiLineString([p for _, p in pieces]) if pieces else None

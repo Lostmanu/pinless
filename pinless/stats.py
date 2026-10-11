@@ -2,12 +2,13 @@
 are printed, never coordinates)."""
 from __future__ import annotations
 
-import datetime as dt
 from collections import Counter
 
 import numpy as np
 from shapely.geometry import Point
 from shapely.strtree import STRtree
+
+from .localtime import local_start
 
 
 def _cum(xy):
@@ -81,8 +82,9 @@ def compute(activities, tracks_xy, edges_gdf=None, private_pieces_xy=None, piece
     b10 = [best_effort(xy, a.times, 10000) for a, xy in zip(activities, tracks_xy)]
     b5 = min([x for x in b5 if x], default=None)
     b10 = min([x for x in b10 if x], default=None)
-    dates = [a.start.date() for a in activities if a.start]
-    early = sum(1 for a in activities if a.start and a.start.hour < 8)
+    local = [local_start(a) for a in activities]  # files store UTC: days and hours are counted where you ran
+    dates = [t.date() for t in local if t]
+    early = sum(1 for t in local if t and t.hour < 8)
     out = {
         "n": len(activities), "km": sum(km), "hours": secs_total / 3600, "longest_km": max(km) if km else 0,
         "best5k_s": b5, "best10k_s": b10, "active_days": len(set(dates)), "streak": longest_streak(dates),

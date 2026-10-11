@@ -169,3 +169,24 @@ def test_an_older_cache_gets_its_coast_for_its_own_whole_box(tmp_path, monkeypat
     assert [t for _, t in asked] == [{"natural": "coastline"}]
     assert asked[0][0] == (-3.8, 40.3, -3.6, 40.5), "the folder's own box (west, south, east, north)"
     assert len(gpd.read_file(os.path.join(folder, "coast.gpkg"))) == 0
+
+
+def test_a_missing_coast_does_not_stop_the_map(tmp_path, monkeypatch):
+    # the coast only paints the sea: if no server answers, draw without it and cache nothing (the next run retries)
+    def features(box_, tags):
+        if tags == {"natural": "coastline"}:
+            raise ConnectionError("busy")
+        folder = str(ox.settings.cache_folder)
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, f"a{len(os.listdir(folder))}.json"), "w") as f:
+            f.write('{"elements": []}')
+        raise InsufficientResponseError("none")
+
+    lines = []
+    monkeypatch.delenv("PINLESS_OVERPASS", raising=False)
+    monkeypatch.setattr(socket, "gethostbyname_ex", lambda h: (h, [], ["192.0.2.1"]))
+    monkeypatch.setattr(ox, "graph_from_bbox", lambda *a, **k: _tiny_graph())
+    monkeypatch.setattr(ox, "features_from_bbox", features)
+    folder = area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lines.append)
+    assert os.path.exists(os.path.join(folder, "green.gpkg")) and not os.path.exists(os.path.join(folder, "coast.gpkg"))
+    assert any("no sea" in s for s in lines)

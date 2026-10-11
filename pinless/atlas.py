@@ -18,14 +18,14 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import PathPatch
 from pyproj import Transformer
 
-from . import area, privacy, render
+from . import area, colouring, privacy, render
 from .render import MM, SIZES, heat_raster
-from .render_editorial import (DISPLAY, REGULAR, STYLES, TEXT, _density_segments, draw_basemap, draw_routes,
-                               place_text)
+from .render_editorial import (DISPLAY, REGULAR, STYLES, TEXT, _density_segments, draw_basemap, draw_legend,
+                               draw_routes, place_text, route_colours)
+from .localtime import local_start
 from .render_sport import _num
 
 EARTH_KM = 6371.0088
@@ -215,7 +215,10 @@ class _Page:
         if not value:
             return (0, 0)
         path, trans, w, h = place_text(value, x, y, self.k, pt, font, align, max_w, height, clear)
-        self.ax.add_patch(PathPatch(path, transform=trans + self.ax.transData, color=color or self.S["ink"], lw=0))
+        # snap=False: a glyph made only of straight strokes (E, F, H, L, T) would be snapped to whole pixels and lose
+        # its thin stems at small sizes
+        self.ax.add_patch(PathPatch(path, transform=trans + self.ax.transData, color=color or self.S["ink"], lw=0,
+                                    snap=False))
         return w, h
 
     def rule(self, y, left=LEFT, right=RIGHT, width=0.45, color=None):
@@ -230,7 +233,8 @@ def totals(cities):
 
 
 def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", size="A3", dpi=300, name="", title="",
-                 year="", lang="en", more=0, pdf_path=None, svg_path=None, preview_path=None, summary=None):
+                 year="", lang="en", more=0, pdf_path=None, svg_path=None, preview_path=None, summary=None,
+                 color_by="heat"):
     """cities: the drawn ones. summary: totals() over every city (defaults to the drawn ones); more: cities not drawn."""
     S = STYLES[style]
     es = lang == "es"
@@ -257,18 +261,22 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
     T(279, 72.5, name.upper(), pt=13.2, align="right", max_w=105)
     rule(80)
 
-    # densities first: one colour scale for every map, so a colour means the same number of runs everywhere
-    cmap = LinearSegmentedColormap.from_list("huella", S["heat"])
+    # densities and colours first: one scale for every map, so a colour means the same thing everywhere
     dens = []
     for c, (x, y, w, h), ext in zip(cities, cells, extents):
         pieces = privacy.clip_to_extent(c.pieces, ext)  # only what is drawn is written (no hidden PDF/SVG lines)
         W, H = int(round(w * k * MM * 220)), int(round(h * k * MM * 220))
         acc = heat_raster(pieces, ext, W, H, max(1, int(round(0.22 * 220 / 25.4 * k))))
-        dens.append((acc, *_density_segments(pieces, ext, acc)))
+        segments, counts, ids = _density_segments(pieces, ext, acc, with_ids=True)
+        raw = (colouring.raw_values(color_by, ids, segments, c.acts, c.tracks)
+               if color_by not in ("heat", "single") else np.zeros(len(segments)))
+        dens.append((acc, segments, counts, raw))
     every = np.concatenate([d[2] for d in dens if len(d[2])]) if any(len(d[2]) for d in dens) else np.ones(1)
     cap = max(3.0, float(np.percentile(every, 98.5)))
+    values, legend, cmap = route_colours(color_by, [d[3] for d in dens], S)
 
-    for i, (c, (x, y, w, h), ext, bm, (acc, segments, counts)) in enumerate(zip(cities, cells, extents, basemaps, dens)):
+    for i, (c, (x, y, w, h), ext, bm, (acc, segments, counts, _), vals) in enumerate(
+            zip(cities, cells, extents, basemaps, dens, values)):
         ax = fig.add_axes([x * k / wmm, 1 - (y + h) * k / hmm, w * k / wmm, h * k / hmm], zorder=1)
         ax.set_xlim(ext[0], ext[1])
         ax.set_ylim(ext[2], ext[3])
@@ -277,7 +285,8 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
         sw = min(1.0, max(0.55, math.sqrt(w / (RIGHT - LEFT))))  # thinner streets in small maps
         if bm is not None:
             draw_basemap(ax, bm, ext, S, k, w * k, sw)  # w * k: millimetres of paper
-        draw_routes(ax, segments, counts, cap, cmap, k, base=0.5, scale=max(sw, 0.8))
+        draw_routes(ax, segments, counts, cap, cmap, k, base=0.5, scale=max(sw, 0.8), glow=S.get("glow", 0.0),
+                    values=vals)
         # caption
         cy = y + h + 3.0
         T(x, cy + 0.4, f"{i + 1:02d}", pt=14, font=REGULAR, color=S["accent"], height=4.4)
@@ -301,11 +310,7 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
         T(xx, 391.5, label, pt=6.3, color=S["sub"], max_w=58)
     rule(398)
     T(18, 404, "CADA SALIDA DEJA HUELLA." if es else "EVERY RUN LEAVES A TRACE.", pt=6.8)
-    T(212, 404, "REPETICIÓN" if es else "REPETITION", pt=5.8, color=S["sub"], align="right")
-    for i, v in enumerate(np.linspace(0, 1, 6)):
-        page.ax.plot([(218 + i * 8.4) * k, (225 + i * 8.4) * k], [405 * k, 405 * k], color=cmap(v),
-                     lw=(0.55 + 0.95 * v) * k, solid_capstyle="round")
-    T(279, 403, "+", pt=8, align="right", color=S["sub"])
+    draw_legend(page.ax.plot, T, k, S, cmap, legend, lang, 404)
     T(18, 412, "© OpenStreetMap contributors · ODbL · openstreetmap.org/copyright", pt=6.2, color=S["sub"], max_w=200)
     if more:
         note = (f"+{more} CIUDAD{'' if more == 1 else 'ES'} SIN MAPA" if es
@@ -324,7 +329,7 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
     if preview_path:
         fig.savefig(preview_path, dpi=1600 * 25.4 / hmm, facecolor=S["bg"], pil_kwargs={"quality": 88, "optimize": True})
     plt.close(fig)
-    return {"cap": cap, "max": int(max((d[0].max() for d in dens if d[0].size), default=0))}
+    return {"cap": cap, "max": int(max((d[0].max() for d in dens if d[0].size), default=0)), "legend": legend}
 
 
 def run(sel, a, log=print):
@@ -373,11 +378,13 @@ def run(sel, a, log=print):
         except RuntimeError as ex:  # every OpenStreetMap server busy: stop cleanly, what was downloaded stays cached
             log(f"[osm] STOP: {ex}. Run the same command again later; the cities already downloaded are kept.")
             return 4
-    years = sorted({x.start.year for c in cities for x in c.acts if x.start})
+    years = sorted({t.year for c in cities for x in c.acts if (t := local_start(x))})
     year = str(a.year) if a.year else (f"{years[0]}–{years[-1]}" if len(years) > 1 else (str(years[0]) if years else ""))
     info = render_atlas(drawn, cells, extents, basemaps, a.out, style=a.style or "huella", size=a.size, dpi=a.dpi,
                         name=a.name, title=a.title, year=year, lang=a.lang, more=more, pdf_path=a.pdf,
-                        svg_path=a.svg, preview_path=a.preview, summary=totals(cities))
+                        svg_path=a.svg, preview_path=a.preview, summary=totals(cities), color_by=a.color_by)
+    if info.get("legend", {}).get("fallback"):
+        log(f"[colour] no {a.color_by} data in these activities: drawn in one colour")
     log(f"[render] {a.out} · {len(drawn)} of {len(cities)} cities drawn · heat cap {info['cap']:.0f} · "
         f"max overlap {info['max']}")
     return 0

@@ -23,6 +23,7 @@ import os
 import random
 import sys
 import zipfile
+from zoneinfo import ZoneInfo
 
 import networkx as nx
 import numpy as np
@@ -216,6 +217,16 @@ def straight_route(rng, a, b, n=200):
     return [(a[1] + (b[1] - a[1]) * i / n, a[0] + (b[0] - a[0]) * i / n) for i in range(n + 1)]
 
 
+def to_utc(acts, zone):
+    """The runner lives in local time; files store UTC, as Strava writes them. Shift each activity by its offset."""
+    tz = ZoneInfo(zone)
+    for x in acts:
+        off = x["date"].replace(tzinfo=tz).utcoffset()
+        x["date"] = x["date"] - off
+        if x["pts"]:
+            x["pts"] = [(la, lo, el, t - off) for la, lo, el, t in x["pts"]]
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--city", default="madrid")
@@ -238,8 +249,8 @@ def main():
     act_id = 11_000_000_000 + rng.randint(0, 10_000_000)
     holiday = (dt.date(a.year, 8, 4), dt.date(a.year, 8, 17))
     rest_weeks = {rng.randint(5, 50) for _ in range(3)}
-    races = {dt.date(a.year, 4, 6): ("Morning Run", ["castellana_n", "colon", "cibeles", "gran_via", "plaza_espana", "debod", "oeste", "rey", "segovia", "toledo", "matadero", "atocha_retiro", "estanque"]),
-             dt.date(a.year, 12, 31): ("Afternoon Run", ["bernabeu", "castellana_n", "colon", "cibeles", "atocha_retiro", "vallecas"])}
+    races = {dt.date(a.year, 4, 6): ("Spring Half Marathon", ["castellana_n", "colon", "cibeles", "gran_via", "plaza_espana", "debod", "oeste", "rey", "segovia", "toledo", "matadero", "atocha_retiro", "estanque"]),
+             dt.date(a.year, 12, 31): ("New Year's Eve 10K", ["bernabeu", "castellana_n", "colon", "cibeles", "atocha_retiro", "vallecas"])}
     while day.year == a.year:
         wd = day.weekday()
         week = day.isocalendar()[1]
@@ -334,6 +345,7 @@ def main():
         day += dt.timedelta(days=1)
 
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
+    to_utc(acts, "Europe/Madrid")
     with zipfile.ZipFile(a.out, "w", zipfile.ZIP_DEFLATED) as z:
         rows = []
         for x in acts:
