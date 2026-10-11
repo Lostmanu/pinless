@@ -356,6 +356,21 @@ def test_the_first_person_without_runs_is_told_to_choose_the_type(monkeypatch, t
     assert "Lucía: no Run activities (this export has: Ride 48). Choose the type with --type." in out
 
 
+def test_a_partner_who_only_ran_the_other_s_streets_is_told_their_ink_hardly_shows(monkeypatch, tmp_path, capsys):
+    """Lucía ran two loops ten times each; Marcos ran each of them once with her. Every street is 'Lucía's' (under
+    10 % his), so his blue is nowhere on the map while the names, the bar and the key show it: the log says so."""
+    work = (3000.0, 2500.0)
+    ta = [loop(*HA, 1400, phase=0.4) for _ in range(10)] + [loop(*work, 1300, phase=2.0) for _ in range(10)]
+    tb = [ta[0] + (0.0, 3.0), ta[10] + (3.0, 0.0)]
+    _by_path(monkeypatch, {"a.zip": _acts(ta, 0), "b.zip": _acts(tb, 5000, day0=dt.date(2025, 3, 1), hour=19)})
+    seen, _ = _spy_drawn(monkeypatch)
+    assert cli.main(BASE + ["--bbox", BOX, "--dpi", "20", "--out", str(tmp_path / "p.png")]) == 0
+    out = capsys.readouterr().out
+    assert seen["info"]["own_ink"][1] < 0.01 < seen["info"]["own_ink"][0]
+    assert "[render] Marcos: under 1 % of your lines are in your own ink" in out and "Lucía's" in out
+    assert "[render] Lucía: under" not in out
+
+
 def test_files_in_both_exports_do_not_unhide_a_single_loop(monkeypatch, tmp_path, capsys):
     """39 of the first person's runs are also in the second export (allowed: under half of it). They are drawn for
     each, but they are not the second person's own runs: counted, they would raise that person's threshold from 2

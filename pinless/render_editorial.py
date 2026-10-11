@@ -733,6 +733,13 @@ def _render_couple(fig, ax, page, text, runs, rule, pieces, extent, couple, S, k
     length = np.hypot(*(segments[:, 1] - segments[:, 0]).T) if len(segments) else np.zeros(0)
     total = float(length.sum())
     who_frac = [float(length[classes == c].sum()) / total if total else 0.0 for c in range(5)]
+    # how much of each person's drawn length is in their own two inks: none when they only ran the other's streets
+    _, ids = _segments(pieces)
+    own_ink = []
+    for o, mine in ((0, (0, 1)), (1, (3, 4))):
+        theirs = np.asarray(couple.owner)[ids] == o if len(ids) else np.zeros(0, dtype=bool)
+        drawn = float(length[theirs].sum())
+        own_ink.append(float(length[theirs & np.isin(classes, mine)].sum()) / drawn if drawn else 0.0)
 
     cc = couple_cells(couple, lang)
     rule(323)
@@ -763,4 +770,4 @@ def _render_couple(fig, ax, page, text, runs, rule, pieces, extent, couple, S, k
          color=S["sub"], max_w=238)
     _save(fig, S, hmm, dpi, out_path, pdf_path, svg_path, preview_path)
     return {"W": W, "H": H, "cap": cap, "max": int(weight.max()) if len(weight) else 0, "legend": legend,
-            "who_frac": who_frac}
+            "who_frac": who_frac, "own_ink": own_ink}

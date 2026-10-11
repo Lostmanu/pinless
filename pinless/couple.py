@@ -40,6 +40,7 @@ def same_activities(acts_a, acts_b):
     return shared, shared / min(len(acts_a), len(acts_b))
 
 
+OWN_INK_MIN = 0.01  # below this share of a person's drawn length in their own inks, the log says so
 SAME_MIN = 3  # fewest files in both exports that, with half of the smaller one, make them the same export
 
 
@@ -167,4 +168,8 @@ def run(acts_a, acts_b, sel_a, sel_b, a, log=print):
                                        streets_both=streets_both))
     log(f"[render] {os.path.basename(a.out)} {info['W']}x{info['H']} map px · heat cap {info['cap']:.0f} · drawn km by who: "
         f"{'/'.join(f'{100 * f:.0f}' for f in info['who_frac'])} %")
+    for name, other, share in ((na, nb, info["own_ink"][0]), (nb, na, info["own_ink"][1])):
+        if share < OWN_INK_MIN:  # the names, the bar and the key show this person's ink; the map hardly does
+            log(f"[render] {name}: under {100 * OWN_INK_MIN:.0f} % of your lines are in your own ink: the streets you "
+                f"ran on this map are mostly {other}'s, so they take {other}'s ink or the shared one")
     return 0
