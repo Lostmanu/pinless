@@ -54,7 +54,9 @@ def user_zones(a, tr):
 
 
 def extent_for(pieces, bbox, crs, aspect, fit):
-    """The map extent: the box grown to the map aspect, or with fit, cropped to where the drawn pieces are."""
+    """The map extent: the box grown to the map aspect, or with fit, cropped to where the drawn pieces are (that crop
+    rounded outward to the area grid, as the automatic area is, so the frame and the box sent to Overpass carry
+    nothing finer than about 1 km)."""
     s, w, n, e = bbox
     if fit and pieces:
         pts = np.concatenate([np.asarray(pc.coords) for _, pc in pieces])
@@ -62,6 +64,7 @@ def extent_for(pieces, bbox, crs, aspect, fit):
         pad = 0.07 * max(hi - lo)
         inv = Transformer.from_crs(crs, 4326, always_xy=True)
         (w2, e2), (s2, n2) = inv.transform([lo[0] - pad, hi[0] + pad], [lo[1] - pad, hi[1] + pad])
+        s2, w2, n2, e2 = area.snap_box((s2, w2, n2, e2))
         return render.fit_extent((max(s, s2), max(w, w2), min(n, n2), min(e, e2)), crs, aspect)
     return render.fit_extent((s, w, n, e), crs, aspect)
 

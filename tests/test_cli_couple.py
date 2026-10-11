@@ -386,3 +386,23 @@ def test_files_in_both_exports_do_not_unhide_a_single_loop(monkeypatch, tmp_path
     assert "[couple] 39 activities are in both exports" in capsys.readouterr().out
     lodging_xy, = _to_map(lodging)
     assert _gap(drawn, lodging_xy) >= 200
+
+
+def test_the_frame_and_the_overpass_box_do_not_follow_a_lodging_at_the_edge(monkeypatch, tmp_path, capsys):
+    """The quieter partner's out-and-back runs from a lodging set the south edge of the area where both run: the 1st
+    percentile of their points is the lodging's latitude to within tens of metres. The box behind the poster's frame
+    lies on the 1 km grid, and moving the lodging 30 m north changes neither the frame nor the box sent to Overpass."""
+    from test_area import _lodging_scene
+    fed, sent, extents, real_fit = [], [], [], render.fit_extent
+    for north in (0.0, 30.0):
+        a, b = _lodging_scene(north, n_loops=60)
+        _by_path(monkeypatch, {"a.zip": a, "b.zip": b})
+        monkeypatch.setattr(area, "fetch_basemap", lambda bbox, log=print: sent.append(tuple(bbox)) or "unused")
+        monkeypatch.setattr(render, "fit_extent",
+                            lambda bbox, crs, aspect: fed.append(tuple(bbox)) or real_fit(bbox, crs, aspect))
+        seen, _ = _spy_drawn(monkeypatch)
+        assert cli.main(BASE + ["--dpi", "20", "--out", str(tmp_path / "p.png")]) == 0
+        extents.append(seen["extent"])
+    assert "[area] found where you both run most" in capsys.readouterr().out
+    assert fed and all(box_ == area.snap_box(box_) for box_ in fed), "the frame's box is on the grid"
+    assert extents[0] == extents[1] and len(sent) == 2 and sent[0] == sent[1]

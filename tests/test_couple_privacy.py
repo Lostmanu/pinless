@@ -299,8 +299,8 @@ def test_auto_bbox_with_groups_picks_where_both_run():
     assert s < y[0] < n and w < y[1] < e and not (s < x[0] < n and w < x[1] < e)
     s, w, n, e = area.auto_bbox(a + b)
     assert s < x[0] < n and w < x[1] < e, "alone, the busier place wins"
-    # the result without groups is exactly the one before groups existed
-    old = (40.38707439709491, -3.73294147338975, 40.452967765907836, -3.6670670730911157)
+    # the result without groups is exactly the one before groups existed, rounded outward to the 1 km grid
+    old = area.snap_box((40.38707439709491, -3.73294147338975, 40.452967765907836, -3.6670670730911157))
     assert area.auto_bbox(a + b) == old and area.auto_bbox(a + b, groups=None) == old
     with pytest.raises(ValueError):
         area.auto_bbox(_runs(x, 20, 0) + b, groups=[0] * 20 + [1] * len(b))

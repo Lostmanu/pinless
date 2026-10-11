@@ -1,6 +1,7 @@
 """Choose the poster area and fetch its OpenStreetMap data, so one command works for any city.
 
-- auto_bbox: the area where the runner runs most (densest cluster of points), so holidays elsewhere drop out.
+- auto_bbox: the area where the runner runs most (densest cluster of points), so holidays elsewhere drop out, rounded
+  outward to a grid of about 1 km (snap_box).
 - geocode_bbox: the bounding box of a named place (one Nominatim request through osmnx).
 - city_name: the city/town near a point (one Nominatim reverse request, the point rounded to about 1 km), for the
   headline.
@@ -27,6 +28,30 @@ class NoSharedArea(ValueError):
     """auto_bbox with groups: no area where every group runs."""
 
 
+GRID_DEG = 0.01  # the edges of an area found from your runs lie on a grid this many degrees of latitude apart
+
+
+def snap_box(bbox, step=GRID_DEG):
+    """(south, west, north, east) grown outward to a grid of about 1.1 km: step degrees of latitude, and the same
+    distance in longitude (step / cos of the latitude, to the nearest degree).
+
+    An edge found from your runs is a percentile of their points, and a few runs from one door at the edge of the area
+    (a partner's lodging, a hotel) set it to within tens of metres of that door. The map's frame, the box sent to
+    Overpass and the cache folder named after it all carry that edge, so it is rounded outward first: on the grid it
+    says nothing finer than about 1 km, coarser than a private zone."""
+    s, w, n, e = (float(v) for v in bbox)
+    lon_step = step / max(math.cos(math.radians(round((s + n) / 2))), 0.1)
+
+    def down(v, d):  # a value already on the grid (to a millimetre) stays where it is
+        return round(math.floor(v / d + 1e-6) * d, 9)
+
+    def up(v, d):
+        return round(math.ceil(v / d - 1e-6) * d, 9)
+
+    return (max(-90.0, down(s, step)), max(-180.0, down(w, lon_step)), min(90.0, up(n, step)),
+            min(180.0, up(e, lon_step)))
+
+
 def auto_bbox(activities, radius_km=7.0, cell_km=1.0, q=(1.0, 99.0), pad_frac=0.06, max_candidates=400, groups=None):
     """Bounding box (south, west, north, east) of the area where you run most.
 
@@ -37,9 +62,17 @@ def auto_bbox(activities, radius_km=7.0, cell_km=1.0, q=(1.0, 99.0), pad_frac=0.
     groups (one label per activity, e.g. 0 and 1 for two people): the area where EVERY group runs. Each group's score
     is divided by its best score, and a centre scores the smallest of those shares, so a place only one person runs
     cannot win. The box holds the 1st to 99th percentile of each group's own points near the winner, so a person
-    whose watch records fewer points is not cut. Raises NoSharedArea when no area has runs of every group."""
+    whose watch records fewer points is not cut. Raises NoSharedArea when no area has runs of every group.
+
+    Either way the box is rounded outward to a grid of about 1 km (snap_box), so its edges never give away where a
+    run at the edge of the area started."""
     if groups is not None:
-        return _auto_bbox_groups(activities, groups, radius_km, cell_km, q, pad_frac, max_candidates)
+        return snap_box(_auto_bbox_groups(activities, groups, radius_km, cell_km, q, pad_frac, max_candidates))
+    return snap_box(_auto_bbox_one(activities, radius_km, cell_km, q, pad_frac, max_candidates))
+
+
+def _auto_bbox_one(activities, radius_km, cell_km, q, pad_frac, max_candidates):
+    """auto_bbox for one person, before the box is rounded to the grid."""
     tracks = [np.asarray(a.lonlat) for a in activities if len(a.lonlat) > 1]
     pts = np.concatenate(tracks)
     if len(pts) > 400_000:  # keep it fast on very long histories
