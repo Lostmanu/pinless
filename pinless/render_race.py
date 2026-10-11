@@ -22,7 +22,7 @@ from .atlas import _Page as Page
 from .colouring import fmt_pace
 from .render import MM, SIZES
 from .render_editorial import DISPLAY, REGULAR, STYLES, _line_path, draw_basemap, draw_routes, place_text
-from .render_editorial import draw_relief, footer_credits
+from .render_editorial import draw_relief, footer_credits, svg_rc
 from .render_sport import _num
 from .stats import fmt_time
 
@@ -268,7 +268,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
                     metadata={"Creator": None, "Producer": None, "CreationDate": None, "ModDate": None,
                               "Title": None, "Author": None, "Subject": None, "Keywords": None})
     if svg_path:
-        with matplotlib.rc_context({"svg.hashsalt": "pinless-race", "svg.fonttype": "path"}):
+        with matplotlib.rc_context(svg_rc("pinless-race")):
             fig.savefig(svg_path, facecolor=S["bg"], metadata={"Date": None, "Creator": "Pinless"})
     if preview_path:
         fig.savefig(preview_path, dpi=1600 * 25.4 / hmm, facecolor=S["bg"], pil_kwargs={"quality": 88, "optimize": True})

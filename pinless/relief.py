@@ -17,6 +17,7 @@ import http.client
 import math
 import os
 import re
+import shutil
 import socket
 import struct
 import urllib.error
@@ -69,6 +70,10 @@ def notice(dataset, lang):
 
 class ReliefError(RuntimeError):
     """The elevation data could not be fetched or decoded as expected: the print is drawn without relief."""
+
+
+class _Unsupported(ReliefError):
+    """A map the elevation data cannot cover as it is: the same on every run, so no retry is suggested."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -207,8 +212,16 @@ def read_header(buf, cell, dataset="glo30"):
     the block reader decodes raises ReliefError."""
     try:
         return _read_header(buf, cell, dataset)
-    except (struct.error, IndexError, KeyError) as ex:
+    except (struct.error, IndexError, KeyError, ArithmeticError, TypeError) as ex:  # server data: never a crash
         raise ReliefError("unexpected TIFF layout") from ex
+
+
+def _ints(t, tag):
+    """The values of an integer tag; a tag of another type (a double ImageWidth, say) is not a layout we read."""
+    v = t[tag]
+    if not v or not all(type(x) is int for x in v):
+        raise ReliefError("unexpected TIFF layout")
+    return v
 
 
 def _read_header(buf, cell, dataset):
@@ -226,7 +239,9 @@ def _read_header(buf, cell, dataset):
         raise ReliefError("unexpected TIFF layout")
     N, W = cell
     t0 = ifds[0]
-    width0, height0 = t0[256][0], t0[257][0]
+    width0, height0 = _ints(t0, 256)[0], _ints(t0, 257)[0]
+    if height0 != HEIGHT0[dataset] or abs(width0 * _band(N) - height0) > 1e-9:  # before any division by them
+        raise ReliefError("unexpected raster size")
     geo = t0[34735]
     keys = {geo[i]: (geo[i + 1], geo[i + 3]) for i in range(4, 4 + 4 * geo[3], 4)}
     if keys.get(1025) != (0, 2):
@@ -236,14 +251,12 @@ def _read_header(buf, cell, dataset):
         raise ReliefError("unexpected georeference")
     if abs(scale[0] - 1 / width0) > 1e-12 or abs(scale[1] - 1 / height0) > 1e-12:
         raise ReliefError("unexpected georeference")
-    if height0 != HEIGHT0[dataset] or abs(width0 * _band(N) - height0) > 1e-9:
-        raise ReliefError("unexpected raster size")
     levels = []
     for L, t in enumerate(ifds):
         if (t[259][0] not in (8, 32946) or t[317][0] != 3 or t[339] != (3,) or t[258] != (32,)
                 or t.get(277, (1,)) != (1,) or t.get(284, (1,)) != (1,)):
             raise ReliefError("an encoding the reader does not decode")
-        w, h, tw, th = t[256][0], t[257][0], t[322][0], t[323][0]
+        w, h, tw, th = (_ints(t, tag)[0] for tag in (256, 257, 322, 323))
         if min(w, h, tw, th) <= 0:
             raise ReliefError("unexpected TIFF layout")
         if L == 0:
@@ -251,7 +264,7 @@ def _read_header(buf, cell, dataset):
                 raise ReliefError("unexpected TIFF layout")
         elif t.get(254, (0,))[0] != 1 or w * 2 ** L != width0 or h * 2 ** L != height0:
             raise ReliefError("an overview that is not a halving")
-        offsets, counts = t[324], t[325]
+        offsets, counts = _ints(t, 324), _ints(t, 325)
         tiles = math.ceil(w / tw) * math.ceil(h / th)
         if len(offsets) != tiles or len(counts) != tiles:
             raise ReliefError("unexpected TIFF layout")
@@ -337,9 +350,15 @@ def _block(dataset, cell, hdr, L, br, bc, root):
     if n <= 0:
         raise ReliefError("an empty block")
     data = _fetch(url(dataset, cell), first, first + n - 1)
-    if data is None:
-        raise ReliefError("a block is missing")
-    z = _decode(data, lv, br, bc)
+    try:
+        if data is None:
+            raise ReliefError("a block is missing")
+        z = _decode(data, lv, br, bc)
+    except ReliefError:
+        # The bytes at the header's offsets are not that block: the file may have been replaced on the server since
+        # its header was cached. Forget the cell (header and blocks), so the next run starts it afresh.
+        shutil.rmtree(_cell_dir(root, dataset, cell), ignore_errors=True)
+        raise
     _write_atomic(path, data)
     return z
 
@@ -500,7 +519,7 @@ def _sample(mos, lon, lat):
     row = (mos.lat0 - np.asarray(lat)) / mos.dlat
     if not (np.isfinite(col).all() and np.isfinite(row).all() and col.min() >= 0 and row.min() >= 0
             and col.max() <= nc - 1 and row.max() <= nr - 1) or nr < 2 or nc < 2:
-        raise ReliefError("a sample fell outside the elevation data")
+        raise _Unsupported("a sample fell outside the elevation data")
     c0 = np.minimum(np.floor(col).astype(np.intp), nc - 2)
     r0 = np.minimum(np.floor(row).astype(np.intp), nr - 2)
     tc, tr = col - c0, row - r0
@@ -599,8 +618,12 @@ class _Map:
         self.probe_grid = _grid(self.extent, max(125.0, max(x1 - x0, y1 - y0) / 400), GATE_SIGMA_M)
         # every cell the map could need, whatever the dataset and level: fixed before any request is made
         spacings = [_spacing(ds, L) for ds in HEIGHT0 for L in range(NOMINAL_LEVELS[ds])]
-        self.cells = set(_cells(_lonlat_box(self.extent, crs, max(max(self.probe_pad(s), self.detail_pad(s))
-                                                                    for s in spacings))))
+        lat_a, lat_b, lon_a, lon_b = _lonlat_box(self.extent, crs, max(max(self.probe_pad(s), self.detail_pad(s))
+                                                                       for s in spacings))
+        # Cells and mosaics run west to east from -180 to 180: a map that reaches the 180th meridian gets no relief
+        # (its frame wraps from 180 to -180, and there is no cell east of 179)
+        self.near_180 = lon_b >= 180 or lon_a < -180 or lon_b - lon_a > 180
+        self.cells = set() if self.near_180 else set(_cells((lat_a, lat_b, lon_a, lon_b)))
 
     def detail_grid(self, spacing):
         return _grid(self.extent, max((self.extent[1] - self.extent[0]) / self.shape[1], spacing / 2), self.sigma)
@@ -617,7 +640,7 @@ class _Map:
         box = _lonlat_box(self.extent, self.crs, pad)
         cells = _cells(box)
         if not set(cells) <= self.cells:
-            raise ReliefError("a map needs a cell outside its print")
+            raise _Unsupported("a map needs a cell outside its print")
         return box, cells
 
 
@@ -684,8 +707,8 @@ def prepare_many(maps, log=print, root=None):
     """One Relief (or None) per map of a print. maps: [(extent, crs, map_w_mm)]; nothing else about the print
     (tracks, zones, activities) reaches this function. Any network or decoding failure means no relief anywhere on
     the print and one log line; a map that is too large, flat or mostly water gets None and its own line."""
-    log("[relief] terrain from the Copernicus elevation model (Amazon S3; only the 1-degree cells around the map are "
-        "requested)")
+    log("[relief] terrain from the Copernicus elevation model (Amazon S3 learns the 1-degree cells around the map and, "
+        "where the land is hilly, the blocks of about 30 km that cover it; never your routes)")
     out = [None] * len(maps)
 
     def say(i, text):
@@ -696,7 +719,9 @@ def prepare_many(maps, log=print, root=None):
         jobs = []
         for i, (extent, crs, map_w_mm) in enumerate(maps):
             job = _Map(i, extent, crs, map_w_mm)
-            if len(job.cells) > MAX_CELLS:
+            if job.near_180:
+                say(i, "no relief next to the 180th meridian: drawn without it")
+            elif len(job.cells) > MAX_CELLS:
                 say(i, "area too large for relief: drawn without it")
             else:
                 jobs.append(job)
@@ -726,6 +751,9 @@ def prepare_many(maps, log=print, root=None):
             log(f"[relief] downloading {len(todo)} blocks, {size / 2 ** 20:.1f} MB (one time, cached)")
         for job, share, L, _ in plans:
             out[job.i] = Relief(_detail(job, dataset, headers, L, root), dataset, L, share)
+    except _Unsupported:  # the same on every run: no point in running it again
+        log("[relief] skipped: the elevation data does not cover this map as it is; the poster is drawn without relief")
+        return [None] * len(maps)
     except (ReliefError, OSError, zlib.error, ValueError) as ex:
         log(f"[relief] skipped ({type(ex).__name__}): the poster is drawn without relief; run the same command again "
             f"later to add it")

@@ -66,8 +66,9 @@ def main(argv=None):
     p.add_argument("--preview", default=None, help="lightweight editorial JPEG preview (1600 px high)")
     p.add_argument("--relief", default="off", choices=["off", "shade"],
                    help="shade: terrain relief under the map where the land is hilly (editorial, atlas and race), from "
-                        "the Copernicus elevation model; downloads the 1-degree cells around the map from Amazon S3 "
-                        "once (cached); flat areas get none")
+                        "the Copernicus elevation model on Amazon S3, which learns the 1-degree cells around the map "
+                        "and, where the land is hilly, the blocks of about 30 km that cover it (never your routes); "
+                        "downloaded once (cached); flat areas get none")
     a = p.parse_args(argv)
     styles = {"classic": render.STYLES, "sport": render_sport.STYLES, "editorial": render_editorial.STYLES,
               "atlas": render_editorial.STYLES, "race": render_editorial.STYLES}

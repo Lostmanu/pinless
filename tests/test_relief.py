@@ -90,19 +90,37 @@ def _refusals():
     rng = np.random.default_rng(2)
     a0 = (100 + rng.random((40, 40)) * 500).astype(np.float32)
     good = levels_of(a0, 3)
-    spike = [a.copy() for a in good]
-    for a in spike:  # in every level, so the probe meets it too
-        a[1, 1] = 1e5
+
+    def spiked(value):
+        out = [a.copy() for a in good]
+        for a in out:  # in every level, so the probe meets it too
+            a[1, 1] = value
+        return out
+
     return {
         "big-endian": dict(levels=good, endian=">"),
         "compression 5": dict(levels=good, compression=5),
         "predictor 2": dict(levels=good, predictor=2),
         "int16 samples": dict(levels=good, bits=16, sample_format=2),
+        "uint32 samples": dict(levels=good, sample_format=1),  # each of the two sample checks on its own
+        "16-bit floats": dict(levels=good, bits=16),
+        "two samples per pixel": dict(levels=good, tags={(0, 277): (3, [2])}),
+        "separate planes": dict(levels=good, tags={(0, 284): (3, [2])}),
         "PixelIsArea": dict(levels=good, raster_type=1),
         "tiepoint off by 0.01": dict(levels=good, tiepoint=(0, 0, 0, -4.01, 41.0, 0)),
+        "tiepoint latitude off by 0.01": dict(levels=good, tiepoint=(0, 0, 0, -4.0, 41.01, 0)),
+        "pixel scale off by 1%": dict(levels=good, scale=(1 / 40, 1.01 / 40, 0.0)),
+        "a cell of 48 rows": dict(levels=levels_of(np.tile(a0, (2, 2))[:48, :48], 3)),  # consistent, but not 40
+        "a cell narrower than its band": dict(levels=levels_of(a0[:, :20], 3)),  # at 40N a cell is as wide as high
+        "width 0": dict(levels=good, tags={(0, 256): (4, [0])}),
+        "a width in floating point": dict(levels=good, tags={(0, 256): (12, [40.0])}),
         "overview not half the size": dict(levels=[good[0], a0[:19, :19]]),
+        "an overview not marked as one": dict(levels=good, tags={(1, 254): (4, [0])}),
+        "fewer tile offsets than tiles": dict(levels=good, tags={(0, 324): (4, [8, 8]), (0, 325): (4, [1, 1])}),
+        "IFD chain loops back": dict(levels=good, ifd_loop=True),
         "IFD after 16 KB": dict(levels=good, ifd_at_end=True),
-        "a value of 1e5": dict(levels=spike),
+        "a value of 1e5": dict(levels=spiked(1e5)),
+        "a value of -1e5": dict(levels=spiked(-1e5)),
     }
 
 
@@ -122,7 +140,8 @@ def test_reader_refuses_what_it_cannot_decode(monkeypatch, tmp_path, case):
     assert relief.prepare_many([(extent, crs, 184.5)], log=logs.append) == [None]
     assert "skipped (ReliefError)" in logs[-1]
     assert not list(tmp_path.rglob("*.zz")), "only validated files are cached"
-    assert bool(list(tmp_path.rglob("header.bin"))) == (case == "a value of 1e5"), "a header is kept once it parses"
+    # a header is cached only once it parses, and a cell whose blocks do not decode is forgotten, header included
+    assert not list(tmp_path.rglob("header.bin"))
 
 
 def test_cell_keys_and_urls():
@@ -277,6 +296,7 @@ def test_requests_are_the_full_rectangle_and_ignore_the_tracks(monkeypatch, tmp_
     said = [m.group(1) for line in logs if (m := re.fullmatch(r"\[relief\] downloading (\d+) blocks, \d+\.\d MB "
                                                               r"\(one time, cached\)", line))]
     assert said == [str(len([b for b in blocks if b[1] == 0]))], "the log counts exactly the detail blocks requested"
+    assert "1-degree cells" in logs[0] and "blocks of about 30 km" in logs[0], "the log says what S3 learns"
     assert headers and blocks
     for u, L in {(u, L) for u, L, _, _ in blocks}:
         got = {(br, bc) for u_, L_, br, bc in blocks if (u_, L_) == (u, L)}
@@ -384,11 +404,12 @@ REAL_FETCH = relief._fetch  # the real one: the autouse fixture replaces relief.
 
 
 class _Response:
-    def __init__(self, status, body, content_range):
-        self.status, self._body = status, body
+    def __init__(self, status, body, content_range, reads):
+        self.status, self._body, self._reads = status, body, reads
         self.headers = {"Content-Range": content_range} if content_range else {}
 
     def read(self, n=-1):
+        self._reads.append((self.status, n))
         return self._body if n < 0 else self._body[:n]
 
     def __enter__(self):
@@ -403,9 +424,10 @@ class _Opener:
     failure wherever when(url, first) says. Checks every request against the privacy contract."""
 
     def __init__(self, files, failure=None, when=lambda url, first: True):
-        self.files, self.failure, self.when, self.calls = files, failure, when, []
+        self.files, self.failure, self.when, self.calls, self.reads = files, failure, when, [], []
 
     def open(self, req, timeout=None):
+        import http.client
         import urllib.error
         from urllib.parse import urlparse
         from pinless import area
@@ -422,19 +444,21 @@ class _Opener:
         end = min(last, len(data) - 1)
         body, cr = data[first:end + 1], f"bytes {first}-{end}/{len(data)}"
         fail = self.failure if self.failure and self.when(u, first) else None
-        if fail == "URLError":
-            raise urllib.error.URLError("unreachable")
+        if fail == "URLError":  # the messages carry the URL, as real ones may: the log must not repeat them
+            raise urllib.error.URLError(f"unreachable: {u}")
         if fail == "TimeoutError":
-            raise TimeoutError("timed out")
+            raise TimeoutError(f"timed out: {u}")
+        if fail == "IncompleteRead":
+            raise http.client.IncompleteRead(b"x")
         if fail in ("HTTP 503", "HTTP 403", "HTTP 301"):
             raise urllib.error.HTTPError(u, int(fail[5:]), "no", {}, None)
-        if fail == "200 instead of 206":
-            return _Response(200, data, None)
+        if fail == "200 instead of 206":  # the whole file, with a Content-Range that would pass
+            return _Response(200, data, cr, self.reads)
         if fail == "wrong Content-Range":
             cr = f"bytes {first + 1}-{end}/{len(data)}"
-        if fail == "short body":
+        if fail in ("short body", "short header"):
             body = body[:-1]
-        return _Response(206, body, cr)
+        return _Response(206, body, cr, self.reads)
 
 
 def _detail_offsets(data, cell=(40, -4)):
@@ -464,8 +488,9 @@ def test_a_redirect_is_refused():
     assert not any(isinstance(h, urllib.request.HTTPCookieProcessor) for h in relief._OPENER.handlers)
 
 
-FAILURES = ["URLError", "TimeoutError", "HTTP 503", "HTTP 403", "HTTP 301", "200 instead of 206",
-            "wrong Content-Range", "short body", "garbage zlib body", "out-of-range value"]
+FAILURES = ["URLError", "TimeoutError", "IncompleteRead", "HTTP 503", "HTTP 403", "HTTP 301", "200 instead of 206",
+            "wrong Content-Range", "short body", "short header", "garbage zlib body", "out-of-range value"]
+RETRIED = {"URLError", "TimeoutError", "IncompleteRead", "HTTP 503"}  # a broken connection or a 5xx: once more
 
 
 @pytest.mark.parametrize("failure", FAILURES)
@@ -486,28 +511,37 @@ def test_a_failing_server_draws_the_poster_without_relief(monkeypatch, tmp_path,
         lv = levels_of(a0, 4)
         lv[3] = levels_of(_cell_grid((40, -4), H30, _steep), 4)[3]
         served = write_cog(cell=(40, -4), levels=lv, tile=64)
+    failing = _detail_offsets(served)
+    # a short header still parses (its IFDs end long before 16 KB): only the length check can refuse it
+    target = (lambda url, first: first == 0) if failure == "short header" else (lambda url, first: first in failing)
     u = relief.url("glo30", (40, -4))
-    opener = _Opener({u: served}, failure, when=lambda url, first: first in detail)
+    opener = _Opener({u: served}, failure, when=target)
     monkeypatch.setattr(relief, "_OPENER", opener)
     extent, crs = _utm_extent(40.5, -3.5, 12000, 10000)
     logs = []
     assert relief.prepare_many([(extent, crs, A4_MAP)], log=logs.append) == [None]
     want = {"URLError": "URLError", "TimeoutError": "TimeoutError"}.get(failure, "HTTPError" if "HTTP" in failure
                                                                        else "ReliefError")
-    assert logs[-1].startswith(f"[relief] skipped ({want}):"), logs[-1]
+    assert logs[-1] == (f"[relief] skipped ({want}): the poster is drawn without relief; run the same command again "
+                        f"later to add it"), logs[-1]
     text = "\n".join(logs)
-    for leak in ("Copernicus_DSM", ".tif", "N40", "W004", "40.", "-3.", "amazonaws"):
+    for leak in ("Copernicus_DSM", ".tif", "N40", "W004", "40.", "-3.", "amazonaws", "unreachable", "timed out"):
         assert leak not in text
-    if failure == "HTTP 503":
-        assert len([c for c in opener.calls if c[1] in detail]) == 2, "a 5xx is tried once more"
+    failed = [c for c in opener.calls if target(c[0], c[1])]
+    assert len(failed) == (2 if failure in RETRIED else 1), "only a broken connection or a 5xx is tried once more"
+    if failure == "200 instead of 206":
+        assert not [n for status, n in opener.reads if status == 200], "a 200 is refused before its body is read"
     root = tmp_path / "cache" / "dem"
     cached = {p.name for p in root.rglob("*.zz")}
     assert not any(n.startswith("L0_") for n in cached), "nothing is cached for the failed blocks"
-    assert (root / "glo30" / "N40_00_W004_00" / "header.bin").exists()
-    if failure == "out-of-range value":  # this fake file has another layout than the good one: start afresh
-        import shutil
-        shutil.rmtree(root)
-    working = _Opener({u: good})
+    header = root / "glo30" / "N40_00_W004_00" / "header.bin"
+    if failure in ("short header", "garbage zlib body", "out-of-range value"):
+        # a header that failed is never cached; blocks that do not decode at the header's offsets may mean the file
+        # changed on the server: the cell is forgotten, so the next run starts it afresh
+        assert not header.exists()
+    else:
+        assert header.exists(), "a network failure keeps the header that parsed"
+    working = _Opener({u: good})  # for "out-of-range value", a file with another layout than the failed one
     monkeypatch.setattr(relief, "_OPENER", working)
     (rel,) = relief.prepare_many([(extent, crs, A4_MAP)], log=lambda *_: None)
     assert rel is not None and any(first in detail for _, first, _ in working.calls), "fetched later"
@@ -559,6 +593,93 @@ def test_a_glo30_server_error_never_switches_to_glo90(monkeypatch, tmp_path):
     assert relief.prepare_many([(extent, crs, A4_MAP)], log=logs.append) == [None]
     assert "skipped (HTTPError)" in logs[-1]
     assert not any("90m" in u for u, _, _ in opener.calls), "GLO-90 is never asked because GLO-30 failed"
+
+
+def test_a_failure_on_one_map_leaves_the_whole_print_without_relief(monkeypatch, tmp_path):
+    monkeypatch.setattr(relief, "_fetch", REAL_FETCH)
+    files = {relief.url("glo30", c): _cog(c, _steep) for c in ((40, -4), (40, -3))}
+    u2 = relief.url("glo30", (40, -3))
+    second = _detail_offsets(files[u2], (40, -3))
+    opener = _Opener(files, "HTTP 503", when=lambda url, first: url == u2 and first in second)
+    monkeypatch.setattr(relief, "_OPENER", opener)
+    m1, m2 = _utm_extent(40.5, -3.5, 12000, 10000), _utm_extent(40.5, -2.5, 12000, 10000)
+    logs = []
+    assert relief.prepare_many([(m1[0], m1[1], 60.0), (m2[0], m2[1], 60.0)], log=logs.append) == [None, None]
+    u1 = relief.url("glo30", (40, -4))
+    first_map = _detail_offsets(files[u1])
+    assert any(u == u1 and first in first_map for u, first, _ in opener.calls), \
+        "setup: the first map was drawn before the second one failed"
+    assert [line for line in logs if "skipped" in line] == [logs[-1]], "one line for the print"
+
+
+def test_what_each_map_of_a_print_is_told(monkeypatch, tmp_path):
+    _serve(monkeypatch, {(40, -4): _cog((40, -4), _steep), (40, -3): _cog((40, -3), lambda lon, lat: 650 + 0 * lon)})
+    m1, m2 = _utm_extent(40.5, -3.5, 12000, 10000), _utm_extent(40.5, -2.5, 12000, 10000)
+    logs = []
+    out = relief.prepare_many([(m1[0], m1[1], 60.0), (m2[0], m2[1], 60.0)], log=logs.append)
+    assert isinstance(out[0], relief.Relief) and out[1] is None
+    assert "[relief] map 2: flat here: no relief" in logs
+    _serve(monkeypatch, {})  # no cell on either dataset: open sea
+    logs = []
+    assert relief.prepare_many([(m1[0], m1[1], 60.0)], log=logs.append, root=str(tmp_path / "sea")) == [None]
+    assert logs[-1] == "[relief] only sea here: no relief", "a sea print is not a failure to retry"
+
+
+def test_a_programming_error_is_not_taken_for_a_failed_download(monkeypatch, tmp_path):
+    _serve(monkeypatch, {(40, -4): _cog((40, -4), _steep)})
+
+    def bug(*args):
+        raise TypeError("a bug")
+
+    monkeypatch.setattr(relief, "_shade", bug)
+    extent, crs = _utm_extent(40.5, -3.5, 12000, 10000)
+    with pytest.raises(TypeError):
+        relief.prepare_many([(extent, crs, A4_MAP)], log=lambda *_: None)
+
+
+def test_a_map_the_data_cannot_cover_is_not_told_to_retry(monkeypatch, tmp_path):
+    _serve(monkeypatch, {(40, -4): _cog((40, -4), _steep)})
+
+    def outside(*args):
+        raise relief._Unsupported("a sample fell outside the elevation data")
+
+    monkeypatch.setattr(relief, "_sample", outside)
+    extent, crs = _utm_extent(40.5, -3.5, 12000, 10000)
+    logs = []
+    assert relief.prepare_many([(extent, crs, A4_MAP)], log=logs.append) == [None]
+    assert logs[-1] == ("[relief] skipped: the elevation data does not cover this map as it is; the poster is drawn "
+                        "without relief")
+
+
+def test_a_map_next_to_the_180th_meridian_gets_no_relief_and_asks_for_nothing(monkeypatch, tmp_path):
+    calls = _serve(monkeypatch, {(-17, 179): _cog((-17, 179), _steep)})
+    lat = -16.6
+    crs = render.utm_crs(179.9, lat)
+    x180, y = Transformer.from_crs(4326, crs, always_xy=True).transform(180.0, lat)
+    for x0, x1 in ((x180 - 12500, x180 - 500), (x180 - 6000, x180 + 6000)):  # 0.5 km short of it, across it
+        logs = []
+        assert relief.prepare_many([((x0, x1, y - 5000, y + 5000), crs, A4_MAP)], log=logs.append) == [None]
+        assert logs[-1] == "[relief] no relief next to the 180th meridian: drawn without it"
+    assert not calls, "no request, so none for a cell east of 179 (there is none: E180 would be W180)"
+    extent, crs = _utm_extent(-16.5, 179.4, 12000, 10000)  # well clear of it
+    assert isinstance(relief.prepare_many([(extent, crs, A4_MAP)], log=lambda *_: None)[0], relief.Relief)
+    assert all("E179" in u for u, _, _ in calls)
+
+
+def test_a_cell_replaced_on_the_server_is_fetched_afresh_on_the_next_run(monkeypatch, tmp_path):
+    release1 = _cog((40, -4), _steep)
+    release2 = _cog((40, -4), lambda lon, lat: _steep(lon, lat) + 37.0 * np.sin(lat * 50))  # other tile sizes
+    assert _detail_offsets(release1) != _detail_offsets(release2)
+    _serve(monkeypatch, {(40, -4): release1})
+    a = _utm_extent(40.8, -3.8, 12000, 10000)  # the north-west of the cell
+    b = _utm_extent(40.2, -3.2, 12000, 10000)  # the south-east: other blocks
+    assert relief.prepare_many([(a[0], a[1], A4_MAP)], log=lambda *_: None)[0] is not None
+    _serve(monkeypatch, {(40, -4): release2})  # a new release replaces the file: the cached header is stale
+    logs = []
+    assert relief.prepare_many([(b[0], b[1], A4_MAP)], log=logs.append) == [None]
+    assert logs[-1].endswith("run the same command again later to add it")
+    (rel,) = relief.prepare_many([(b[0], b[1], A4_MAP)], log=lambda *_: None)
+    assert rel is not None, "and running it again does add it"
 
 
 def test_cache_is_reused_offline_and_validated(monkeypatch, tmp_path):
@@ -768,6 +889,88 @@ def test_water_stays_flat_and_relief_sits_between_streets_and_routes(monkeypatch
     assert tuple(slope) != tuple(round(c * 255) for c in to_rgb(S["bg"])), "the slope is shaded"
 
 
+def _map_pixel(png, extent, map_w, x, y, dpi=60):
+    """The colour of the A4 editorial page at map point (x, y)."""
+    with Image.open(png) as img:
+        px = np.asarray(img.convert("RGB"))
+    k = 210 / 297
+    x_mm = 18 * k + (x - extent[0]) / (extent[1] - extent[0]) * map_w
+    y_mm = 94 * k + (extent[3] - y) / (extent[3] - extent[2]) * 222 * k
+    return tuple(px[int(round(y_mm / 25.4 * dpi)), int(round(x_mm / 25.4 * dpi))])
+
+
+def test_the_drawn_relief_is_north_up(tmp_path):
+    from matplotlib.colors import to_rgb
+    from shapely.geometry import LineString
+    from pinless import render_editorial
+    extent, map_w = _editorial_extent("A4")
+    shade = np.zeros(relief.raster_shape(map_w, extent), np.float32)
+    shade[: shade.shape[0] // 2] = -0.9  # row 0 is north: the north half is in shadow, the south half flat
+    out = tmp_path / "n.png"
+    info = render_editorial.render([(0, LineString([(500, 300), (900, 400)]))], (_empty(), _empty(), _empty()), extent,
+                                   STATS, str(out), size="A4", dpi=60, city="X", year="2025",
+                                   relief=relief.Relief(shade, "glo30", 0, 0.5))
+    assert info["relief"] is True
+    bg = tuple(round(c * 255) for c in to_rgb(render_editorial.STYLES["huella"]["bg"]))
+    north, south = extent[2] + 0.75 * (extent[3] - extent[2]), extent[2] + 0.25 * (extent[3] - extent[2])
+    assert _map_pixel(out, extent, map_w, 6000, north) != bg, "the north of the map is shaded"
+    assert _map_pixel(out, extent, map_w, 6000, south) == bg, "the south of the map is untouched paper"
+
+
+def test_odd_water_never_stops_the_poster(monkeypatch, tmp_path):
+    import geopandas as gpd
+    from matplotlib.colors import to_rgb
+    from shapely.geometry import LineString, Polygon
+    from pinless import render_editorial
+    extent, map_w = _editorial_extent("A4")
+    rel = relief.Relief(np.full(relief.raster_shape(map_w, extent), -0.9, np.float32), "glo30", 0, 0.5)
+    S = render_editorial.STYLES["huella"]
+    route = [(0, LineString([(500, 300), (900, 400)]))]
+    # a self-crossing lake (OSM has some; draw_basemap fills both lobes): the relief stays off it, and no crash
+    bowtie = Polygon([(3000, 3000), (8000, 7000), (8000, 3000), (3000, 7000)])
+    assert not bowtie.is_valid
+    water = gpd.GeoDataFrame({"natural": ["water"]}, geometry=[bowtie])
+    out = tmp_path / "b.png"
+    info = render_editorial.render(route, (_empty(), _empty(), water), extent, STATS, str(out), size="A4", dpi=60,
+                                   city="X", year="2025", relief=rel)
+    assert info["relief"] is True
+    assert _map_pixel(out, extent, map_w, 3800, 5000) == tuple(round(c * 255) for c in to_rgb(S["water"]))
+    assert _map_pixel(out, extent, map_w, 1500, 5000) != tuple(round(c * 255) for c in to_rgb(S["bg"]))
+    # a map that is all water: nothing to shade, so no relief and no relief notice
+    boxes = _footer_spy(monkeypatch)
+    sea = Polygon([(-100, -100), (12100, -100), (12100, 12100), (-100, 12100)])
+    info = render_editorial.render(route, (_empty(), _empty(), gpd.GeoDataFrame({"natural": ["water"]}, geometry=[sea])),
+                                   extent, STATS, str(tmp_path / "s.png"), size="A4", dpi=20, city="X", year="2025",
+                                   relief=rel)
+    assert info["relief"] is False and not any("Copernicus" in b[0] for b in boxes)
+    assert any(b[0].startswith("© OpenStreetMap") for b in boxes)
+
+
+def _svg_images(svg):
+    import re
+    return re.findall(r'<image [^>]*?xlink:href="([^"]*)"', svg.read_text(encoding="utf-8"))
+
+
+def test_an_svg_holds_its_relief_whatever_the_user_matplotlibrc(monkeypatch, tmp_path):
+    import matplotlib
+    from shapely.geometry import LineString
+    from pinless import render_editorial
+    monkeypatch.setitem(matplotlib.rcParams, "svg.image_inline", False)  # as a user's matplotlibrc may say
+    extent, map_w = _editorial_extent("A4")
+    folder = tmp_path / "Users" / "someone" / "Desktop"
+    folder.mkdir(parents=True)
+    svg = folder / "poster.svg"
+    info = render_editorial.render([(0, LineString([(1000, 1000), (11000, 9000)]))], (_empty(), _empty(), _empty()),
+                                   extent, STATS, str(folder / "poster.png"), size="A4", dpi=20, city="X",
+                                   year="2025", svg_path=str(svg),
+                                   relief=_synthetic_relief(relief.raster_shape(map_w, extent)))
+    assert info["relief"] is True
+    hrefs = _svg_images(svg)
+    assert len(hrefs) == 1 and hrefs[0].startswith("data:image/png;base64,"), "the image is inside the SVG"
+    assert "someone" not in svg.read_text(encoding="utf-8"), "no local path"
+    assert sorted(p.name for p in folder.iterdir()) == ["poster.png", "poster.svg"], "no PNG written next to it"
+
+
 def _footer_spy(monkeypatch):
     from pinless import atlas, render_editorial, render_race
     boxes = []
@@ -929,12 +1132,54 @@ def test_relief_flag_and_default(monkeypatch, tmp_path, capsys):
                                  style=None, size="A3", dpi=40, name="", title="", out=str(tmp_path / "a.png"),
                                  pdf=None, svg=None, preview=None, color_by="heat")
     assert atlas.run(acts, args, log=lambda *_: None) == 0 and got["reliefs"] is None
-    # --relief shade on the race print: a Relief reaches render_race.render, and the notice is drawn
+    # --relief shade on the race print: a Relief reaches render_race.render, and the notice is drawn; its SVG holds
+    # the relief whatever the user's matplotlibrc says
+    import matplotlib
+    monkeypatch.setitem(matplotlib.rcParams, "svg.image_inline", False)
     monkeypatch.setattr(relief, "prepare_many", real_prepare)
     _serve(monkeypatch, {(40, -4): _cog((40, -4), _steep)})
     captured, texts = {}, []
     _race_world(monkeypatch, captured, texts)
-    assert cli.main(RACE_ARGS + ["--relief", "shade", "--out", str(tmp_path / "r2.png")]) == 0
+    folder = tmp_path / "race"
+    folder.mkdir()
+    assert cli.main(RACE_ARGS + ["--relief", "shade", "--out", str(folder / "r2.png"), "--svg",
+                                 str(folder / "r2.svg")]) == 0
     assert isinstance(captured["relief"], relief.Relief) and captured["info"]["relief"] is True
     assert texts.count(relief.notice("glo30", "en")) == 1
+    hrefs = _svg_images(folder / "r2.svg")
+    assert len(hrefs) == 1 and hrefs[0].startswith("data:image/png;base64,")
+    assert sorted(p.name for p in folder.iterdir()) == ["r2.png", "r2.svg"]
     capsys.readouterr()
+
+
+def test_atlas_run_draws_each_map_its_relief_at_its_own_size(monkeypatch, tmp_path):
+    import types
+    import matplotlib
+    from pinless import atlas
+    monkeypatch.setitem(matplotlib.rcParams, "svg.image_inline", False)
+    _serve(monkeypatch, {(40, -4): _cog((40, -4), _steep), (40, -3): _cog((40, -3), _steep)})
+    acts = [_loop_act(i, 40.42, -3.70) for i in range(3)] + [_loop_act(i, 40.45, -2.60) for i in range(3, 6)]
+    monkeypatch.setattr(atlas.area, "place_names", lambda lat, lon, lang="en": ("C", "K"))
+    monkeypatch.setattr(atlas, "_basemap", lambda c, ext, log: (_empty(), _empty(), _empty()))
+    got, real = {}, atlas.render_atlas
+
+    def spy(drawn, cells, extents, *a, **k):
+        got.update(k, cells=cells, extents=extents)
+        return real(drawn, cells, extents, *a, **k)
+
+    monkeypatch.setattr(atlas, "render_atlas", spy)
+    boxes = _footer_spy(monkeypatch)
+    folder = tmp_path / "atlas"
+    folder.mkdir()
+    args = types.SimpleNamespace(zone=[], trim=300.0, zone_radius=500.0, max_cities=2, lang="en", year=None,
+                                 style=None, size="A4", dpi=20, name="", title="", out=str(folder / "a.png"),
+                                 pdf=None, svg=str(folder / "a.svg"), preview=None, color_by="heat", relief="shade")
+    assert atlas.run(acts, args, log=lambda *_: None) == 0
+    k = render.SIZES["A4"][0] / 297  # A4: the atlas cells are laid out on the A3 grid and scaled
+    assert len(got["reliefs"]) == len(got["cells"]) == 2
+    for rel, (_, _, w, _), ext in zip(got["reliefs"], got["cells"], got["extents"]):
+        assert isinstance(rel, relief.Relief) and rel.shade.shape == relief.raster_shape(w * k, ext)
+    assert [b[0] for b in boxes].count(relief.notice("glo30", "en")) == 1, "one notice for the print"
+    hrefs = _svg_images(folder / "a.svg")
+    assert len(hrefs) == 2 and all(h.startswith("data:image/png;base64,") for h in hrefs)
+    assert sorted(p.name for p in folder.iterdir()) == ["a.png", "a.svg"]

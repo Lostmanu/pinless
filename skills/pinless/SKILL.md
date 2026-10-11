@@ -12,8 +12,9 @@ description: Make a print-ready poster of a runner's year from their Strava expo
   city's box and its centre rounded to about 1 km) to OpenStreetMap services, or to a public Overpass mirror when the
   main server is busy. If it prints `[osm] STOP`, the map servers are busy: suggest running it again later.
 - If the export path is unknown, ask the user for it. Do not search their disk for it.
-- Add `--relief shade` only when the user asks for terrain or relief; it also downloads the 1-degree Copernicus
-  elevation cells around the map from Amazon S3; without it nothing is sent there.
+- Add `--relief shade` only when the user asks for terrain or relief; it also downloads Copernicus elevation data
+  from Amazon S3, which learns the 1-degree cells around the map and, where the land is hilly, the blocks of about
+  30 km inside them that cover it (never the routes); without it nothing is sent there.
 
 ## Steps
 1. Make sure it is installed: `pinless --help`. If not: `pip install git+https://github.com/Lostmanu/pinless`.

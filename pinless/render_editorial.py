@@ -120,6 +120,13 @@ LEVELS = 32  # route colour and weight steps: finer than the eye separates on pa
 PRINT_TOL_MM = 0.04  # geometry is simplified to this, on paper: far below what a print shows
 
 
+def svg_rc(salt):
+    """The settings of every SVG export, whatever the user's matplotlibrc says: a fixed hash salt, text as paths,
+    and images inside the file. With svg.image_inline off, matplotlib would write each image as a PNG next to the
+    SVG and put that file's local path (user name included) into the SVG."""
+    return {"svg.hashsalt": salt, "svg.fonttype": "path", "svg.image_inline": True}
+
+
 def _clip_simplify(geoms, extent, tol):
     """Cut to the map box and simplify to tol (map units): nothing outside the map is written, nothing visible lost."""
     x0, x1, y0, y1 = extent
@@ -292,8 +299,8 @@ def draw_relief(ax, relief, extent, S, water, k, map_w_mm):
         tol = (x1 - x0) / map_w_mm * PRINT_TOL_MM  # as draw_basemap: the clip follows the drawn water exactly
         polys = [p for g in _clip_simplify(water.geometry[water.geometry.type.isin(["Polygon", "MultiPolygon"])],
                                            extent, tol) for p in _parts(g, ("Polygon",))]
-        if polys:
-            clip = shapely.difference(clip, shapely.union_all(polys))
+        if polys:  # made valid first: a self-crossing lake that draw_basemap fills would stop GEOS here
+            clip = shapely.difference(clip, shapely.union_all(shapely.make_valid(np.asarray(polys, dtype=object))))
     path = _poly_path(list(_parts(clip, ("Polygon",)))) if not clip.is_empty else None
     if path is None:
         return False
@@ -574,7 +581,7 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
                     metadata={"Creator": None, "Producer": None, "CreationDate": None, "ModDate": None,
                               "Title": None, "Author": None, "Subject": None, "Keywords": None})
     if svg_path:
-        with matplotlib.rc_context({"svg.hashsalt": "pinless-editorial", "svg.fonttype": "path"}):
+        with matplotlib.rc_context(svg_rc("pinless-editorial")):
             fig.savefig(svg_path, facecolor=S["bg"], metadata={"Date": None, "Creator": "Pinless"})
     if preview_path:
         # Render directly from the same figure, avoiding a web-sized SVG or any

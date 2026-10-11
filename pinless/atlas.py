@@ -26,7 +26,7 @@ from . import relief
 from .render import MM, SIZES, heat_raster
 from .render_editorial import (DISPLAY, REGULAR, STYLES, TEXT, _density_segments, draw_basemap, draw_legend,
                                draw_routes, place_text, route_colours)
-from .render_editorial import draw_relief, footer_credits
+from .render_editorial import draw_relief, footer_credits, svg_rc
 from .localtime import local_start
 from .render_sport import _num
 
@@ -331,7 +331,7 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
                     metadata={"Creator": None, "Producer": None, "CreationDate": None, "ModDate": None,
                               "Title": None, "Author": None, "Subject": None, "Keywords": None})
     if svg_path:
-        with matplotlib.rc_context({"svg.hashsalt": "pinless-atlas", "svg.fonttype": "path"}):
+        with matplotlib.rc_context(svg_rc("pinless-atlas")):
             fig.savefig(svg_path, facecolor=S["bg"], metadata={"Date": None, "Creator": "Pinless"})
     if preview_path:
         fig.savefig(preview_path, dpi=1600 * 25.4 / hmm, facecolor=S["bg"], pil_kwargs={"quality": 88, "optimize": True})

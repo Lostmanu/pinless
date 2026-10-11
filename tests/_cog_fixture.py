@@ -32,8 +32,11 @@ def _encode(tile):
 
 
 def write_cog(cell=(40, -4), levels=None, tile=16, endian="<", compression=8, predictor=3, sample_format=3,
-              raster_type=2, tiepoint=None, ifd_at_end=False, bits=32, scale=None):
-    """bytes of a GeoTIFF for a cell (south, west) with one IFD per array in `levels` (full resolution first)."""
+              raster_type=2, tiepoint=None, ifd_at_end=False, bits=32, scale=None, tags=None, ifd_loop=False):
+    """bytes of a GeoTIFF for a cell (south, west) with one IFD per array in `levels` (full resolution first).
+
+    tags={(level, tag): (type, values)} replaces (or adds) an entry of that level's IFD; ifd_loop points the last
+    IFD back at the first."""
     N, W = cell
     levels = [np.asarray(a, dtype=np.float32) for a in levels]
     h0, w0 = levels[0].shape
@@ -59,7 +62,10 @@ def write_cog(cell=(40, -4), levels=None, tile=16, endian="<", compression=8, pr
             tp = tiepoint or (0.0, 0.0, 0.0, float(W), float(N + 1), 0.0)
             e += [(33550, 12, list(sc)), (33922, 12, list(tp)),
                   (34735, 3, [1, 1, 0, 3, 1024, 0, 1, 2, 1025, 0, 1, raster_type, 2048, 0, 1, 4326])]
-        return e
+        for (lv, tag), (typ, vals) in (tags or {}).items():
+            if lv == L:
+                e = [x for x in e if x[0] != tag] + [(tag, typ, list(vals))]
+        return sorted(e)
 
     fmt = {3: "H", 4: "I", 12: "d"}
     size = {3: 2, 4: 4, 12: 8}
@@ -111,7 +117,7 @@ def write_cog(cell=(40, -4), levels=None, tile=16, endian="<", compression=8, pr
             else:
                 struct.pack_into(endian + "HHII", buf, p, tag, typ, len(vals), arrays[tag])
                 buf[arrays[tag]:arrays[tag] + len(data)] = data
-        nxt = ifd_pos[L + 1] if L + 1 < len(ifd_pos) else 0
+        nxt = ifd_pos[L + 1] if L + 1 < len(ifd_pos) else (ifd_pos[0] if ifd_loop else 0)
         struct.pack_into(endian + "I", buf, at + 2 + 12 * len(e), nxt)
     t = tile_start
     for lv in tiles:
