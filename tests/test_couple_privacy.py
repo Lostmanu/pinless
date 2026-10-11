@@ -154,8 +154,8 @@ def test_the_quieter_partner_keeps_their_own_places():
     assert far(pieces, ha) >= 200 and far(pieces, hb) >= 200 and far(pieces, gym) >= 200
 
 
-def _split_place(k):
-    ha, hb, p = np.array([0.0, 0.0]), np.array([0.0, 9000.0]), np.array([6000.0, 4500.0])
+def _split_place(k, p=(6000.0, 4500.0)):
+    ha, hb, p = np.array([0.0, 0.0]), np.array([0.0, 9000.0]), np.asarray(p, dtype=float)
     ends = [p + 4000 * np.array([math.cos(a), math.sin(a)]) for a in np.linspace(-1.2, 1.2, 2 * k)]
     ta = loops_from(ha, 300) + [line(p + GEN.normal(0, 10, 2), e, noise=4.0) for e in ends[:k]] + [through(p)]
     tb = loops_from(hb, 300) + [line(p + GEN.normal(0, 10, 2), e, noise=4.0) for e in ends[k:]]
@@ -176,6 +176,25 @@ def test_a_place_split_across_two_exports_is_hidden():
     ta, tb, p = _split_place(5)  # 5/12 + 5/12 = 0.83: not enough evidence, no zone there
     zones, _, _ = privacy.pair_places([ta, tb])
     assert not any(np.hypot(x - p[0], y - p[1]) < 250 for x, y, _ in zones)
+
+
+def test_a_place_next_to_a_bigger_one_gets_its_own_zone():
+    """A gym 450 m from home shares a 3 x 3 block of cells with the home's many ends: that block's mean lies at home,
+    so the gym needs a look of its own at the ends no centre covers yet. The same for a place where the two people's
+    ends meet 450 m from one of their homes. 3 km away (the control) both were always found."""
+    ha = np.array([0.0, 0.0])
+    for g, label in ((np.array([3000.0, 0.0]), "control: 3 km from home"), (np.array([320.0, 320.0]), "450 m")):
+        ta = loops_from(ha, 280) + loops_from(g, 20, r0=900.0) + [through(g)]  # 40 ends at the gym, threshold 12
+        tb = loops_from(np.array([0.0, 9000.0]), 200)
+        assert any(np.hypot(*(c - g)) < 60 for c, _ in privacy.find_places(ta)), label
+        for seed in range(3):
+            assert far(privacy.apply(ta, rng=random.Random(seed))[0], g) >= 200, (label, "solo")
+            assert far(couple_cut(ta, tb, rng=random.Random(seed))[0], g) >= 200, (label, "couple")
+    ta, tb, p = _split_place(7, p=(320.0, 320.0))  # 7 + 7 ends at thresholds 12/12, 450 m from the first home
+    zones, witnesses, counts = privacy.pair_places([ta, tb])
+    assert any(np.hypot(*(w - p)) < 60 for w in witnesses) and counts["pooled_new"] == 1
+    for seed in range(3):
+        assert far(couple_cut(ta, tb, rng=random.Random(seed))[0], p) >= 200, seed
 
 
 def test_a_partner_with_few_runs_marks_a_single_loop_start():

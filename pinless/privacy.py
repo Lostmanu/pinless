@@ -91,7 +91,39 @@ def _clusters(points: np.ndarray, eps: float, min_pts: int, accept=None):
                     centre = points[block[c]].mean(axis=0)
                     if all(np.hypot(*(centre - o)) > eps for o, _ in out):
                         out.append((centre, len(block[c])))
+            _uncovered_places(points, buckets, cells, eps, ok, out)
     return out
+
+
+def _uncovered_places(points, buckets, cells, eps, ok, out):
+    """A smaller place next to a bigger one (a gym 450 m from home): its only block also holds the home's ends, so that
+    block's mean lies at home and is skipped. Look again at the ends farther than eps from every centre found so far:
+    any block of them that is a place on its own gets a centre too (appended to out), until none is left."""
+    tried = set()
+    while True:
+        centres = np.array([o for o, _ in out])
+        left = {}
+        for c in cells:
+            idx = np.asarray(buckets[c])
+            gap = np.hypot(*(points[idx][:, None, :] - centres[None, :, :]).transpose(2, 0, 1)).min(axis=1)
+            if (gap > eps).any():
+                left[c] = idx[gap > eps].tolist()
+        if not left:
+            return
+        block = {c: [i for dx in (-1, 0, 1) for dy in (-1, 0, 1) for i in left.get((c[0] + dx, c[1] + dy), ())]
+                 for c in cells}
+        for c in sorted(cells, key=lambda c: (-len(block[c]), c)):
+            key = (c, tuple(block[c]))
+            if not block[c] or key in tried:
+                continue
+            tried.add(key)
+            if ok(block[c]):
+                centre = points[block[c]].mean(axis=0)
+                if all(np.hypot(*(centre - o)) > eps for o, _ in out):
+                    out.append((centre, len(block[c])))
+                    break
+        else:
+            return
 
 
 def _irregular_zone(centre, radius, rng: random.Random, n=14):
