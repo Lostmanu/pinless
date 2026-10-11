@@ -36,6 +36,7 @@ It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros
 - Routes coloured by how often you ran them, or by month, pace or elevation (`--color-by`).
 - An optional band of charts: kilometres per month, the time of day you run and the direction of your streets (`--graphs`).
 - An atlas of every city you ran in (`--layout atlas`) and a finisher print of one race (`--layout race`), both below.
+- Shaded terrain relief where your area has hills (`--relief shade`), from the Copernicus elevation model. It sits under the routes, quieter than the faintest of them, and stays off the water; flat cities get none.
 
 ## Styles
 
@@ -89,7 +90,7 @@ A heatmap of your runs shows where you live. Pinless removes that before drawing
 3. It checks the result. If any line still touches a zone, nothing is exported.
    The race print works on a single course and always draws one unbroken stretch of it. A course that only passes one of your private places is drawn whole, since a gap in it would point at the very place it hides. A run that starts or ends at a private place (within 1.5 zone radii, in its first or last 300 m) is refused unless you pass `--allow-private-ends`, which keeps a stretch well clear of that place, as above; a `--zone` is always kept clear the same way. For the race print, a private place is also where two or more of your other runs start or end close to where this one does, within 1.5 zone radii of its first or last 300 m (a new home, a holiday flat, before years of history learn it). A loop from a place none of your other runs starts from (a first run from a hotel) cannot be told from a race start: it is drawn whole, and Pinless says so, so you can add a `--zone` there.
 4. It never prints coordinates or start points, and nothing outside the visible map is written into the PNG, PDF or SVG. Dates are printed only on the race print, where they are the point, and never an activity's own name: the race headline is the city or what you write with `--title`. The favourite street is never one within 1 km of a private zone.
-5. Your files never leave your computer. Only the bounding box of the area is sent out: to OpenStreetMap's Nominatim for the city name and to its Overpass service for the streets (in the atlas, each city's box, and its centre rounded to about 1 km for the name). When the main Overpass server is busy, Pinless tries the public mirror overpass.private.coffee; to use another server, set `PINLESS_OVERPASS` to its API address.
+5. Your files never leave your computer. Only the bounding box of the area is sent out: to OpenStreetMap's Nominatim for the city name and to its Overpass service for the streets (in the atlas, each city's box, and its centre rounded to about 1 km for the name). When the main Overpass server is busy, Pinless tries the public mirror overpass.private.coffee; to use another server, set `PINLESS_OVERPASS` to its API address. With `--relief shade`, Pinless also downloads elevation data from the Copernicus DEM on Amazon S3, which learns which 1-degree cell, and which block of about 30 km inside it, your map covers; never your routes. Without it nothing is sent there. Downloaded elevation is cached next to the map data. Like the map data, that cache shows on your computer which areas you made posters of; delete the cache folder (`~/.cache/pinless`, or the folder in `PINLESS_CACHE`) to remove it.
 
 Stray GPS fixes at the start or end of a file (a watch that opens with yesterday's position, then jumps) are dropped on import. A run that starts in one place and ends in another, once, only has its ends trimmed. This reduces the risk; it is not a guarantee of anonymity. A map of where you run still says something about you. Look at the poster before you share it, and hide more places with `--zone LAT,LON,RADIUS_M` (repeatable).
 
@@ -105,6 +106,7 @@ Stray GPS fixes at the start or end of a file (a watch that opens with yesterday
 | `--layout editorial\|atlas\|race`, `--max-cities 9`, `--activity longest`, `--allow-private-ends` | One city, one small map per city, or one race |
 | `--color-by heat\|single\|month\|pace\|elevation`, `--graphs` | What the line colour says; the band of charts |
 | `--style huella\|carbon\|midnight\|...`, `--size A4\|A3\|50x70` | One of twelve styles; paper |
+| `--relief off\|shade` | Terrain relief under the map where the land is hilly (off by default) |
 | `--lang en\|es` | Labels in English or Spanish |
 | `--out`, `--pdf`, `--svg`, `--preview` | Outputs |
 | `--zone LAT,LON,R` | Extra private zone |
@@ -134,5 +136,14 @@ The tests run offline. The street statistics use `tests/data/madrid_streets.json
 ## Credits and license
 
 Map data © OpenStreetMap contributors, available under the ODbL; every poster carries the attribution. Fonts: Barlow Condensed and Manrope, SIL Open Font License 1.1 (`pinless/fonts`). Code: MIT.
+
+Terrain relief (`--relief shade`) comes from the Copernicus DEM, GLO-30, or GLO-90 for a print where GLO-30 lacks a land cell, under the [Copernicus DEM licence](https://dataspace.copernicus.eu/sites/default/files/media/files/2025-06/copernicus_contributing_mission_data_access_v2_cop_dem_licenses.pdf) (also [License-COPDEM-30](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/DEM/resources/license/License-COPDEM-30.pdf)). A poster with relief carries the notice of the dataset it used:
+
+- "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved"
+- "produced using Copernicus WorldDEM™-90 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved"
+
+The organisations in charge of the Copernicus programme by law or by delegation do not incur any liability for any use of the Copernicus WorldDEM-30. The organisations in charge of the Copernicus programme by law or by delegation do not incur any liability for any use of the Copernicus WorldDEM™-90.
+
+Pinless is not endorsed by the Copernicus programme. The relief is a smoothed hillshade of a surface model (modified data), not for navigation. If you share or sell a poster with relief, keep its relief notice. `tools/check_relief.py` checks the elevation reader against Pillow on real data and draws the sheets to look at before a change to the relief is merged.
 
 Not affiliated with Strava.
