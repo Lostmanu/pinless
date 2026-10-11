@@ -2,6 +2,8 @@
 are printed, never coordinates)."""
 from __future__ import annotations
 
+import bisect
+import datetime as dt
 from collections import Counter
 
 import numpy as np
@@ -72,10 +74,11 @@ def longest_streak(dates):
 
 
 def compute(activities, tracks_xy, edges_gdf=None, private_pieces_xy=None, piece_groups=None, sensitive_xy=(),
-            fav_min_dist_m=1000.0):
+            fav_min_dist_m=1000.0, keep_streets=False):
     """activities: selected ingest.Activity objects; tracks_xy: their projected FULL tracks (same order).
     Street stats use ONLY the privacy-cut pieces (private_pieces_xy), never the full tracks: the most-run street of a
-    full track is usually the runner's own street."""
+    full track is usually the runner's own street. keep_streets: also return the set of street names run
+    ("street_names"), in memory only, to count the streets two people both ran."""
     km = [float(_cum(xy)[-1]) / 1000 for xy in tracks_xy]
     secs_total = sum((a.times[-1] - a.times[0]) for a in activities if a.times)
     b5 = [best_effort(xy, a.times, 5000) for a, xy in zip(activities, tracks_xy)]
@@ -93,6 +96,8 @@ def compute(activities, tracks_xy, edges_gdf=None, private_pieces_xy=None, piece
     if edges_gdf is not None and private_pieces_xy is not None:
         sc = street_counts(private_pieces_xy, edges_gdf, groups=piece_groups)
         out["streets"] = len(sc)
+        if keep_streets:
+            out["street_names"] = set(sc)
         # the favourite street must not point at a sensitive place: skip streets within fav_min_dist_m of any zone
         far = set()
         if len(sensitive_xy):
@@ -103,6 +108,65 @@ def compute(activities, tracks_xy, edges_gdf=None, private_pieces_xy=None, piece
                     far.add(nm)  # «far» = forbidden: too close to a sensitive place
         ok = [(nm, c) for nm, c in sc.most_common() if nm not in far]
         out["fav_street"], out["fav_street_n"] = ok[0] if ok else ("", 0)
+    return out
+
+
+def _clock(act, xy):
+    """(absolute seconds, x, y, cumulative metres) with a strictly increasing clock, or None without a clock.
+    A naive start is taken as UTC, as localtime does. Repeated stamps (a paused watch) are dropped."""
+    if (act.start is None or act.times is None or len(act.times) != len(xy) or len(xy) < 2
+            or any(t is None for t in act.times)):
+        return None
+    start = act.start if act.start.tzinfo else act.start.replace(tzinfo=dt.timezone.utc)
+    t = np.maximum.accumulate(start.timestamp() + np.asarray(act.times, dtype=float))
+    keep = np.concatenate([[True], np.diff(t) > 0])
+    if keep.sum() < 2:
+        return None
+    xy = np.asarray(xy, dtype=float)
+    return t[keep], xy[keep, 0], xy[keep, 1], _cum(xy)[keep]
+
+
+def together(acts_a, tracks_a, acts_b, tracks_b, step_s=30.0, min_s=600.0, min_frac=0.5, med_m=75.0, near_m=150.0,
+             near_frac=0.8):
+    """Runs two people ran side by side, from their clocks and FULL tracks (in memory only): an activity of each that
+    overlap in time for at least max(min_s, min_frac of the shorter one), with a median gap of med_m or less and
+    at least near_frac of the shared time within near_m. Matched one to one, longest overlap first.
+    Returns {"runs", "km" (the mean of the two along-track distances over the shared time), "known" (both have
+    some clock), "no_clock" (activities without a clock: (first person's, second person's))}."""
+    ca = [_clock(a, xy) for a, xy in zip(acts_a, tracks_a)]
+    cb = [_clock(b, xy) for b, xy in zip(acts_b, tracks_b)]
+    out = {"runs": 0, "km": 0.0, "known": any(c is not None for c in ca) and any(c is not None for c in cb),
+           "no_clock": (sum(c is None for c in ca), sum(c is None for c in cb))}
+    bs = sorted((c[0][0], j) for j, c in enumerate(cb) if c is not None)
+    if not out["known"] or not bs:
+        return out
+    starts = [s for s, _ in bs]
+    longest_b = max(cb[j][0][-1] - cb[j][0][0] for _, j in bs)
+    pairs = []
+    for i, a in enumerate(ca):
+        if a is None:
+            continue
+        a0, a1 = a[0][0], a[0][-1]
+        for _, j in bs[bisect.bisect_left(starts, a0 - longest_b):bisect.bisect_left(starts, a1)]:
+            b = cb[j]
+            lo, hi = max(a0, b[0][0]), min(a1, b[0][-1])
+            ov = hi - lo
+            if ov < max(min_s, min_frac * min(a1 - a0, b[0][-1] - b[0][0])):
+                continue
+            t = np.append(np.arange(lo, hi, step_s), hi)
+            d = np.hypot(np.interp(t, a[0], a[1]) - np.interp(t, b[0], b[1]),
+                         np.interp(t, a[0], a[2]) - np.interp(t, b[0], b[2]))
+            if np.median(d) <= med_m and np.mean(d <= near_m) >= near_frac:
+                along = [np.interp(hi, c[0], c[3]) - np.interp(lo, c[0], c[3]) for c in (a, b)]
+                pairs.append((ov, i, j, float(np.mean(along))))
+    used_a, used_b = set(), set()
+    for ov, i, j, m in sorted(pairs, key=lambda p: (-p[0], p[1], p[2])):
+        if i in used_a or j in used_b:
+            continue
+        used_a.add(i)
+        used_b.add(j)
+        out["runs"] += 1
+        out["km"] += m / 1000
     return out
 
 

@@ -22,8 +22,9 @@ def _run(i, start, xy_km, times=None, ele=None):
 @pytest.mark.parametrize("style", sorted(render_editorial.STYLES))
 def test_every_style_is_complete_and_draws(style, tmp_path):
     S = render_editorial.STYLES[style]
-    assert {"bg", "ink", "sub", "accent", "green", "water", "water_line", "rule", "street", "heat"} <= set(S)
+    assert {"bg", "ink", "sub", "accent", "green", "water", "water_line", "rule", "street", "heat", "who"} <= set(S)
     assert len(S["heat"]) == 5 and set(S["street"]) == {"major", "minor", "path"}
+    assert len(S["who"]) == 5, "the poster for two: first, mostly first, both, mostly second, second"
     pieces = [(0, LineString([(100, 100), (900, 700)])), (1, LineString([(100, 700), (900, 100)]))]
     out = tmp_path / "p.png"
     render_editorial.render(pieces, (EMPTY, EMPTY, EMPTY), (0, 1000, 0, 850), STATS, str(out), style=style, dpi=20,

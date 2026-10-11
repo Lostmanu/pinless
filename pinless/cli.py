@@ -1,23 +1,26 @@
 """pinless EXPORT [--year 2025] [--name Lucía] [--place "Madrid"] [--layout editorial|atlas|race] [--style huella]
+pinless EXPORT --with EXPORT2 --name Lucía --with-name Marcos   (one poster for two, one ink each)
 
 With no area options it finds where you run most, fetches that area's OpenStreetMap data once (cached) and names the
-city. Everything else runs locally: the export never leaves the machine; only the area's bounding box is sent to
-OpenStreetMap services.
+city. Everything else runs locally: the export never leaves the machine; only the area's bounding box (and its centre
+rounded to about 1 km, for the city name) is sent to OpenStreetMap services.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import math
 import os
 import re
 import sys
 import time
+from collections import Counter
 
 import numpy as np
 from pyproj import Transformer
 from shapely.geometry import LineString, box
 
-from . import area, atlas, colouring, ingest, privacy, race, render, render_sport, render_editorial, stats
+from . import atlas, colouring, couple, frame, ingest, privacy, race, render, render_sport, render_editorial, stats
 from . import relief
 from .localtime import local_start
 
@@ -44,7 +47,7 @@ def main(argv=None):
                         "stretch more, with its numbers limited to what is drawn")
     p.add_argument("--graphs", action="store_true",
                    help="editorial: add km per month, time of day and direction charts under the map")
-    p.add_argument("--color-by", default="heat", choices=colouring.MODES,
+    p.add_argument("--color-by", default=None, choices=colouring.MODES,
                    help="route colour: heat (how often), single, month, pace or elevation (editorial and atlas); "
                         "race: pace (default), elevation or single")
     p.add_argument("--name", default="", help="runner name for sport/editorial layouts (gifts)")
@@ -56,7 +59,8 @@ def main(argv=None):
     p.add_argument("--size", default="A3", choices=sorted(render.SIZES))
     p.add_argument("--dpi", type=int, default=300)
     p.add_argument("--lang", default="en", choices=["en", "es"])
-    p.add_argument("--zone", action="append", default=[], help="extra private zone lat,lon,radius_m (repeatable)")
+    p.add_argument("--zone", action="append", default=[],
+                   help="extra private zone lat,lon,radius_m (repeatable); with --with it hides both people's lines")
     p.add_argument("--trim", type=float, default=300.0)
     p.add_argument("--zone-radius", type=float, default=500.0)
     p.add_argument("--fit", action="store_true", help="crop the map to where the activities are (within the bbox)")
@@ -69,7 +73,35 @@ def main(argv=None):
                         "the Copernicus elevation model on Amazon S3, which learns the 1-degree cells around the map "
                         "and, where the land is hilly, the blocks of about 30 km that cover it (never your routes); "
                         "downloaded once (cached); flat areas get none")
+    p.add_argument("--with", dest="with_export", default=None, metavar="EXPORT",
+                   help="a second person's Strava export: one poster for two, one ink each (editorial)")
+    p.add_argument("--with-name", default="", help="the second person's name (required with --with)")
+    p.add_argument("--with-type", default=None,
+                   help="activity type in the second export, when it names the sport differently (default: --type)")
     a = p.parse_args(argv)
+    if (a.with_name or a.with_type) and not a.with_export:
+        p.error("--with-name and --with-type need --with")
+    if a.with_export:
+        if a.layout != "editorial":
+            p.error("couple mode (--with) is available for the editorial layout")
+        if not a.name.strip() or not a.with_name.strip():
+            p.error("--with needs both names, for the headline and the key: --name and --with-name")
+        if a.name.strip().casefold() == a.with_name.strip().casefold():
+            p.error("the two names label the two inks: they must differ")
+        if a.color_by is not None:
+            p.error("in couple mode the colour says whose street it is: --color-by does not apply")
+        if a.graphs:
+            p.error("--graphs is not available with --with yet")
+        if os.path.exists(a.export) and os.path.exists(a.with_export) and os.path.samefile(a.export, a.with_export):
+            p.error("--with is the same export as the first one")
+    if a.color_by is None:
+        a.color_by = "heat"
+    if a.bbox is not None and not _bbox_ok(a.bbox):
+        p.error("--bbox needs four numbers south,west,north,east in degrees, with south below north and west below "
+                "east")
+    if not all(_zone_ok(z) for z in a.zone):
+        p.error("--zone needs LAT,LON,RADIUS_M: the latitude first (-90 to 90), then the longitude (-180 to 180), then "
+                "a radius in metres above 0")
     styles = {"classic": render.STYLES, "sport": render_sport.STYLES, "editorial": render_editorial.STYLES,
               "atlas": render_editorial.STYLES, "race": render_editorial.STYLES}
     if a.style and a.style not in styles[a.layout]:
@@ -107,12 +139,12 @@ def main(argv=None):
         p.error("--preview requires the editorial, atlas or race layout and a .jpg or .jpeg filename")
     t0 = time.time()
 
+    if a.with_export:
+        return _couple_main(a, t0)
     acts, rep = ingest.read_export(a.export)
     print(f"[ingest] files {rep.files_seen} · used {rep.used} · no GPS {rep.no_gps} · unreadable {rep.unreadable} · "
           f"unsupported {rep.unsupported}")
-    # the year of each run where it was run: a New Year's Eve run in Madrid at 00:30 belongs to the new year
-    sel = [x for x in acts if x.type.lower() == a.type.lower()
-           and (a.year is None or ((t := local_start(x)) is not None and t.year == a.year))]
+    sel = _select(acts, a.type, a.year)
     if not sel:
         print("no activities match the type/year filters")
         return 2
@@ -124,14 +156,11 @@ def main(argv=None):
         code = race.run(sel, [x for x in acts if x.type.lower() == a.type.lower()], a)
         print(f"[done] {time.time() - t0:.0f}s")
         return code
-    if a.bbox:
-        s, w, n, e = map(float, a.bbox.split(","))
-    elif a.place:
-        s, w, n, e = area.geocode_bbox(a.place)
-        print(f"[area] {a.place}")
-    else:
-        s, w, n, e = area.auto_bbox(sel)
-        print("[area] found where you run most")
+    try:
+        s, w, n, e = frame.area_box(sel, a, print)
+    except frame.PlaceNotFound:
+        print(frame.PLACE_NOT_FOUND)
+        return 2
     area_ll = box(w, s, e, n)
     sel = [x for x in sel if LineString(x.lonlat).intersects(area_ll)]
     if not sel:
@@ -147,11 +176,15 @@ def main(argv=None):
         xy = np.column_stack([xs, ys])
         total_m += float(np.hypot(*np.diff(xy, axis=0).T).sum())
         tracks.append((x.id, xy))
-    user_zones = []
-    for z in a.zone:
-        la, lo, r = map(float, z.split(","))
-        zx, zy = tr.transform(lo, la)
-        user_zones.append((zx, zy, r))
+    user_zones = frame.user_zones(a, tr)
+    if a.layout == "editorial":
+        aspect = render_editorial.map_aspect(a.size, a.graphs)
+    else:
+        aspect = 1 / 1.22 if a.layout == "classic" else (render.SIZES[a.size][0] - 28 * render.SIZES[a.size][0] / 297) / (268 * render.SIZES[a.size][0] / 297)
+    off = frame.zone_off_map(user_zones, render.fit_extent((s, w, n, e), crs, aspect))
+    if off:
+        print(frame.ZONE_OFF_MAP.format(k=off))
+        return 2
     # privacy per activity, keeping activity ids for the heat (each activity counts once per pixel)
     pieces_all = []
     try:
@@ -162,43 +195,21 @@ def main(argv=None):
     pieces_all = pieces  # (activity_index, LineString): each activity counts once per pixel in the heat
     print(f"[privacy] zones suggested {prep.zones_suggested} · user zones {prep.zones_user} · "
           f"km in {prep.km_in:.0f} -> out {prep.km_out:.0f} · leak check {prep.leak_check}")
-    if a.layout == "editorial":
-        aspect = render_editorial.map_aspect(a.size, a.graphs)
-    else:
-        aspect = 1 / 1.22 if a.layout == "classic" else (render.SIZES[a.size][0] - 28 * render.SIZES[a.size][0] / 297) / (268 * render.SIZES[a.size][0] / 297)
-    if a.fit and pieces:
-        pts = np.concatenate([np.asarray(pc.coords) for _, pc in pieces])
-        lo, hi = np.percentile(pts, 0.7, axis=0), np.percentile(pts, 99.3, axis=0)
-        pad = 0.07 * max(hi - lo)
-        inv = Transformer.from_crs(crs, 4326, always_xy=True)
-        (w2, e2), (s2, n2) = inv.transform([lo[0] - pad, hi[0] + pad], [lo[1] - pad, hi[1] + pad])
-        extent = render.fit_extent((max(s, s2), max(w, w2), min(n, n2), min(e, e2)), crs, aspect)
-    else:
-        extent = render.fit_extent((s, w, n, e), crs, aspect)
-    exp_ll = Transformer.from_crs(crs, 4326, always_xy=True).transform([extent[0], extent[1]], [extent[2], extent[3]])
-    big = (min(exp_ll[1]) - 0.01, min(exp_ll[0]) - 0.01, max(exp_ll[1]) + 0.01, max(exp_ll[0]) + 0.01)
-    if a.cache:
-        folder = os.path.join(ROOT, "cache", a.cache)
-    else:
-        try:
-            folder = area.fetch_basemap(big)
-        except RuntimeError as ex:  # every OpenStreetMap server busy
-            print(f"[osm] STOP: {ex}. Run the same command again later.")
-            return 4
-    basemap = render.load_basemap(folder, big, crs)
+    extent = frame.extent_for(pieces, (s, w, n, e), crs, aspect, a.fit)
+    try:
+        basemap = frame.basemap_for(extent, crs, a, print)
+    except RuntimeError as ex:  # every OpenStreetMap server busy
+        print(f"[osm] STOP: {ex}. Run the same command again later.")
+        return 4
     relief_ = relief.prepare_many([(extent, crs, render.SIZES[a.size][0] * (1 - 36 / 297))],
                                   log=print)[0] if a.relief == "shade" else None
-    if not a.title:
-        a.title = (a.place.split(",")[0] if a.place else area.city_name((s + n) / 2, (w + e) / 2, lang=a.lang))
-        if a.title:
-            print(f"[area] headline: {a.title}")
-    years = sorted({t.year for x in sel if (t := local_start(x))})
-    span = f"{years[0]}–{years[-1]}" if len(years) > 1 else (str(years[0]) if years else "")  # one year: "2025"
-    stats_ = {"n": len(sel), "km": total_m / 1000, "year_label": str(a.year) if a.year else span}
+    frame.headline(a, (s, w, n, e), print)
+    stats_ = {"n": len(sel), "km": total_m / 1000, "year_label": frame.year_label(sel, a)}
     if a.layout in ("sport", "editorial"):
+        drawn = privacy.clip_to_extent(pieces, extent)  # streets on the drawn lines only, never beyond the map
         st_ = stats.compute(sel, [t for _, t in tracks], basemap[0],
-                            private_pieces_xy=[np.asarray(pc.coords) for _, pc in pieces],
-                            piece_groups=[i for i, _ in pieces], sensitive_xy=prep.centres)
+                            private_pieces_xy=[np.asarray(pc.coords) for _, pc in drawn],
+                            piece_groups=[i for i, _ in drawn], sensitive_xy=prep.centres)
         print(f"[stats] {st_['n']} runs · {st_['km']:.0f} km · {st_['hours']:.0f} h · best 5k {stats.fmt_time(st_['best5k_s'])} · "
               f"best 10k {stats.fmt_time(st_['best10k_s'])} · {st_.get('streets')} streets · fav: {st_.get('fav_street')}")
         if a.layout == "editorial":
@@ -220,6 +231,61 @@ def main(argv=None):
     print(f"[render] {a.out} {info['W']}x{info['H']} map px · heat cap {info['cap']:.0f} · max overlap {info['max']} · "
           f"{time.time() - t0:.0f}s")
     return 0
+
+
+def _bbox_ok(text):
+    """--bbox: four finite numbers south,west,north,east in degrees, south below north and west below east."""
+    try:
+        s, w, n, e = (float(v) for v in text.split(","))
+    except ValueError:
+        return False
+    return -90 <= s < n <= 90 and -180 <= w < e <= 180
+
+
+def _zone_ok(text):
+    """--zone: three finite numbers LAT,LON,RADIUS_M, the latitude within -90 to 90, the longitude within -180 to 180
+    and the radius above 0 metres."""
+    try:
+        la, lo, r = (float(v) for v in text.split(","))
+    except ValueError:
+        return False
+    return -90 <= la <= 90 and -180 <= lo <= 180 and 0 < r < math.inf
+
+
+def _select(acts, type_, year):
+    """The activities of a type (case-insensitive) and, when given, a year. The year of each run is the one where it
+    was run: a New Year's Eve run in Madrid at 00:30 belongs to the new year."""
+    return [x for x in acts if x.type.lower() == type_.lower()
+            and (year is None or ((t := local_start(x)) is not None and t.year == year))]
+
+
+def _couple_main(a, t0):
+    """--with: read both exports, name each person (never a path), select, then couple.run."""
+    names = (a.name.strip(), a.with_name.strip())
+    types = (a.type, a.with_type or a.type)
+    read = []
+    for name, path, flag in zip(names, (a.export, a.with_export), ("the first export", "--with")):
+        acts, rep = ingest.read_export(path)
+        if not rep.files_seen and not os.path.exists(path):  # a mistyped path reads as an empty export
+            print(f"{name}: there is no file or folder at the path given for {flag}")
+            return 2
+        print(f"[ingest] {name}: files {rep.files_seen} · used {rep.used} · no GPS {rep.no_gps} · unreadable "
+              f"{rep.unreadable} · unsupported {rep.unsupported}")
+        read.append(acts)
+    sels = []
+    for k, (name, acts, type_) in enumerate(zip(names, read, types)):
+        sel = _select(acts, type_, a.year)
+        if not sel:
+            kinds = ", ".join(f"{t} {n}" for t, n in Counter(x.type for x in acts).most_common(6))
+            print(f"{name}: no {type_} activities{f' in {a.year}' if a.year else ''} "
+                  f"({'this export has: ' + kinds if kinds else 'this export has no GPS activities'})."
+                  + (" Choose the type with --type." if k == 0 else
+                     " If this export names the sport differently, pass it with --with-type."))
+            return 2
+        sels.append(sel)
+    code = couple.run(read[0], read[1], sels[0], sels[1], a)
+    print(f"[done] {time.time() - t0:.0f}s")
+    return code
 
 
 if __name__ == "__main__":

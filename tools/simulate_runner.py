@@ -3,6 +3,13 @@
 Nobody's real data: a fictional runner with a home and an office in Madrid runs one year on real OSM streets.
 Usage: python tools/simulate_runner.py --city madrid --year 2025 --seed 7 --out demo/strava_export_madrid_demo.zip
 
+A partner for the poster of two (pinless --with), who lives and works elsewhere, runs on fewer days, a little slower,
+and runs some weekend runs side by side with the first runner (copied from that export, a few metres apart, the same
+clock within 5 s), on one command line:
+  python tools/simulate_runner.py --seed 11 --home 40.4310,-3.7165 --work 40.4275,-3.6790 --rate 0.6 --pace 1.06
+    --together-from demo/strava_export_madrid_demo.zip --together 24
+    --out demo/strava_export_madrid_partner_demo.zip --truth demo/truth_partner.json
+
 Realism, by design:
 - favourite routes repeated with variations (Madrid Rio, Retiro, Casa de Campo long runs) so repeated streets glow;
 - routing that prefers parks, footways and cycleways and avoids big avenues;
@@ -227,6 +234,38 @@ def to_utc(acts, zone):
             x["pts"] = [(la, lo, el, t - off) for la, lo, el, t in x["pts"]]
 
 
+def together_runs(export, n, rng, first_id):
+    """n weekend runs of another (synthetic) runner's export in Madrid, run side by side: the same streets a few metres
+    apart (AR(1) GPS noise of about 3 m) and the same clock within 5 s. In UTC, as the export stores them."""
+    sys.path.insert(0, ROOT)
+    from pinless import ingest
+    from pinless.localtime import local_start
+
+    acts, _ = ingest.read_export(export)
+    pool = [x for x in acts if x.type == "Run" and x.name == "Morning Run" and x.times and x.ele
+            and (t := local_start(x)) is not None and t.weekday() >= 5
+            and all(40.34 < la < 40.48 and -3.80 < lo < -3.63 for lo, la in x.lonlat)]
+    if len(pool) < n:
+        raise SystemExit(f"--together {n}: that export has only {len(pool)} weekend runs in Madrid")
+    out = []
+    for k, i in enumerate(sorted(rng.sample(range(len(pool)), n))):
+        x = pool[i]
+        shift = rng.uniform(-5.0, 5.0)  # the other watch's clock, within 5 s
+        start = (x.start if x.start.tzinfo else x.start.replace(tzinfo=dt.timezone.utc)).replace(tzinfo=None)
+        ex = ey = 0.0
+        pts = []
+        for (lon, lat), sec, ele in zip(x.lonlat, x.times, x.ele):
+            ex = 0.92 * ex + rng.gauss(0, 3.0 * math.sqrt(1 - 0.92 ** 2))
+            ey = 0.92 * ey + rng.gauss(0, 3.0 * math.sqrt(1 - 0.92 ** 2))
+            pts.append((lat + ey / 110_540, lon + ex / (111_320 * math.cos(math.radians(lat))),
+                        round(ele + rng.gauss(0, 0.4), 1), start + dt.timedelta(seconds=sec + shift)))
+        km = sum(ingest._step_m(*q) for q in zip(x.lonlat, x.lonlat[1:])) / 1000
+        out.append({"id": first_id + 1000 * (k + 1), "date": pts[0][3], "name": "Morning Run", "type": "Run",
+                    "dist_km": km, "elapsed": int(x.times[-1] - x.times[0]), "fmt": "gpx", "pts": pts,
+                    "kind": "together"})
+    return out
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--city", default="madrid")
@@ -234,7 +273,20 @@ def main():
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--dt", type=float, default=3.0, help="seconds between GPS points")
     p.add_argument("--out", default=os.path.join(ROOT, "demo", "strava_export_madrid_demo.zip"))
+    p.add_argument("--home", default=None, help="LAT,LON of the runner's (fictional) home; default: the demo's")
+    p.add_argument("--work", default=None, help="LAT,LON of the (fictional) workplace; default: the demo's")
+    p.add_argument("--rate", type=float, default=1.0, help="share of the usual running days (below 1: a quieter runner)")
+    p.add_argument("--pace", type=float, default=1.0, help="pace factor (1.06: 6 %% slower)")
+    p.add_argument("--together-from", default=None, metavar="EXPORT",
+                   help="another synthetic runner's export: --together of its weekend runs are run side by side")
+    p.add_argument("--together", type=int, default=0, help="how many runs to copy from --together-from")
+    p.add_argument("--truth", default=None, help="where to write the true places (default: truth.json next to --out)")
     a = p.parse_args()
+    if bool(a.together) != bool(a.together_from):
+        p.error("--together and --together-from go together")
+    for key in ("home", "work"):
+        if getattr(a, key):
+            PLACES[key] = tuple(map(float, getattr(a, key).split(",")))
     rng = random.Random(a.seed)
     G, node_ids, ux, uy, to_utm = build_graph(a.city, rng)
     print(f"graph ready: {G.number_of_nodes()} nodes")
@@ -264,7 +316,7 @@ def main():
             if rng.random() < 0.12:
                 planned = ("normal",)
         else:
-            prob = {0: 0.5, 1: 0.55, 2: 0.55, 3: 0.5, 4: 0.25, 5: 0.6, 6: 0.75}[wd]
+            prob = {0: 0.5, 1: 0.55, 2: 0.55, 3: 0.5, 4: 0.25, 5: 0.6, 6: 0.75}[wd] * a.rate
             if rng.random() < prob:
                 planned = ("normal",)
         if planned:
@@ -274,10 +326,10 @@ def main():
                 start_time = dt.datetime(day.year, day.month, day.day, 8 if day.month == 4 else 17, 30)
                 start, end = PLACES[planned[2][0]], PLACES[planned[2][-1]]
                 via = planned[2][1:-1]
-                name, kind, pace, start_key = planned[1], "race", rng.uniform(285, 300), None
+                name, kind, pace, start_key = planned[1], "race", rng.uniform(285, 300) * a.pace, None
             elif planned[0] == "holiday":
                 start_time = dt.datetime(day.year, day.month, day.day, 8, rng.randint(0, 50))
-                name, kind, pace = "Morning Run", "holiday", rng.uniform(330, 370)
+                name, kind, pace = "Morning Run", "holiday", rng.uniform(330, 370) * a.pace
             else:
                 lunch = (not weekend) and rng.random() < 0.18
                 if lunch:
@@ -303,6 +355,7 @@ def main():
                 if rng.random() < 0.35 and kind not in ("work", "short"):
                     via = via[::-1]
                 pace = {"short": rng.uniform(335, 370), "easy": rng.uniform(320, 355), "mid": rng.uniform(305, 335), "long": rng.uniform(330, 365), "work": rng.uniform(315, 345)}[kind]
+                pace *= a.pace
                 start = end = PLACES[start_key]
             if planned[0] == "holiday":
                 a0 = (39.4640 + rng.uniform(-0.002, 0.002), -0.3237)
@@ -346,6 +399,11 @@ def main():
 
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     to_utc(acts, "Europe/Madrid")
+    if a.together:  # the shared runs take the place of that day's own run
+        shared = together_runs(a.together_from, a.together, rng, act_id)
+        days = {x["date"].date() for x in shared}
+        acts = [x for x in acts if not (x["type"] == "Run" and x["kind"] != "race" and x["date"].date() in days)]
+        acts = sorted(acts + shared, key=lambda x: x["date"])
     with zipfile.ZipFile(a.out, "w", zipfile.ZIP_DEFLATED) as z:
         rows = []
         for x in acts:
@@ -371,7 +429,10 @@ def main():
         w.writerows(rows)
         z.writestr("activities.csv", buf.getvalue())
     truth = {"home": PLACES["home"], "work": PLACES["work"], "note": "Synthetic runner. Only for privacy tests. Never ship with the export."}
-    json.dump(truth, open(os.path.join(os.path.dirname(a.out), "truth.json"), "w"), indent=1)
+    if a.together:
+        truth = {"home": PLACES["home"], "work": PLACES["work"], "together": a.together, "note": truth["note"]}
+    with open(a.truth or os.path.join(os.path.dirname(a.out), "truth.json"), "w") as f:
+        json.dump(truth, f, indent=1)
     runs = [x for x in acts if x["type"] == "Run" and x["pts"]]
     from collections import Counter
     print(f"{len(acts)} activities ({len(runs)} GPS runs, {sum(1 for x in acts if x['kind']=='indoor')} treadmill, "

@@ -1,10 +1,13 @@
 """Choose the poster area and fetch its OpenStreetMap data, so one command works for any city.
 
-- auto_bbox: the area where the runner runs most (densest cluster of points), so holidays elsewhere drop out.
+- auto_bbox: the area where the runner runs most (densest cluster of points), so holidays elsewhere drop out, rounded
+  outward to a grid of about 1 km (snap_box).
 - geocode_bbox: the bounding box of a named place (one Nominatim request through osmnx).
-- city_name: the city/town at a point (one Nominatim reverse request), for the headline.
+- city_name: the city/town near a point (one Nominatim reverse request, the point rounded to about 1 km), for the
+  headline.
 - fetch_basemap: streets (walk network), green and water for a bbox, cached on disk by rounded bbox.
-Only the bbox of the area is sent to OpenStreetMap services; activity files never leave the machine.
+Only the bbox of the area (and a point rounded to about 1 km for the city name) is sent to OpenStreetMap services;
+activity files never leave the machine.
 """
 from __future__ import annotations
 
@@ -21,12 +24,55 @@ import numpy as np
 USER_AGENT = "pinless/0.1 (+https://github.com/Lostmanu/pinless)"
 
 
-def auto_bbox(activities, radius_km=7.0, cell_km=1.0, q=(1.0, 99.0), pad_frac=0.06, max_candidates=400):
+class NoSharedArea(ValueError):
+    """auto_bbox with groups: no area where every group runs."""
+
+
+GRID_DEG = 0.01  # the edges of an area found from your runs lie on a grid this many degrees of latitude apart
+
+
+def snap_box(bbox, step=GRID_DEG):
+    """(south, west, north, east) grown outward to a grid of about 1.1 km: step degrees of latitude, and the same
+    distance in longitude (step / cos of the latitude, to the nearest degree).
+
+    An edge found from your runs is a percentile of their points, and a few runs from one door at the edge of the area
+    (a partner's lodging, a hotel) set it to within tens of metres of that door. The map's frame, the box sent to
+    Overpass and the cache folder named after it all carry that edge, so it is rounded outward first: on the grid it
+    says nothing finer than about 1 km, coarser than a private zone."""
+    s, w, n, e = (float(v) for v in bbox)
+    lon_step = step / max(math.cos(math.radians(round((s + n) / 2))), 0.1)
+
+    def down(v, d):  # a value already on the grid (to a millimetre) stays where it is
+        return round(math.floor(v / d + 1e-6) * d, 9)
+
+    def up(v, d):
+        return round(math.ceil(v / d - 1e-6) * d, 9)
+
+    return (max(-90.0, down(s, step)), max(-180.0, down(w, lon_step)), min(90.0, up(n, step)),
+            min(180.0, up(e, lon_step)))
+
+
+def auto_bbox(activities, radius_km=7.0, cell_km=1.0, q=(1.0, 99.0), pad_frac=0.06, max_candidates=400, groups=None):
     """Bounding box (south, west, north, east) of the area where you run most.
 
     Score of a candidate centre = sum, over the 1 km cells within radius_km, of how many DIFFERENT activities touch
     each cell. Counting activities (not GPS points) makes it independent of the recording rate, and summing over a
-    neighbourhood (not a single cell) stops a few identical loops elsewhere (a holiday) from winning."""
+    neighbourhood (not a single cell) stops a few identical loops elsewhere (a holiday) from winning.
+
+    groups (one label per activity, e.g. 0 and 1 for two people): the area where EVERY group runs. Each group's score
+    is divided by its best score, and a centre scores the smallest of those shares, so a place only one person runs
+    cannot win. The box holds the 1st to 99th percentile of each group's own points near the winner, so a person
+    whose watch records fewer points is not cut. Raises NoSharedArea when no area has runs of every group.
+
+    Either way the box is rounded outward to a grid of about 1 km (snap_box), so its edges never give away where a
+    run at the edge of the area started."""
+    if groups is not None:
+        return snap_box(_auto_bbox_groups(activities, groups, radius_km, cell_km, q, pad_frac, max_candidates))
+    return snap_box(_auto_bbox_one(activities, radius_km, cell_km, q, pad_frac, max_candidates))
+
+
+def _auto_bbox_one(activities, radius_km, cell_km, q, pad_frac, max_candidates):
+    """auto_bbox for one person, before the box is rounded to the grid."""
     tracks = [np.asarray(a.lonlat) for a in activities if len(a.lonlat) > 1]
     pts = np.concatenate(tracks)
     if len(pts) > 400_000:  # keep it fast on very long histories
@@ -58,6 +104,57 @@ def auto_bbox(activities, radius_km=7.0, cell_km=1.0, q=(1.0, 99.0), pad_frac=0.
     return (float(lo[1] - pad_lat), float(lo[0] - pad_lon), float(hi[1] + pad_lat), float(hi[0] + pad_lon))
 
 
+def _auto_bbox_groups(activities, groups, radius_km, cell_km, q, pad_frac, max_candidates):
+    """auto_bbox for several people: the same cells, presence and neighbourhood sums, counted per group."""
+    labelled = [(np.asarray(a.lonlat), g) for a, g in zip(activities, groups) if len(a.lonlat) > 1]
+    labels = sorted(set(groups))
+    if not labelled or {g for _, g in labelled} != set(labels):
+        raise NoSharedArea("no area where every group runs")
+    pts = np.concatenate([t for t, _ in labelled])
+    if len(pts) > 400_000:  # keep it fast on very long histories
+        pts = pts[:: len(pts) // 400_000 + 1]
+    lat0 = float(np.median(pts[:, 1]))
+    kx = 111.32 * math.cos(math.radians(lat0))  # km per degree of longitude
+    ky = 110.57
+    presence = {g: {} for g in labels}
+    for t, g in labelled:
+        cells = set(zip(np.floor(t[:, 0] * kx / cell_km).astype(np.int64).tolist(),
+                        np.floor(t[:, 1] * ky / cell_km).astype(np.int64).tolist()))
+        for c in cells:
+            presence[g][c] = presence[g].get(c, 0) + 1
+    r = int(math.ceil(radius_km / cell_km))
+    offsets = [(dx, dy) for dx in range(-r, r + 1) for dy in range(-r, r + 1) if dx * dx + dy * dy <= r * r]
+    candidates = sorted({c for g in labels for c in sorted(presence[g], key=presence[g].get, reverse=True)
+                         [:max_candidates]})
+    scores = np.array([[sum(presence[g].get((cx + dx, cy + dy), 0) for dx, dy in offsets) for g in labels]
+                       for cx, cy in candidates], dtype=float)
+    share = scores / scores.max(axis=0)
+    worst, total = share.min(axis=1), share.sum(axis=1)
+    best = max(range(len(candidates)), key=lambda i: (worst[i], total[i], -i))  # ties: the first cell in order
+    if worst[best] <= 0:
+        raise NoSharedArea("no area where every group runs")
+    cx, cy = candidates[best]
+    clon, clat = (cx + 0.5) * cell_km / kx, (cy + 0.5) * cell_km / ky
+    # the percentiles of each group's own points, joined: pooled, a partner whose watch records ten times fewer
+    # points would be a small share of them, and the 99th percentile would cut through their runs
+    lows, highs = [], []
+    for g in labels:
+        own = np.concatenate([t for t, h in labelled if h == g])
+        if len(own) > 400_000:
+            own = own[:: len(own) // 400_000 + 1]
+        d = np.hypot((own[:, 0] - clon) * kx, (own[:, 1] - clat) * ky)
+        # a group whose cells in the neighbourhood lie just beyond radius_km still has its points within one more cell
+        near = own[d <= radius_km] if (d <= radius_km).any() else own[d <= radius_km + 2 * cell_km]
+        if len(near):
+            lows.append(np.percentile(near, q[0], axis=0))
+            highs.append(np.percentile(near, q[1], axis=0))
+    if not lows:
+        raise NoSharedArea("no area where every group runs")
+    lo, hi = np.min(lows, axis=0), np.max(highs, axis=0)
+    pad_lon, pad_lat = (hi - lo) * pad_frac
+    return (float(lo[1] - pad_lat), float(lo[0] - pad_lon), float(hi[1] + pad_lat), float(hi[0] + pad_lon))
+
+
 def geocode_bbox(place: str):
     import osmnx as ox
 
@@ -67,9 +164,12 @@ def geocode_bbox(place: str):
 
 
 def city_name(lat: float, lon: float, lang: str = "en", timeout=20) -> str:
-    """City/town/village name at a point, or '' if the lookup fails (offline is fine)."""
+    """City/town/village name at a point, or '' if the lookup fails (offline is fine).
+
+    The point is rounded to 0.01 degrees (about 1 km) before it is sent, as in place_names: the centre of the box of
+    two people who run loops from one door lies a hundred metres or so from it, and a city needs no more."""
     url = "https://nominatim.openstreetmap.org/reverse?" + urllib.parse.urlencode(
-        {"lat": f"{lat:.4f}", "lon": f"{lon:.4f}", "format": "jsonv2", "zoom": 10, "accept-language": lang})
+        {"lat": f"{lat:.2f}", "lon": f"{lon:.2f}", "format": "jsonv2", "zoom": 10, "accept-language": lang})
     try:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=timeout) as r:

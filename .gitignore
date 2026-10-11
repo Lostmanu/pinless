@@ -9,6 +9,7 @@ out/
 *.zip
 !demo/strava_export_madrid_demo.zip
 !demo/strava_export_atlas_demo.zip
+!demo/strava_export_madrid_partner_demo.zip
 README_PROTOTIPO.md
 DISENO_HUELLA.md
 assets/
