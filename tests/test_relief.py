@@ -652,6 +652,13 @@ def test_every_style_relief_stays_quieter_than_its_routes():
         assert max(d_s, d_l) >= 1, f"{name}: the relief would not show"
         assert a_s <= 0.35 and a_l <= 0.60, name
         assert _lstar(shadow) < lb < _lstar(light), f"{name}: shadows darken, lights lighten"
+        # under full light the map stays readable: every street class, the parks and the water lines keep at least
+        # 70% of their contrast with the paper (a white veil over light paper fades them far more than it lights)
+        lit_bg = _lstar((1 - a_l) * bg + a_l * np.asarray(light))
+        for c in [S["street"][k][0] for k in ("major", "minor", "path")] + [S["green"], S["water_line"]]:
+            c = np.asarray(to_rgb(c))
+            lit = abs(_lstar((1 - a_l) * c + a_l * np.asarray(light)) - lit_bg)
+            assert lit >= 0.70 * abs(_lstar(c) - lb) - 1e-9, f"{name}: the light washes the map out"
 
 
 def _synthetic_relief(shape, dataset="glo30"):

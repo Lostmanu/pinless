@@ -222,11 +222,39 @@ def _relief_alpha(bg, colour, target, cap):
     return lo
 
 
+RELIEF_KEEP = 0.70  # under full light, every street, park and water line keeps this share of its contrast
+
+
+def _keep_alpha(S, colour, cap):
+    """The largest alpha (up to cap) at which colour laid over the map leaves every basemap colour drawn under the
+    relief (the three street classes, parks, water lines) at least RELIEF_KEEP of its L* contrast with the paper."""
+    bg, colour = np.asarray(to_rgb(S["bg"])), np.asarray(colour, dtype=float)
+    under = [np.asarray(to_rgb(c)) for c in [S["street"][k][0] for k in ("major", "minor", "path")]
+             + [S["green"], S["water_line"]]]
+    under = [(u, abs(_lstar(u) - _lstar(bg))) for u in under]
+
+    def kept(a):
+        top = _lstar((1 - a) * bg + a * colour)
+        return min(abs(_lstar((1 - a) * u + a * colour) - top) / d0 for u, d0 in under if d0 > 0)
+
+    if kept(cap) >= RELIEF_KEEP:
+        return cap
+    lo, hi = 0.0, cap
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if kept(mid) >= RELIEF_KEEP else (lo, mid)
+    return lo
+
+
 def relief_colours(S):
     """((shadow rgb, alpha), (light rgb, alpha)) of the relief in a style, calibrated so the relief stays quieter
     than the faintest route ink: in L*, light styles darken by at most min(7, 0.30 route) and lighten by min(2.5,
     0.15 route); dark styles darken by min(5, 0.5 L*bg, 0.30 route) and lighten by min(6, 0.30 route), where route is
-    the L* contrast of the first route colour. S["relief"] overrides it."""
+    the L* contrast of the first route colour.
+
+    The light side is also held to what the map under it can bear: over light paper a white veil lifts the paper by
+    only one or two L* steps while it fades the streets and parks under it by up to 60%, so its alpha is capped where
+    they keep RELIEF_KEEP of their contrast. S["relief"] overrides it all."""
     if "relief" in S:
         return S["relief"]
     bg = to_rgb(S["bg"])
@@ -236,8 +264,8 @@ def relief_colours(S):
         shadow, ts, light, tl = S["ink"], min(7, 0.30 * route), "#ffffff", min(2.5, 0.15 * route)
     else:
         shadow, ts, light, tl = "#000000", min(5, 0.5 * lb, 0.30 * route), S["ink"], min(6, 0.30 * route)
-    return ((to_rgb(shadow), _relief_alpha(bg, to_rgb(shadow), ts, 0.35)),
-            (to_rgb(light), _relief_alpha(bg, to_rgb(light), tl, 0.60)))
+    a_light = min(_relief_alpha(bg, to_rgb(light), tl, 0.60), _keep_alpha(S, to_rgb(light), 0.60))
+    return ((to_rgb(shadow), _relief_alpha(bg, to_rgb(shadow), ts, 0.35)), (to_rgb(light), a_light))
 
 
 def relief_rgba(shade, colours):
