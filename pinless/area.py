@@ -21,12 +21,18 @@ import numpy as np
 USER_AGENT = "pinless/0.1 (+https://github.com/Lostmanu/pinless)"
 
 
-def auto_bbox(activities, radius_km=7.0, cell_km=1.0, q=(1.0, 99.0), pad_frac=0.06, max_candidates=400):
+def auto_bbox(activities, radius_km=7.0, cell_km=1.0, q=(1.0, 99.0), pad_frac=0.06, max_candidates=400, groups=None):
     """Bounding box (south, west, north, east) of the area where you run most.
 
     Score of a candidate centre = sum, over the 1 km cells within radius_km, of how many DIFFERENT activities touch
     each cell. Counting activities (not GPS points) makes it independent of the recording rate, and summing over a
-    neighbourhood (not a single cell) stops a few identical loops elsewhere (a holiday) from winning."""
+    neighbourhood (not a single cell) stops a few identical loops elsewhere (a holiday) from winning.
+
+    groups (one label per activity, e.g. 0 and 1 for two people): the area where EVERY group runs. Each group's score
+    is divided by its best score, and a centre scores the smallest of those shares, so a place only one person runs
+    cannot win. Raises ValueError when no area has runs of every group."""
+    if groups is not None:
+        return _auto_bbox_groups(activities, groups, radius_km, cell_km, q, pad_frac, max_candidates)
     tracks = [np.asarray(a.lonlat) for a in activities if len(a.lonlat) > 1]
     pts = np.concatenate(tracks)
     if len(pts) > 400_000:  # keep it fast on very long histories
@@ -49,6 +55,45 @@ def auto_bbox(activities, radius_km=7.0, cell_km=1.0, q=(1.0, 99.0), pad_frac=0.
         if score > best_score:
             best, best_score = (cx, cy), score
     cx, cy = best
+    clon, clat = (cx + 0.5) * cell_km / kx, (cy + 0.5) * cell_km / ky
+    d = np.hypot((pts[:, 0] - clon) * kx, (pts[:, 1] - clat) * ky)
+    near = pts[d <= radius_km]
+    lo = np.percentile(near, q[0], axis=0)
+    hi = np.percentile(near, q[1], axis=0)
+    pad_lon, pad_lat = (hi - lo) * pad_frac
+    return (float(lo[1] - pad_lat), float(lo[0] - pad_lon), float(hi[1] + pad_lat), float(hi[0] + pad_lon))
+
+
+def _auto_bbox_groups(activities, groups, radius_km, cell_km, q, pad_frac, max_candidates):
+    """auto_bbox for several people: the same cells, presence and neighbourhood sums, counted per group."""
+    labelled = [(np.asarray(a.lonlat), g) for a, g in zip(activities, groups) if len(a.lonlat) > 1]
+    labels = sorted(set(groups))
+    if not labelled or {g for _, g in labelled} != set(labels):
+        raise ValueError("no area where every group runs")
+    pts = np.concatenate([t for t, _ in labelled])
+    if len(pts) > 400_000:  # keep it fast on very long histories
+        pts = pts[:: len(pts) // 400_000 + 1]
+    lat0 = float(np.median(pts[:, 1]))
+    kx = 111.32 * math.cos(math.radians(lat0))  # km per degree of longitude
+    ky = 110.57
+    presence = {g: {} for g in labels}
+    for t, g in labelled:
+        cells = set(zip(np.floor(t[:, 0] * kx / cell_km).astype(np.int64).tolist(),
+                        np.floor(t[:, 1] * ky / cell_km).astype(np.int64).tolist()))
+        for c in cells:
+            presence[g][c] = presence[g].get(c, 0) + 1
+    r = int(math.ceil(radius_km / cell_km))
+    offsets = [(dx, dy) for dx in range(-r, r + 1) for dy in range(-r, r + 1) if dx * dx + dy * dy <= r * r]
+    candidates = sorted({c for g in labels for c in sorted(presence[g], key=presence[g].get, reverse=True)
+                         [:max_candidates]})
+    scores = np.array([[sum(presence[g].get((cx + dx, cy + dy), 0) for dx, dy in offsets) for g in labels]
+                       for cx, cy in candidates], dtype=float)
+    share = scores / scores.max(axis=0)
+    worst, total = share.min(axis=1), share.sum(axis=1)
+    best = max(range(len(candidates)), key=lambda i: (worst[i], total[i], -i))  # ties: the first cell in order
+    if worst[best] <= 0:
+        raise ValueError("no area where every group runs")
+    cx, cy = candidates[best]
     clon, clat = (cx + 0.5) * cell_km / kx, (cy + 0.5) * cell_km / ky
     d = np.hypot((pts[:, 0] - clon) * kx, (pts[:, 1] - clat) * ky)
     near = pts[d <= radius_km]
