@@ -2,6 +2,7 @@
 privacy contract (what may be requested, logged and cached). All offline: a fake server serves synthetic COGs."""
 import io
 import math
+import zlib
 
 import numpy as np
 import pytest
@@ -12,6 +13,7 @@ from _cog_fixture import fake_server, levels_of, write_cog
 from pinless import relief, render, render_editorial
 
 H30, H90 = 480, 240  # small cells: 230 m and 460 m pixels at full resolution, so the files stay tiny
+REAL = {name: getattr(relief, name) for name in ("HEIGHT0", "TILE", "NOMINAL_LEVELS")}  # before any test patches them
 
 
 @pytest.fixture(autouse=True)
@@ -64,13 +66,14 @@ def _small_cells(monkeypatch):
     monkeypatch.setattr(relief, "TILE", {"glo30": 16, "glo90": 16})
 
 
-def test_reader_reads_every_level_of_a_synthetic_cog(monkeypatch, tmp_path):
+@pytest.mark.parametrize("compression", [8, 32946])  # Deflate under its two TIFF codes
+def test_reader_reads_every_level_of_a_synthetic_cog(monkeypatch, tmp_path, compression):
     _small_cells(monkeypatch)
     rng = np.random.default_rng(5)
     a0 = (-450.0 + rng.random((40, 40)) * 1950.0).astype(np.float32)  # negative, fractional, around 1e3
     a0[a0 == 0] = 0.5
     levels = levels_of(a0, 4)  # 40, 20, 10, 5: edge tiles of 16 px are partial
-    data = write_cog(cell=(40, -4), levels=levels, tile=16)
+    data = write_cog(cell=(40, -4), levels=levels, tile=16, compression=compression)
     _serve(monkeypatch, {(40, -4): data})
     hdr = relief.read_header(data[:relief.HEADER_BYTES], (40, -4))
     assert [(lv.w, lv.h) for lv in hdr.levels] == [(40, 40), (20, 20), (10, 10), (5, 5)]
@@ -116,11 +119,13 @@ def _refusals():
         "PixelIsArea": dict(levels=good, raster_type=1),
         "tiepoint off by 0.01": dict(levels=good, tiepoint=(0, 0, 0, -4.01, 41.0, 0)),
         "tiepoint latitude off by 0.01": dict(levels=good, tiepoint=(0, 0, 0, -4.0, 41.01, 0)),
+        "tiepoint off by a micro-degree": dict(levels=good, tiepoint=(0, 0, 0, -4.0 + 1e-6, 41.0, 0)),
         "pixel scale off by 1%": dict(levels=good, scale=(1 / 40, 1.01 / 40, 0.0)),
         "a cell of 48 rows": dict(levels=levels_of(np.tile(a0, (2, 2))[:48, :48], 4)),  # consistent, but not 40
         "a cell narrower than its band": dict(levels=levels_of(a0[:, :24], 4)),  # at 40N a cell is as wide as high
         "width 0": dict(levels=good, tags={(0, 256): (4, [0])}),
         "a width in floating point": dict(levels=good, tags={(0, 256): (12, [40.0])}),
+        "full resolution marked as an overview": dict(levels=good, tags={(0, 254): (4, [1])}),
         "overview not half the size": dict(levels=[good[0], a0[:19, :19], good[2], good[3]]),
         "an overview not marked as one": dict(levels=good, tags={(1, 254): (4, [0])}),
         "fewer tile offsets than tiles": dict(levels=good, tags={(0, 324): (4, [8, 8]), (0, 325): (4, [1, 1])}),
@@ -196,6 +201,14 @@ def test_a_print_across_cells_with_different_levels_is_refused_not_crashed(monke
     assert all(first == 0 for _, first, _ in calls), "refused at the headers: no block is asked for"
 
 
+def test_the_sizes_the_requests_are_made_of():
+    """The tests run on small cells; the real sizes, written out once (tools/check_relief.py reads real headers)."""
+    assert relief.HEADER_BYTES == 16384 and relief.BUDGET_BYTES == 64 * 2 ** 20 and relief.MAX_CELLS == 16
+    assert REAL["HEIGHT0"] == {"glo30": 3600, "glo90": 1200}
+    assert REAL["NOMINAL_LEVELS"] == {"glo30": 4, "glo90": 3}
+    assert REAL["TILE"] == {"glo30": 1024, "glo90": 2048}
+
+
 def test_cell_keys_and_urls():
     assert relief.url("glo30", relief.cell_of(40.4, -3.7)) == (
         "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N40_00_W004_00_DEM/"
@@ -207,6 +220,15 @@ def test_cell_keys_and_urls():
     assert u90.startswith("https://copernicus-dem-90m.s3.amazonaws.com/Copernicus_DSM_COG_30_N40_00_W004_00_DEM/")
     for u in (relief.url("glo30", (40, -4)), u90):
         assert "?" not in u and "#" not in u
+
+
+def test_the_latitude_bands_of_the_copernicus_cells():
+    """How many times fewer columns than rows a cell has, by the south latitude of the cell (written out, so the
+    fixtures that derive their widths from relief._band cannot follow a wrong table)."""
+    want = {0: 1, 49: 1, 50: 1.5, 59: 1.5, 60: 2, 69: 2, 70: 3, 79: 3, 80: 5, 84: 5, 85: 10, 89: 10,
+            -1: 1, -50: 1, -51: 1.5, -60: 1.5, -61: 2, -70: 2, -71: 3, -80: 3, -81: 5, -85: 5, -86: 10, -90: 10}
+    assert {N: relief._band(N) for N in want} == want
+    assert relief._dims("glo30", (60, 24), 0)[:2] == (H30 // 2, H30), "a cell at 60N is half as wide as high"
 
 
 def _sample_plane(monkeypatch, tmp_path, cells, fn, lat, lon, levels, size_m=(30000, 24000)):
@@ -266,7 +288,7 @@ def _levels_of_ranges(files, calls, h0=H30, dataset="glo30"):
     blocks, headers = [], []
     for u, first, last in calls:
         if first == 0:
-            assert last == relief.HEADER_BYTES - 1
+            assert last == 16383, "a header is the first 16 KB"
             headers.append(u)
         else:
             L, br, bc, end = by_offset[(u, first)]  # every range starts at a TileOffsets entry
@@ -551,7 +573,36 @@ def _coast_with_a_hill(lon, lat):
     return np.where(lon >= -3.40, 2 + 400 * np.exp(-(dx ** 2 + dy ** 2) / (2 * 2000.0 ** 2)), 0.0)
 
 
-GATE_CASES = {  # terrain, map size (m), what the log says (None: the map gets relief)
+def _metres(lon, lat, lat_c=40.5, lon_c=-3.5):
+    return (lon - lon_c) * relief.M_PER_DEG_LON * math.cos(math.radians(lat_c)), (lat - lat_c) * relief.M_PER_DEG_LAT
+
+
+def _polder(lon, lat):
+    """Land 1 m above the sea, all of it, with one hill 400 m high and 1.5 km wide (sigma)."""
+    x, y = _metres(lon, lat)
+    return 1.0 + 400 * np.exp(-(x ** 2 + y ** 2) / (2 * 1500.0 ** 2))
+
+
+def _cone_island(lon, lat):
+    """A steep island 2.5 km in radius in the sea: about 3% of a 24 km map."""
+    r = np.hypot(*_metres(lon, lat))
+    return np.where(r < 2500, 50 + 800 * (1 - r / 2500), 0.0)
+
+
+def _ripples(lon, lat):
+    """Ripples 30 m high and 900 m apart: a texture, not a landform."""
+    x, y = _metres(lon, lat)
+    return 600 + 30 * np.sin(2 * np.pi * x / 900) * np.sin(2 * np.pi * y / 900)
+
+
+def _valley(lon, lat):
+    """A flat valley floor the size of a 12 x 10 km map, its mountainsides rising 600 m beyond the map's edges."""
+    x, y = _metres(lon, lat)
+    d = np.maximum(np.abs(x) - 6000, np.abs(y) - 5000)
+    return np.minimum(600 + np.where(d > 600, 0.5 * (d - 600), 0.0), 8000.0)
+
+
+GATE_CASES = {  # terrain, map size (m), what the log says (None: the map gets relief)[, levels of the cell]
     "flat": (lambda lon, lat: np.full_like(lon, 650.0), (12000, 10000), "flat here"),
     "gentle": (lambda lon, lat: 650 + 20 * (lon + 4), (12000, 10000), "flat here"),
     "steep": (_steep, (12000, 10000), None),
@@ -564,13 +615,30 @@ GATE_CASES = {  # terrain, map size (m), what the log says (None: the map gets r
     # island's cliffs over 2.2% of its map)
     "island near the threshold": (_island(1000.0), (28000, 28000), "mostly water here"),
     "island": (_island(300.0), (40000, 34000), "mostly water here"),
+    # ... and a steep island of 3% of its map has enough land to show
+    "steep island of 3%": (_cone_island, (24000, 24000), None),
+    # land is anything 0.5 m off the sea: a polder 1 m up is land, all of it, and one small hill is too little of it
+    "polder with one small hill": (_polder, (32000, 28000), "flat here"),
+    # with the probe on the full-resolution level: its 250 m smoothing judges landforms, not texture; and the share is
+    # of the map's own land, so mountainsides in the margin around a flat map do not count
+    "short ripples": (_ripples, (12000, 10000), "flat here", 1),
+    "flat valley floor among mountains": (_valley, (12000, 10000), "flat here", 1),
 }
+
+
+def _one_level(monkeypatch):
+    """Cells of one level only (a single block), so the probe reads the full resolution."""
+    monkeypatch.setattr(relief, "NOMINAL_LEVELS", {"glo30": 1, "glo90": 1})
+    monkeypatch.setattr(relief, "TILE", {"glo30": 512, "glo90": 512})
 
 
 @pytest.mark.parametrize("terrain", sorted(GATE_CASES))
 def test_flat_land_is_skipped_after_the_probe_only(monkeypatch, tmp_path, terrain):
-    fn, size, said = GATE_CASES[terrain]
-    files = {(40, -4): _cog((40, -4), fn)}
+    fn, size, said, *levels = GATE_CASES[terrain]
+    n_levels = levels[0] if levels else 4
+    if n_levels == 1:
+        _one_level(monkeypatch)
+    files = {(40, -4): _cog((40, -4), fn, n_levels=n_levels, tile=512 if n_levels == 1 else 64)}
     calls = _serve(monkeypatch, files)
     logs = []
     extent, crs = _utm_extent(40.5, -3.5, *size)
@@ -582,7 +650,7 @@ def test_flat_land_is_skipped_after_the_probe_only(monkeypatch, tmp_path, terrai
         return
     assert rel is None
     assert logs[-1] == f"[relief] {said}: no relief"
-    assert {L for _, L, _, _ in blocks} == {3}, "only headers and the probe level, never a detail block"
+    assert {L for _, L, _, _ in blocks} == {n_levels - 1}, "only headers and the probe level, never a detail block"
 
 
 @pytest.mark.parametrize("east,north", [(0.15, -0.15), (-0.15, 0.15)])  # facing the light, facing away from it
@@ -608,6 +676,18 @@ def test_the_smoothing_is_a_gaussian_of_sigma_map_units():
     assert (out.sum(axis=1) * r ** 2).sum() == pytest.approx((30 / 20) ** 2, rel=0.02), "sigma 1.5 cells along y"
     flat = relief._gauss(np.full((20, 30), 123.456), 30.0, g)
     assert np.ptp(flat) == 0 and flat[0, 0] == pytest.approx(123.456), "a constant stays exactly even"
+
+
+def test_the_probe_grid_and_the_detail_smoothing_follow_the_map():
+    """The probe works on cells of 125 m, or 1/400 of a larger map; the detail is smoothed by 0.40 mm of paper, never
+    less than 45 m (GLO-30 is a surface model: roofs and trees)."""
+    for w_m, map_w, sigma, cell in ((12000, A4_MAP, 45.0, 125.0), (100000, 60.0, 0.40 * 100000 / 60.0, 250.0)):
+        extent, crs = _utm_extent(40.5, -3.5, w_m, 0.8 * w_m)
+        job = relief._Map(0, extent, crs, map_w)
+        assert job.sigma == pytest.approx(sigma), w_m
+        g = job.probe_grid
+        assert (g.cx, g.cy) == pytest.approx((w_m / math.ceil(w_m / cell), 0.8 * w_m / math.ceil(0.8 * w_m / cell))), w_m
+        assert g.m == math.ceil(4 * 250 / min(g.cx, g.cy)) + 1, "a margin of four times the probe's 250 m smoothing"
 
 
 def test_the_ground_filter_removes_buildings_and_keeps_the_ground():
@@ -638,7 +718,9 @@ def test_the_ground_filter_runs_at_full_resolution_only_with_a_150_m_window(monk
     assert relief._ground(coarse) is coarse and seen == [(5, 7)], "pixels of 61 m: no filter"
 
 
-GEO_PLACES = [(40.4, -3.7), (60.2, 10.7), (69.6, 18.9)]  # three latitude bands of the Copernicus cells
+# three latitude bands of the Copernicus cells; the last two on their UTM zone's central meridian, where the top and
+# bottom edges of a map bulge away from the pole in degrees at mid-edge (the corners alone would miss it)
+GEO_PLACES = [(40.4, -3.7), (60.2, 10.7), (69.6, 18.9), (69.6, 21.0), (60.2, 9.0)]
 
 
 @pytest.mark.parametrize("lat,lon", GEO_PLACES)
@@ -715,6 +797,8 @@ class _Opener:
             raise urllib.error.URLError(f"unreachable: {u}")
         if fail == "TimeoutError":
             raise TimeoutError(f"timed out: {u}")
+        if fail == "ConnectionResetError":
+            raise ConnectionResetError(f"reset by peer: {u}")
         if fail == "IncompleteRead":
             raise http.client.IncompleteRead(b"x")
         if fail in ("HTTP 503", "HTTP 403", "HTTP 301"):
@@ -761,9 +845,50 @@ def test_a_redirect_is_refused():
     assert not any(isinstance(h, urllib.request.HTTPCookieProcessor) for h in relief._OPENER.handlers)
 
 
-FAILURES = ["URLError", "TimeoutError", "IncompleteRead", "HTTP 503", "HTTP 403", "HTTP 301", "200 instead of 206",
-            "wrong Content-Range", "short body", "short header", "garbage zlib body", "out-of-range value"]
-RETRIED = {"URLError", "TimeoutError", "IncompleteRead", "HTTP 503"}  # a broken connection or a 5xx: once more
+def test_a_404_is_an_absent_cell_and_is_asked_once(monkeypatch):
+    monkeypatch.setattr(relief, "_fetch", REAL_FETCH)
+    opener = _Opener({})
+    monkeypatch.setattr(relief, "_OPENER", opener)
+    assert relief._fetch(relief.url("glo90", (40, -4)), 0, 16383) is None
+    assert len(opener.calls) == 1, "an answer, not a failure: never asked again"
+
+
+class _Fixed:
+    """An S3 that answers every request with the same 206 response."""
+
+    def __init__(self, body, content_range):
+        self.body, self.content_range, self.reads = body, content_range, []
+
+    def open(self, req, timeout=None):
+        return _Response(206, self.body, self.content_range, self.reads)
+
+
+def test_a_range_answer_must_be_exactly_the_range(monkeypatch):
+    monkeypatch.setattr(relief, "_fetch", REAL_FETCH)
+    data = bytes(range(256)) * 4
+    u = relief.url("glo30", (40, -4))
+    good = _Fixed(data[10:21], "bytes 10-20/1024")
+    monkeypatch.setattr(relief, "_OPENER", good)
+    assert relief._fetch(u, 10, 20) == data[10:21]
+    assert good.reads == [(206, 12)], "one bounded read: at most one byte more than the range, so a longer body shows"
+    monkeypatch.setattr(relief, "_OPENER", _Fixed(data[1020:], "bytes 1020-1023/1024"))
+    assert relief._fetch(u, 1020, 1100) == data[1020:], "a range past the end of the file ends with the file"
+    for body, content_range in ((data[10:21] + b"x", "bytes 10-20/1024"),  # one byte too many
+                                (data[10:20], "bytes 10-20/1024"),  # one byte short
+                                (data[10:21], "bytes 10-21/1024"),  # a range that ends elsewhere
+                                (data[10:21], "bytes 11-20/1024"),  # ... or starts elsewhere
+                                (data[10:21], "bytes 10-20/*"),  # a file of unknown length
+                                (data[10:21], None)):  # no Content-Range at all
+        monkeypatch.setattr(relief, "_OPENER", _Fixed(body, content_range))
+        with pytest.raises(relief.ReliefError):
+            relief._fetch(u, 10, 20)
+
+
+FAILURES = ["URLError", "TimeoutError", "ConnectionResetError", "IncompleteRead", "HTTP 503", "HTTP 403", "HTTP 301",
+            "200 instead of 206", "wrong Content-Range", "short body", "short header", "garbage zlib body",
+            "a block of the wrong size", "out-of-range value"]
+RETRIED = {"URLError", "TimeoutError", "ConnectionResetError", "IncompleteRead", "HTTP 503"}  # broken or 5xx: once more
+FORGOTTEN = {"short header", "garbage zlib body", "a block of the wrong size", "out-of-range value"}
 
 
 @pytest.mark.parametrize("failure", FAILURES)
@@ -772,11 +897,15 @@ def test_a_failing_server_draws_the_poster_without_relief(monkeypatch, tmp_path,
     good = _cog((40, -4), _steep)
     detail = _detail_offsets(good)
     served = good
-    if failure == "garbage zlib body":
+    if failure in ("garbage zlib body", "a block of the wrong size"):
         hdr = relief.read_header(good[:relief.HEADER_BYTES], (40, -4))
         served = bytearray(good)
         for o, n in zip(hdr.levels[0].offsets, hdr.levels[0].counts):
-            served[o:o + n] = bytes((7 * i) % 251 for i in range(n))
+            if failure == "garbage zlib body":
+                served[o:o + n] = bytes((7 * i) % 251 for i in range(n))
+            else:  # a whole zlib stream (what follows it is ignored) that inflates to 12 bytes, not 64 x 64 x 4
+                small = zlib.compress(b"\0" * 12)
+                served[o:o + n] = small + bytes(n - len(small))
         served = bytes(served)
     elif failure == "out-of-range value":
         a0 = _cell_grid((40, -4), H30, _steep)
@@ -793,12 +922,13 @@ def test_a_failing_server_draws_the_poster_without_relief(monkeypatch, tmp_path,
     extent, crs = _utm_extent(40.5, -3.5, 12000, 10000)
     logs = []
     assert relief.prepare_many([(extent, crs, A4_MAP)], log=logs.append) == [None]
-    want = {"URLError": "URLError", "TimeoutError": "TimeoutError"}.get(failure, "HTTPError" if "HTTP" in failure
-                                                                       else "ReliefError")
+    want = failure if failure in ("URLError", "TimeoutError", "ConnectionResetError") else (
+        "HTTPError" if "HTTP" in failure else "ReliefError")
     assert logs[-1] == (f"[relief] skipped ({want}): the poster is drawn without relief; run the same command again "
                         f"later to add it"), logs[-1]
     text = "\n".join(logs)
-    for leak in ("Copernicus_DSM", ".tif", "N40", "W004", "40.", "-3.", "amazonaws", "unreachable", "timed out"):
+    for leak in ("Copernicus_DSM", ".tif", "N40", "W004", "40.", "-3.", "amazonaws", "unreachable", "timed out",
+                 "reset by peer"):
         assert leak not in text
     failed = [c for c in opener.calls if target(c[0], c[1])]
     assert len(failed) == (2 if failure in RETRIED else 1), "only a broken connection or a 5xx is tried once more"
@@ -808,7 +938,7 @@ def test_a_failing_server_draws_the_poster_without_relief(monkeypatch, tmp_path,
     cached = {p.name for p in root.rglob("*.zz")}
     assert not any(n.startswith("L0_") for n in cached), "nothing is cached for the failed blocks"
     header = root / "glo30" / "N40_00_W004_00" / "header.bin"
-    if failure in ("short header", "garbage zlib body", "out-of-range value"):
+    if failure in FORGOTTEN:
         # a header that failed is never cached; blocks that do not decode at the header's offsets may mean the file
         # changed on the server: the cell is forgotten, so the next run starts it afresh
         assert not header.exists()
@@ -841,16 +971,37 @@ def test_glo90_only_for_a_land_cell_missing_from_glo30(monkeypatch, tmp_path):
     assert "™" not in relief.notice("glo30", "en")
 
 
-def test_a_cell_missing_from_both_datasets_is_sea(monkeypatch, tmp_path):
-    files = {relief.url("glo30", (40, -4)): _cog((40, -4), _steep)}
+def test_the_notices_are_the_licences_words():
+    """Art. 6(b) of each licence, verbatim and in full (the GLO-30 notice has no trademark sign; the GLO-90 one has)."""
+    rest = (" © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by "
+            "the European Union and ESA; all rights reserved")
+    assert relief.NOTICE == {"glo30": "produced using Copernicus WorldDEM-30" + rest,
+                             "glo90": "produced using Copernicus WorldDEM™-90" + rest}
+    assert relief.notice("glo90", "en") == "Relief: " + relief.NOTICE["glo90"]
+    assert relief.notice("glo90", "es") == "Relieve: " + relief.NOTICE["glo90"], "the notice itself stays in English"
+
+
+def test_glo90_is_never_asked_for_a_cell_glo30_has(monkeypatch, tmp_path):
+    files = {relief.url("glo30", (40, -4)): _cog((40, -4), _steep),
+             relief.url("glo90", (40, -4)): _cog((40, -4), _steep, h0=H90, n_levels=3)}  # GLO-90 has every land cell
     calls = []
     monkeypatch.setattr(relief, "_fetch", fake_server(files, calls))
+    extent, crs = _utm_extent(40.5, -3.5, 12000, 10000)
+    (rel,) = relief.prepare_many([(extent, crs, A4_MAP)], log=lambda *_: None)
+    assert rel is not None and rel.dataset == "glo30", "the GLO-30 notice, on every print GLO-30 covers"
+    assert calls and not any("90m" in u for u, _, _ in calls), "and not one request to GLO-90"
+
+
+def test_a_cell_missing_from_both_datasets_is_sea(monkeypatch, tmp_path):
+    monkeypatch.setattr(relief, "_fetch", REAL_FETCH)  # S3's 404 itself, through the real fetch
+    opener = _Opener({relief.url("glo30", (40, -4)): _cog((40, -4), _steep)})
+    monkeypatch.setattr(relief, "_OPENER", opener)
     extent, crs = _utm_extent(40.5, -3.93, 12000, 10000)  # its box reaches into (40, -5), absent from both
     job = relief._Map(0, extent, crs, A4_MAP)
     assert (40, -5) in job.cells
     (rel,) = relief.prepare_many([(extent, crs, A4_MAP)], log=lambda *_: None)
     assert rel is not None and rel.dataset == "glo30"
-    sea = [c for c in calls if "W005" in c[0]]
+    sea = [c for c in opener.calls if "W005" in c[0]]
     assert sea and all(first == 0 for _, first, _ in sea), "only the header, on both datasets: no block requests"
     assert {u.split(".s3")[0] for u, _, _ in sea} == {"https://copernicus-dem-30m", "https://copernicus-dem-90m"}
     # the elevation the relief was made from: exactly 0 m west of -4 degrees, the land east of it
@@ -936,11 +1087,14 @@ def test_a_map_next_to_the_180th_meridian_gets_no_relief_and_asks_for_nothing(mo
     lat = -16.6
     crs = render.utm_crs(179.9, lat)
     x180, y = Transformer.from_crs(4326, crs, always_xy=True).transform(180.0, lat)
-    for x0, x1 in ((x180 - 12500, x180 - 500), (x180 - 6000, x180 + 6000)):  # 0.5 km short of it, across it
+    west = render.utm_crs(-179.9, lat)  # and from the other side, in UTM zone 1
+    x_w, y_w = Transformer.from_crs(4326, west, always_xy=True).transform(-180.0, lat)
+    for x0, x1, y_, crs_ in ((x180 - 12500, x180 - 500, y, crs), (x180 - 6000, x180 + 6000, y, crs),  # short, across
+                             (x_w + 500, x_w + 12500, y_w, west)):  # 0.5 km east of it
         logs = []
-        assert relief.prepare_many([((x0, x1, y - 5000, y + 5000), crs, A4_MAP)], log=logs.append) == [None]
+        assert relief.prepare_many([((x0, x1, y_ - 5000, y_ + 5000), crs_, A4_MAP)], log=logs.append) == [None]
         assert logs[-1] == "[relief] no relief next to the 180th meridian: drawn without it"
-    assert not calls, "no request, so none for a cell east of 179 (there is none: E180 would be W180)"
+    assert not calls, "no request, so none for a cell east of 179 or west of -180 (there is none)"
     extent, crs = _utm_extent(-16.5, 179.4, 12000, 10000)  # well clear of it
     assert isinstance(relief.prepare_many([(extent, crs, A4_MAP)], log=lambda *_: None)[0], relief.Relief)
     assert all("E179" in u for u, _, _ in calls)
@@ -1003,6 +1157,42 @@ def test_cache_is_reused_offline_and_validated(monkeypatch, tmp_path):
             rel_ = p.relative_to(root).as_posix()
             assert re.fullmatch(r"dem/glo(30|90)/[NS]\d\d_00_[EW]\d{3}_00/(header\.bin|absent|L\d+_\d+_\d+\.zz)",
                                 rel_), rel_
+
+
+def test_maps_that_share_blocks_download_and_count_them_once(monkeypatch, tmp_path):
+    import re
+    files = {(40, -4): _cog((40, -4), _steep)}
+    calls = _serve(monkeypatch, files)
+    m1, m2 = _utm_extent(40.5, -3.5, 12000, 10000), _utm_extent(40.52, -3.48, 12000, 10000)  # 2 km apart
+    logs = []
+    out = relief.prepare_many([(m1[0], m1[1], 60.0), (m2[0], m2[1], 60.0)], log=logs.append)
+    assert all(isinstance(r, relief.Relief) for r in out) and out[0].level == out[1].level == 0
+    blocks, _ = _levels_of_ranges(files, calls)
+    detail = [b for b in blocks if b[1] == 0]
+    assert len(detail) == len(set(detail)), "each block is downloaded once"
+    said = [int(m.group(1)) for line in logs if (m := re.fullmatch(r"\[relief\] downloading (\d+) blocks, .*", line))]
+    assert said == [len(detail)], "and counted once"
+    alone = []
+    for k, m in enumerate((m1, m2)):  # each map on a print of its own
+        calls.clear()
+        relief.prepare_many([(m[0], m[1], 60.0)], log=lambda *_: None, root=str(tmp_path / f"alone{k}"))
+        alone.append({b for b in _levels_of_ranges(files, calls)[0] if b[1] == 0})
+    assert set(detail) == alone[0] | alone[1] and len(detail) < len(alone[0]) + len(alone[1]), "setup: shared blocks"
+
+
+def test_the_shade_is_resized_to_the_output_bicubic(monkeypatch, tmp_path):
+    _serve(monkeypatch, {(40, -4): _cog((40, -4), _steep)})
+    shades = []
+    real = relief._shade
+    monkeypatch.setattr(relief, "_shade", lambda z, cx, cy: shades.append(real(z, cx, cy)) or shades[-1])
+    extent, crs = _utm_extent(40.5, -3.5, 12000, 10000)
+    (rel,) = relief.prepare_many([(extent, crs, A4_MAP)], log=lambda *_: None)
+    g = relief._Map(0, extent, crs, A4_MAP).detail_grid(relief._spacing("glo30", rel.level))
+    s = shades[-1][g.m:g.m + g.ny, g.m:g.m + g.nx].astype(np.float32)  # the detail shade, its margin cropped
+    assert s.shape != rel.shade.shape, "setup: a resize"
+    H, W = rel.shade.shape
+    want = np.clip(np.asarray(Image.fromarray(s).resize((W, H), Image.Resampling.BICUBIC), np.float32), -1, 1)
+    assert np.array_equal(rel.shade, want)
 
 
 def test_level_budget_and_size_limits(monkeypatch, tmp_path):
@@ -1083,10 +1273,27 @@ def test_every_style_relief_stays_quieter_than_its_routes():
         # under full light the map stays readable: every street class, the parks and the water lines keep at least
         # 70% of their contrast with the paper (a white veil over light paper fades them far more than it lights)
         lit_bg = _lstar((1 - a_l) * bg + a_l * np.asarray(light))
+        kept = []
         for c in [S["street"][k][0] for k in ("major", "minor", "path")] + [S["green"], S["water_line"]]:
             c = np.asarray(to_rgb(c))
             lit = abs(_lstar((1 - a_l) * c + a_l * np.asarray(light)) - lit_bg)
             assert lit >= 0.70 * abs(_lstar(c) - lb) - 1e-9, f"{name}: the light washes the map out"
+            if abs(_lstar(c) - lb) > 0:
+                kept.append(lit / abs(_lstar(c) - lb))
+        # and each side as strong as its rule lets it be: at its target, or at its cap, or (the light) where the map
+        # under it keeps just 70% of its contrast
+        assert abs(d_s - t_shadow) < 1e-3 or a_s == 0.35, f"{name}: a shadow quieter than its rule"
+        assert abs(d_l - t_light) < 1e-3 or a_l == 0.60 or abs(min(kept) - 0.70) < 1e-3, f"{name}: a dim light"
+    # the shadow alphas of the spec's table
+    assert {name: round(relief_colours(S)[0][1], 3) for name, S in STYLES.items()} == {
+        "huella": 0.098, "carbon": 0.35, "midnight": 0.35, "blueprint": 0.153, "ink": 0.086, "graphite": 0.289,
+        "neon": 0.35, "lavender": 0.077, "sunset": 0.070, "forest": 0.082, "blush": 0.077, "ocean": 0.066}
+
+
+def test_a_style_can_set_its_own_relief_colours():
+    from pinless.render_editorial import STYLES, relief_colours
+    custom = (((0.1, 0.2, 0.3), 0.2), ((0.9, 0.9, 0.9), 0.1))
+    assert relief_colours(dict(STYLES["huella"], relief=custom)) == custom
 
 
 def _synthetic_relief(shape, dataset="glo30"):
@@ -1151,9 +1358,12 @@ def test_flat_relief_is_transparent():
     rgba = relief_rgba(np.zeros((5, 7), np.float32), relief_colours(STYLES["huella"]))
     assert rgba.shape == (5, 7, 4) and rgba.dtype == np.uint8 and not rgba[..., 3].any()
     strong = relief_rgba(np.array([[-1.0, -0.3, 0.3, 1.0]], np.float32), relief_colours(STYLES["huella"]))
-    (_, a_s), (_, a_l) = relief_colours(STYLES["huella"])
+    (shadow, a_s), (light, a_l) = relief_colours(STYLES["huella"])
     assert strong[0, :, 3].tolist() == [round(255 * a_s), round(255 * a_s * 0.5), round(255 * a_l * 0.5),
                                         round(255 * a_l)]
+    assert strong[0, 0, :3].tolist() == strong[0, 1, :3].tolist() == [round(255 * c) for c in shadow], "shadow"
+    assert strong[0, 2, :3].tolist() == strong[0, 3, :3].tolist() == [round(255 * c) for c in light], "light"
+    assert [round(255 * c) for c in shadow] == [34, 40, 32] and light == (1.0, 1.0, 1.0), "huella: its ink, white"
 
 
 def test_water_stays_flat_and_relief_sits_between_streets_and_routes(monkeypatch, tmp_path):
@@ -1204,6 +1414,46 @@ def _map_pixel(png, extent, map_w, x, y, dpi=60):
     x_mm = 18 * k + (x - extent[0]) / (extent[1] - extent[0]) * map_w
     y_mm = 94 * k + (extent[3] - y) / (extent[3] - extent[2]) * 222 * k
     return tuple(px[int(round(y_mm / 25.4 * dpi)), int(round(x_mm / 25.4 * dpi))])
+
+
+def _render_over_water(tmp_path, water, name, dpi=60):
+    """An A4 editorial page with a steep relief everywhere and this water; (png, extent, map width)."""
+    import geopandas as gpd
+    from shapely.geometry import LineString
+    extent, map_w = _editorial_extent("A4")
+    rel = relief.Relief(np.full(relief.raster_shape(map_w, extent), -0.9, np.float32), "glo30", 0, 0.5)
+    out = tmp_path / name
+    render_editorial.render([(0, LineString([(500, 9000), (900, 9400)]))],
+                            (_empty(), _empty(), gpd.GeoDataFrame({"natural": ["water"]}, geometry=[water])), extent,
+                            STATS, str(out), size="A4", dpi=dpi, city="X", year="2025", relief=rel)
+    return out, extent, map_w
+
+
+def _water_rgb():
+    from matplotlib.colors import to_rgb
+    return tuple(round(c * 255) for c in to_rgb(render_editorial.STYLES["huella"]["water"]))
+
+
+def test_multipolygon_water_stays_flat(tmp_path):
+    from shapely.geometry import MultiPolygon, Polygon
+    lakes = MultiPolygon([Polygon([(2000, 2000), (5000, 2000), (5000, 5000), (2000, 5000)]),
+                          Polygon([(7000, 2000), (10000, 2000), (10000, 5000), (7000, 5000)])])  # one OSM relation
+    out, extent, map_w = _render_over_water(tmp_path, lakes, "m.png")
+    assert _map_pixel(out, extent, map_w, 3500, 3500) == _map_pixel(out, extent, map_w, 8500, 3500) == _water_rgb()
+    assert _map_pixel(out, extent, map_w, 6000, 3500) != _water_rgb(), "setup: the land between them is shaded"
+
+
+def test_the_relief_stops_at_the_drawn_shore(tmp_path):
+    from shapely.geometry import Point
+    lake = Point(6000, 5000).buffer(2000, quad_segs=64)  # a round lake: a clip that cuts corners shows on its shore
+    out, extent, map_w = _render_over_water(tmp_path, lake, "c.png", dpi=100)
+    shaded = [a for a in np.arange(0, 360, 2.5)
+              if _map_pixel(out, extent, map_w, 6000 + 1950 * math.cos(math.radians(a)),
+                            5000 + 1950 * math.sin(math.radians(a)), dpi=100) != _water_rgb()]
+    assert not shaded, f"relief on the lake 50 m inside its shore at {shaded[:5]} degrees"
+    outside = [_map_pixel(out, extent, map_w, 6000 + 2100 * math.cos(math.radians(a)),
+                          5000 + 2100 * math.sin(math.radians(a)), dpi=100) for a in np.arange(0, 360, 15)]
+    assert all(p != _water_rgb() for p in outside), "setup: 100 m outside it, the land is shaded"
 
 
 def test_the_drawn_relief_is_north_up(tmp_path):
@@ -1331,11 +1581,8 @@ FOOTER_CASES = [  # (lang, dataset, editorial legends, race legends); es + GLO-9
 
 @pytest.mark.parametrize("lang,dataset,ed_modes,race_modes", FOOTER_CASES)
 def test_footer_credits_fit_and_appear_only_with_relief(monkeypatch, tmp_path, lang, dataset, ed_modes, race_modes):
-    import datetime as dt
     from shapely.geometry import LineString
-    from pinless import atlas, render_editorial, render_race
     from matplotlib.figure import Figure
-    from pinless.ingest import Activity
     boxes = _footer_spy(monkeypatch)
     monkeypatch.setattr(Figure, "savefig", lambda self, *a, **k: None)  # the boxes are all placed before saving
     extent, map_w = _editorial_extent("A4")
@@ -1349,39 +1596,119 @@ def test_footer_credits_fit_and_appear_only_with_relief(monkeypatch, tmp_path, l
                                 activities=_acts_for_colours(), tracks_xy=tracks, relief=rel)
         _check_footer(boxes, 399, 409, dataset, lang, mode=mode)
     # the race print, pace and elevation legends
+    for mode in race_modes:
+        boxes.clear()
+        _race_page(tmp_path, (_empty(), _empty(), _empty()), dataset, color_by=mode, lang=lang)
+        _check_footer(boxes, 404, 412, dataset, lang, mode=mode)
+    # the atlas, with the +N note
+    boxes.clear()
+    _atlas_page(tmp_path, [None, None], dataset, lang=lang, more=3)
+    _check_footer(boxes, 404, 412, dataset, lang, more_note=True)
+
+
+def _race_page(tmp_path, basemap, dataset="glo30", **kw):
+    """render_race.render of a 5 km course on A4 with this basemap and a synthetic relief (none if dataset is None):
+    its info."""
+    import datetime as dt
+    from shapely.geometry import LineString
+    from pinless import render_race
+    from pinless.ingest import Activity
     xy = np.column_stack([np.linspace(0, 5000, 501), 800 * np.sin(np.linspace(0, 3, 501))])
     act = Activity(id="r", type="Run", start=dt.datetime(2025, 4, 6, 7, tzinfo=dt.timezone.utc),
                    lonlat=[(-3.70, 40.41)] * 501, source="x", times=list(np.linspace(0, 1500, 501)),
                    ele=list(600 + 40 * np.sin(np.linspace(0, 6, 501))))
-    r_ext = (-500.0, 5500.0, -2500.0, -2500.0 + 6000.0 / render_race.map_aspect("A4"))
-    r_rel = _synthetic_relief(relief.raster_shape(map_w, r_ext), dataset) if dataset else None
-    for mode in race_modes:
-        boxes.clear()
-        render_race.render(act, xy, [(0, LineString(xy[30:-30]))], (_empty(), _empty(), _empty()), r_ext,
-                           str(tmp_path / "r.png"), size="A4", dpi=10, title="T", city="Madrid", date=act.start,
-                           color_by=mode, lang=lang, relief=r_rel)
-        _check_footer(boxes, 404, 412, dataset, lang, mode=mode)
-    # the atlas, with the +N note
+    ext = _race_extent()
+    rel = _synthetic_relief(relief.raster_shape(_editorial_extent("A4")[1], ext), dataset) if dataset else None
+    return render_race.render(act, xy, [(0, LineString(xy[30:-30]))], basemap, ext, str(tmp_path / "r.png"),
+                              size="A4", dpi=10, title="T", city="Madrid", date=act.start, relief=rel, **kw)
+
+
+def _race_extent():
+    from pinless import render_race
+    return (-500.0, 5500.0, -2500.0, -2500.0 + 6000.0 / render_race.map_aspect("A4"))
+
+
+def _atlas_world():
+    """Two cities (Madrid, Paris) ready for atlas.render_atlas: (cities, cells, extents)."""
+    import datetime as dt
+    from shapely.geometry import LineString
+    from pinless import atlas
+    from pinless.ingest import Activity
     acts = [Activity(id=str(i), type="Run", start=dt.datetime(2025, 1 + i % 12, 3, 8),
                      lonlat=[(lon + 0.01 * np.cos(t), 40.41 + 0.01 * np.sin(t)) for t in np.linspace(0, 6.28, 60)],
                      source="x") for i, lon in enumerate([-3.70] * 4 + [2.35] * 2)]
     cities = atlas.group_by_city(acts)
-    from pyproj import Transformer as _T
     for c in cities:
         c.crs = render.utm_crs(c.lon, c.lat)
-        tr = _T.from_crs(4326, c.crs, always_xy=True)
+        tr = Transformer.from_crs(4326, c.crs, always_xy=True)
         c.tracks = [np.column_stack(tr.transform(*np.asarray(a.lonlat).T)) for a in c.acts]
         c.pieces = [(i, LineString(t)) for i, t in enumerate(c.tracks)]
         c.name, c.country = "Somewhere", "Nowhere"
     cells = atlas.layout(len(cities))
-    extents = [atlas.fit(c, w / h) for c, (_, _, w, h) in zip(cities, cells)]
+    return cities, cells, [atlas.fit(c, w / h) for c, (_, _, w, h) in zip(cities, cells)]
+
+
+def _atlas_page(tmp_path, basemaps, dataset="glo30", **kw):
+    """atlas.render_atlas on A4 of the two cities, with these basemaps and a synthetic relief per map: its info."""
+    from pinless import atlas
+    cities, cells, extents = _atlas_world()
     k = 210 / 297
     reliefs = [_synthetic_relief(relief.raster_shape(w * k, e), dataset) if dataset else None
                for (_, _, w, _), e in zip(cells, extents)]
+    return atlas.render_atlas(cities, cells, extents, basemaps, str(tmp_path / "a.png"), size="A4", dpi=10,
+                              reliefs=reliefs, **kw)
+
+
+def _all_water(extent):
+    import geopandas as gpd
+    from shapely.geometry import box
+    x0, x1, y0, y1 = extent
+    return gpd.GeoDataFrame({"natural": ["water"]}, geometry=[box(x0 - 100, y0 - 100, x1 + 100, y1 + 100)])
+
+
+def test_the_race_page_shades_no_water_and_credits_only_what_it_drew(monkeypatch, tmp_path):
+    from pinless import render_race
+    boxes = _footer_spy(monkeypatch)  # the race page writes through atlas.place_text
+    seen, real = [], render_race.draw_relief
+    monkeypatch.setattr(render_race, "draw_relief", lambda ax, rel, ext, S, water, *a: seen.append(water) or
+                        real(ax, rel, ext, S, water, *a))
+    sea = _all_water(_race_extent())
+    info = _race_page(tmp_path, (_empty(), _empty(), sea))  # a course along a lake shore, all of its map water
+    assert len(seen) == 1 and seen[0] is sea, "the relief is clipped off the water the page draws"
+    assert info["relief"] is False, "nothing shaded"
+    texts = [b[0] for b in boxes]
+    assert not any("Copernicus" in t for t in texts), "so no relief notice"
+    assert [b[2] for b in boxes if b[0].startswith("© OpenStreetMap")] == [412], "the footer of today"
+
+
+def test_each_atlas_map_shades_no_water_and_the_print_credits_only_what_it_drew(monkeypatch, tmp_path):
+    from pinless import atlas
+    boxes = _footer_spy(monkeypatch)
+    seen, real = [], atlas.draw_relief
+    monkeypatch.setattr(atlas, "draw_relief", lambda ax, rel, ext, S, water, *a: seen.append(water) or
+                        real(ax, rel, ext, S, water, *a))
+    _, _, extents = _atlas_world()
+    seas = [_all_water(e) for e in extents]
+    info = _atlas_page(tmp_path, [(_empty(), _empty(), w) for w in seas])  # every map all water
+    assert len(seen) == len(seas) == 2 and all(s is w for s, w in zip(seen, seas)), "each map's own water"
+    assert not any("Copernicus" in b[0] for b in boxes), "nothing shaded, so no relief notice"
+    assert [b[2] for b in boxes if b[0].startswith("© OpenStreetMap")] == [412], "the footer of today"
+    assert info is not None
     boxes.clear()
-    atlas.render_atlas(cities, cells, extents, [None] * len(cities), str(tmp_path / "a.png"), size="A4", dpi=10,
-                       lang=lang, more=3, reliefs=reliefs)
-    _check_footer(boxes, 404, 412, dataset, lang, more_note=True)
+    _atlas_page(tmp_path, [(_empty(), _empty(), seas[0]), (_empty(), _empty(), _empty())])  # the second map on land
+    assert [b[0] for b in boxes].count(relief.notice("glo30", "en")) == 1, "one map drawn: the notice"
+
+
+def test_both_credit_lines_are_set_as_the_osm_line_of_today():
+    S = render_editorial.STYLES["huella"]
+    osm = "© OpenStreetMap contributors · ODbL · openstreetmap.org/copyright"
+    for dataset, want in ((None, [(409, osm, 238)]),
+                          ("glo30", [(405.6, osm, 238), (409, relief.notice("glo30", "en"), 220)])):
+        calls = []
+        render_editorial.footer_credits(lambda *a, **k: calls.append((a, k)), S, "en", 409, 238, 220, dataset)
+        assert [(a[0], a[2], k["max_w"]) for a, k in calls] == [(18, text, w) for _, text, w in want]
+        assert [a[1] for a, _ in calls] == pytest.approx([y for y, _, _ in want])
+        assert [(k["pt"], k["color"]) for _, k in calls] == [(6.2, S["sub"])] * len(want), "6.2 pt, the sub colour"
 
 
 # --- the command line -------------------------------------------------------------------------------------------------
@@ -1429,7 +1756,20 @@ def test_relief_flag_and_default(monkeypatch, tmp_path, capsys):
     _race_world(monkeypatch, captured)
     assert cli.main(RACE_ARGS + ["--out", str(tmp_path / "r.png")]) == 0
     assert captured["relief"] is None and captured["info"]["relief"] is False
-    # atlas.run with arguments built without a relief attribute (as other callers do)
+    # race.run and atlas.run with arguments built without a relief attribute (as other callers do)
+    from pinless import race
+    real_run = race.run
+
+    def bare(sel, pool, a, log=print):
+        delattr(a, "relief")
+        return real_run(sel, pool, a, log)
+
+    monkeypatch.setattr(race, "run", bare)
+    captured = {}
+    _race_world(monkeypatch, captured)
+    assert cli.main(RACE_ARGS + ["--out", str(tmp_path / "r0.png")]) == 0
+    assert captured["relief"] is None
+    monkeypatch.setattr(race, "run", real_run)
     acts = [_loop_act(i, 40.42, -3.70) for i in range(4)]
     got = {}
     monkeypatch.setattr(atlas.area, "place_names", lambda lat, lon, lang="en": ("C", "K"))
