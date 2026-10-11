@@ -1,6 +1,6 @@
 ---
 name: pinless
-description: Make a print-ready poster of a runner's year from their Strava export zip (or a folder of GPX/TCX/FIT files), locally and with privacy zones applied. Use when the user asks for a poster, map or print of their runs, rides or walks.
+description: Make a print-ready poster of a runner's year from their Strava export zip (or a folder of GPX/TCX/FIT files), locally and with privacy zones applied. Use when the user asks for a poster, map or print of their runs, rides or walks, or of two people's runs on one map.
 ---
 
 # Pinless poster
@@ -27,7 +27,16 @@ description: Make a print-ready poster of a runner's year from their Strava expo
    `--graphs` adds charts of km per month, time of day and direction under the map (single-city poster only).
    For one race as a finisher print: `--layout race --activity <YYYY-MM-DD | latest | longest | id>`, with
    `--title "<race name>"` if they want its name printed (the activity's own name is never printed by default).
+   For one poster of two people (a couple, two friends), ask the user for both export paths and both names; take
+   them from the user only, never from a search or from the files. Do not open either export. Run:
+   `pinless "<first.zip>" --with "<second.zip>" --name "<FIRST NAME>" --with-name "<SECOND NAME>" --year <YEAR> --style <STYLE> --out poster.png --pdf poster.pdf --preview poster.jpg`
+   The first export takes the warm ink. If the second export names the sport differently, add `--with-type <TYPE>`.
+   Tell the user to use the other person's export only with their consent, and to look at the poster together
+   before printing or sharing it. `--color-by` and `--graphs` do not apply to a poster for two.
 4. If the command prints `[privacy] STOP`, tell the user nothing was exported and why; do not try to bypass it.
+   Never run it again with a smaller `--trim` or `--zone-radius`. With `--with`, a STOP or a refusal that names the
+   second person refers to the second export (for example: nothing of theirs inside the map, or nothing left after
+   the privacy cuts): suggest `--place "<City, Country>"` for a city both ran in, never weaker privacy.
    For `--layout race`, a STOP that says the run starts or ends at a private place means it began at home or work:
    suggest another run. Add `--allow-private-ends` only if the user asks for that run anyway, and tell them the print
    will show only a stretch well clear of that place and describe only that stretch. If the log says the run is a
