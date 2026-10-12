@@ -144,6 +144,26 @@ def moving_time(xy, times, ele=None):
     return float(steps.sum()) - paused, paused > 0
 
 
+def moving_pace(dist, times, pauses=None, window=250.0):
+    """Pace (s/km) at every point, over `window` metres of the track covered while moving: the steps of a pause
+    (pauses, a mask over the steps) count neither their time nor the metres the fix wandered while standing."""
+    t = np.maximum.accumulate(np.asarray(times, dtype=float))
+    dd, dt_ = np.diff(np.asarray(dist, dtype=float)), np.diff(t)
+    if pauses is not None:
+        dd, dt_ = np.where(pauses, 0.0, dd), np.where(pauses, 0.0, dt_)
+    return pace_along(np.concatenate([[0.0], np.cumsum(dd)]), np.concatenate([[0.0], np.cumsum(dt_)]), window)
+
+
+def weighted_percentiles(values, weights, qs):
+    """The percentiles qs (0-100) of values, each counted by its weight; plain percentiles when no weight is left."""
+    v, w = np.asarray(values, dtype=float), np.asarray(weights, dtype=float)
+    if not w.sum() > 0:
+        return [float(x) for x in np.percentile(v, qs)]
+    order = np.argsort(v)
+    cum = np.cumsum(w[order])
+    return [float(v[order][min(int(np.searchsorted(cum, q / 100 * cum[-1])), len(v) - 1)]) for q in qs]
+
+
 def high_point(xy, ele):
     """(along-track metres, metres above sea level) of the highest point of the smoothed profile."""
     d, e = profile(xy, ele)
@@ -331,6 +351,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
                               activity.ele if ele is None else ele, stretch)
     dist = along(xy)
     secs, paused = moving_time(xy, times, ele) if times else (None, False)
+    pauses = paused_steps(xy, times, ele) if times else None
 
     # header
     T(18, 13, "P I N L E S S", pt=8.4)
@@ -368,8 +389,12 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
         pairs = {pq: i for i, pq in enumerate(zip(pts[:-1], pts[1:]))}
         at = np.concatenate([(lambda p: (p[:-1] + p[1:]) / 2)(vertex_positions(c, xy, dist, pairs)) for c in coords])
         if color_by == "pace" and times and secs:
-            v = np.interp(at, dist, pace_along(dist, times))
-            lo, hi = np.percentile(v, [5, 95])
+            # the pace while moving: a stop takes the pace of the walk around it, and the legend's ends are the
+            # fastest and slowest 5 % of the drawn walking, by length (the fixes of a stop crowd the course)
+            v = np.interp(at, dist, moving_pace(dist, times, pauses))
+            step = np.clip(np.searchsorted(dist, at, side="right") - 1, 0, len(dist) - 2)
+            moving = ~pauses[step] if pauses is not None else np.ones(len(at), dtype=bool)
+            lo, hi = weighted_percentiles(v, np.hypot(*(segments[:, 1] - segments[:, 0]).T) * moving, (5, 95))
             values, cmap = 1 - np.clip((v - lo) / max(hi - lo, 1e-6), 0, 1), heat  # faster = stronger
             legend = {"mode": "pace", "lo": lo, "hi": hi}
         elif color_by == "elevation" and ele:

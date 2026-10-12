@@ -305,6 +305,28 @@ def test_every_style_draws_and_colours_follow_the_choice(tmp_path):
     assert info["legend"]["mode"] == "pace"
 
 
+def test_a_stop_does_not_move_the_pace_legend(tmp_path):
+    rng = np.random.default_rng(2)
+    n = 5400  # 90 minutes at 1.0 to 1.5 m/s (11:07 to 16:40 per km) on a wide curve
+    speed = 1.25 + 0.25 * np.sin(np.arange(n) / 600)
+    walk = np.cumsum(np.column_stack([np.cos(np.arange(n) / 1500), np.sin(np.arange(n) / 1500)]) * speed[:, None], 0)
+    ends = []
+    for stop in (0, 1200):  # then twenty minutes standing half way, the fix wandering a few metres every second
+        xy = walk if not stop else np.vstack([walk[:n // 2], walk[n // 2] + rng.normal(0, 3, (stop, 2)), walk[n // 2:]])
+        act = Activity(id="w", type="Hike", start=START, lonlat=_lonlat(xy), source="x",
+                       times=list(np.arange(len(xy), dtype=float)))
+        extent = race.frame_course([(0, LineString(xy))], render_trail.map_aspect(), pad_frac=0.1)
+        info = render_trail.render(act, xy, [(0, LineString(xy[300:-300]))], (EMPTY, EMPTY, EMPTY), extent,
+                                   str(tmp_path / "p.png"), dpi=20, color_by="pace")
+        assert info["legend"]["mode"] == "pace" and info["paused"] == bool(stop)
+        ends.append((info["legend"]["lo"], info["legend"]["hi"]))
+    (lo0, hi0), (lo1, hi1) = ends
+    assert lo0 == pytest.approx(1000 / 1.5, rel=0.03) and hi0 == pytest.approx(1000 / 1.0, rel=0.03), "the walk's"
+    assert lo1 == pytest.approx(lo0, rel=0.03) and hi1 == pytest.approx(hi0, rel=0.03), "the stop changes nothing"
+    assert render_trail.weighted_percentiles([1, 2, 3, 100], [1, 1, 1, 0], (0, 100)) == [1.0, 3.0]
+    assert render_trail.weighted_percentiles([5, 1], [0, 0], (50,)) == [3.0], "no weight: plain percentiles"
+
+
 def test_the_trail_map_draws_its_paths_over_a_stronger_relief():
     import matplotlib.pyplot as plt
     from matplotlib.colors import to_rgb
