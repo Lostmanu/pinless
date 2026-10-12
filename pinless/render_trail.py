@@ -339,11 +339,13 @@ def draw_ground(ax, ground, extent, S, map_w_mm):
 
 
 def ground_style(TS, S, painted):
-    """The trail style over the land cover: the relief measured on the ground's mean colour, and the paths and roads
-    re-inked along the way from the paper to the style's inks so they keep, against the darkest ground colour that
-    covers SIGNIFICANT of the map (the lightest on dark paper), the contrast they have against the paper."""
+    """The trail style over the land cover: its water (landcover.water), the relief measured on the ground's mean
+    colour, and the paths and roads re-inked along the way from the paper to the style's inks so they keep, against
+    the darkest ground colour that covers SIGNIFICANT of the map (the lightest on dark paper), the contrast they have
+    against the paper."""
     out = dict(TS)
     out["relief"] = trail_relief(S, painted["mean"])
+    out["water"], out["water_line"] = to_hex(landcover.water(S)), to_hex(landcover.water(S, line=True))
     dark = _lstar(to_rgb(S["bg"])) < 50
     big = [c for k, c in painted["colours"].items() if painted["shares"][k] >= SIGNIFICANT] or [painted["mean"]]
     ref = (max if dark else min)(big, key=_lstar)

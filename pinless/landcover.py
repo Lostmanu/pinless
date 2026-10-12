@@ -432,6 +432,9 @@ DRY_LAT = (37.0, 42.0)  # degrees from the equator: dry at the first, not at all
 DRY_BARE = (0.10, 0.25)
 DESERT_BARE = (0.50, 0.75)
 COLD = 0.03
+# Water on light paper: the style's water this share of the way to a lake blue, and its waterways to a stream blue
+# (a style's pale water reads as snow on a green ground); dark paper keeps the style's own water
+WATER_BLUE, STREAM_BLUE, WATER_MIX = "#a9cfe0", "#6ea6c4", 0.65
 DARK_MIX = 0.35  # on dark paper each colour lies this share of the way from the paper to its light-paper colour
 SMOOTH_PX = 1.0  # the Gaussian over the coloured raster (pixels at 150 ppi, 0.17 mm): class edges read painted
 
@@ -462,16 +465,25 @@ def dryness(shares, lat):
 def palette(S, dry=0.0):
     """{class: (r, g, b)} of the ground in a style: NATURE on light paper, its grass, scrub and bare land dry of the
     way to DRY; on dark paper the same colours pulled towards the paper (DARK_MIX of the way from it), darker and
-    quieter, so a dark poster stays dark. Water takes the style's water and land without data the paper."""
+    quieter, so a dark poster stays dark. Water as water() says, land without data the paper."""
     bg = np.asarray(to_rgb(S["bg"]))
     mix = DARK_MIX if is_dark(S) else 1.0
     land = {k: np.asarray(to_rgb(c)) for k, c in NATURE.items()}
     for k, c in DRY.items():
         land[k] = land[k] + (np.asarray(to_rgb(c)) - land[k]) * float(dry)
     out = {k: tuple(float(v) for v in bg + (c - bg) * mix) for k, c in land.items()}
-    out[WATER] = tuple(to_rgb(S["water"]))
+    out[WATER] = water(S)
     out[NO_DATA] = tuple(float(v) for v in bg)
     return out
+
+
+def water(S, line=False):
+    """(r, g, b) of the water over the ground (line: of the waterways), as WATER_MIX says."""
+    own = np.asarray(to_rgb(S["water_line" if line else "water"]))
+    if is_dark(S):
+        return tuple(float(v) for v in own)
+    blue = np.asarray(to_rgb(STREAM_BLUE if line else WATER_BLUE))
+    return tuple(float(v) for v in own + (blue - own) * WATER_MIX)
 
 
 def _gauss(img, sigma):

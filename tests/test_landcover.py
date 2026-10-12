@@ -354,7 +354,16 @@ def test_the_colours_of_the_classes_on_light_and_dark_paper():
     for name, S in render_editorial.STYLES.items():
         pal = landcover.palette(S)
         assert set(pal) == set(landcover.CLASSES)
-        assert pal[landcover.WATER] == pytest.approx(to_rgb(S["water"])), f"{name}: the style's water"
+        lb = landcover._lstar(to_rgb(S["bg"]))
+        for line, key in ((False, "water"), (True, "water_line")):
+            own, got = np.asarray(to_rgb(S[key])), np.asarray(landcover.water(S, line=line))
+            if lb < 50:
+                assert got == pytest.approx(own), f"{name}: dark paper keeps its own {key}"
+            else:  # pulled towards a lake (stream) blue: bluer than the style's own, and still from it
+                blue = np.asarray(to_rgb(landcover.STREAM_BLUE if line else landcover.WATER_BLUE))
+                assert got == pytest.approx(own + (blue - own) * landcover.WATER_MIX), f"{name} {key}"
+                assert got[2] - got[0] > own[2] - own[0], f"{name}: bluer {key}"
+        assert pal[landcover.WATER] == pytest.approx(landcover.water(S)), f"{name}: the water of the ground"
         assert pal[landcover.NO_DATA] == pytest.approx(to_rgb(S["bg"])), f"{name}: no data takes the paper"
         lb = landcover._lstar(to_rgb(S["bg"]))
         for k, hex_ in landcover.NATURE.items():
@@ -549,6 +558,8 @@ def test_paths_and_roads_keep_their_contrast_against_the_ground(monkeypatch, tmp
             assert abs(lstar(out[key]) - ref) >= gap - 0.6, f"{name} {key}: against the ground as against the paper"
             assert (lstar(out[key]) > ref) == dark, f"{name} {key}: on the side of the style's inks"
         assert out["relief"] != TS["relief"], f"{name}: the relief measured on the ground"
+        for key, line in (("water", False), ("water_line", True)):
+            assert to_rgb(out[key]) == pytest.approx(landcover.water(S, line=line), abs=1 / 255), f"{name}: {key}"
     seen = []
     real = render_trail.draw_basemap
     monkeypatch.setattr(render_trail, "draw_basemap", lambda ax, basemap, *a, **k: seen.append(basemap)
