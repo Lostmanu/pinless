@@ -39,6 +39,7 @@ NUMBERS_TOP = 376.0
 LOOP_M = 250.0  # a stretch whose ends are this close is a loop (unless its second half retraces the first)
 RETRACE_M, RETRACE_SHARE = 40.0, 0.70  # out and back: this share of the second half within this of the first
 PAUSE_S, PAUSE_MPS, WINDOW_S = 120.0, 0.3, 60.0  # a pause: longer than PAUSE_S below PAUSE_MPS, over WINDOW_S
+SMOOTH_S, STEP_S = 20.0, 5.0  # the track along which a pause must be slow too: averaged, then sampled
 MAX_PEAKS = 6
 PEAK_PT = 5.4  # summit labels (pt x k)
 CASING_PT = 3.4  # the course's casing in the paper colour (pt x k), as on the race print
@@ -87,33 +88,60 @@ def _runs(mask):
     return list(zip(edges[::2], edges[1::2]))
 
 
-def moving_time(xy, times, ele=None):
-    """(seconds, paused): the time without the pauses, or the elapsed time when there were none; (None, False)
-    without a working clock.
+def paused_steps(xy, times, ele=None):
+    """A mask over the steps of the track (len(xy) - 1): True for the steps inside a pause; None without a working
+    clock.
 
-    A pause is a stretch longer than PAUSE_S where the speed, measured as the straight-line distance covered over
-    WINDOW_S around each moment (GPS jitter while standing adds up along the track, not across it), stays under
-    PAUSE_MPS. With elevations (ele, aligned with xy) the distance counts the climb too: a steep scramble covers
-    little ground, but it is not a pause. A watch that stopped recording while you stood (auto-pause) leaves one long
-    step that is slow too."""
-    if times is None or len(times) < 2:
-        return None, False
+    A pause is a stretch longer than PAUSE_S where the speed, measured two ways over WINDOW_S around each moment,
+    stays under PAUSE_MPS:
+    - the straight-line distance covered (GPS jitter while standing adds up along the track, not across it);
+    - the distance along the track once it is averaged over SMOOTH_S and sampled every STEP_S, which takes the jitter
+      out: a steady climb on tight hairpins folds back on itself within a minute and covers little ground, but it
+      keeps moving along its path, so it is not a pause.
+    With elevations (ele, aligned with xy) both count the climb too: a steep scramble covers little ground, but it is
+    not a pause. A watch that stopped recording while you stood (auto-pause) leaves one long step that is slow too."""
+    if times is None or len(times) < 2 or len(times) != len(xy):
+        return None
     t = np.maximum.accumulate(np.asarray(times, dtype=float))
     xy = np.asarray(xy, dtype=float)
-    total = float(t[-1] - t[0])
-    if not total > 0:
-        return None, False
+    if not t[-1] - t[0] > 0:
+        return None
     z = profile(xy, ele)[1] if ele is not None and len(ele) == len(xy) else np.zeros(len(xy))
     keep = np.concatenate([[True], np.diff(t) > 0])  # np.interp needs increasing times: drop repeated stamps
-    tt, px, py, pz = t[keep], xy[keep, 0], xy[keep, 1], z[keep]
+    tt, pts = t[keep], np.column_stack([xy[keep], z[keep]])
     mid = (t[:-1] + t[1:]) / 2
     lo = np.clip(mid - WINDOW_S / 2, t[0], t[-1])
     hi = np.clip(mid + WINDOW_S / 2, t[0], t[-1])
-    moved = np.sqrt(sum((np.interp(hi, tt, v) - np.interp(lo, tt, v)) ** 2 for v in (px, py, pz)))
-    slow = moved < PAUSE_MPS * np.maximum(hi - lo, 1e-9)
+    span = np.maximum(hi - lo, 1e-9)
+    net = np.sqrt(sum((np.interp(hi, tt, v) - np.interp(lo, tt, v)) ** 2 for v in pts.T))
+    # the track averaged over SMOOTH_S (exactly, from the running integral of the positions), every STEP_S
+    grid = np.append(np.arange(tt[0], tt[-1], STEP_S), tt[-1])
+    a = np.clip(grid - SMOOTH_S / 2, tt[0], tt[-1])
+    b = np.clip(grid + SMOOTH_S / 2, tt[0], tt[-1])
+    smooth = []
+    for v in pts.T:
+        integral = np.concatenate([[0.0], np.cumsum((v[1:] + v[:-1]) / 2 * np.diff(tt))])
+        smooth.append((np.interp(b, tt, integral) - np.interp(a, tt, integral)) / np.maximum(b - a, 1e-9))
+    path = np.concatenate([[0.0], np.cumsum(np.sqrt(sum(np.diff(v) ** 2 for v in smooth)))])
+    on_path = np.interp(hi, grid, path) - np.interp(lo, grid, path)
+    slow = (net < PAUSE_MPS * span) & (on_path < PAUSE_MPS * span)
     steps = np.diff(t)
-    paused = sum(float(steps[i:j].sum()) for i, j in _runs(slow) if steps[i:j].sum() > PAUSE_S)
-    return total - paused, paused > 0
+    out = np.zeros(len(steps), dtype=bool)
+    for i, j in _runs(slow):
+        if steps[i:j].sum() > PAUSE_S:
+            out[i:j] = True
+    return out
+
+
+def moving_time(xy, times, ele=None):
+    """(seconds, paused): the time without the pauses (paused_steps), or the elapsed time when there were none;
+    (None, False) without a working clock."""
+    mask = paused_steps(xy, times, ele)
+    if mask is None:
+        return None, False
+    steps = np.diff(np.maximum.accumulate(np.asarray(times, dtype=float)))
+    paused = float(steps[mask].sum())
+    return float(steps.sum()) - paused, paused > 0
 
 
 def high_point(xy, ele):

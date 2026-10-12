@@ -75,6 +75,45 @@ def test_moving_time_leaves_out_long_pauses_only():
     assert render_trail.fmt_hours(4 * 3600 + 12 * 60 + 31) == "4:13" and render_trail.fmt_hours(52 * 60) == "0:52"
 
 
+def _hairpins(leg_m, n_legs, speed, grade=0.18, hill=0.7):
+    """A steady climb on hairpins across a hillside, recorded every second with heights: each leg runs mostly across
+    the slope, climbs leg_m * grade and gains leg_m * grade / hill up the fall line."""
+    rise = leg_m * grade
+    up = rise / hill
+    across = np.sqrt(leg_m ** 2 - up ** 2 - rise ** 2)
+    corners = [(0.0, 0.0, 1000.0)]
+    for i in range(n_legs):
+        x, y, z = corners[-1]
+        corners.append((x + (across if i % 2 == 0 else -across), y + up, z + rise))
+    corners = np.array(corners)
+    s = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(corners, axis=0), axis=1))])
+    t = np.arange(0, s[-1] / speed, 1.0)
+    pts = np.column_stack([np.interp(t * speed, s, corners[:, i]) for i in range(3)])
+    return pts[:, :2], t, list(pts[:, 2])
+
+
+def test_a_steady_climb_on_tight_hairpins_is_not_a_pause():
+    for leg, speed in ((15, 0.55), (20, 0.6), (30, 0.6)):
+        xy, t, ele = _hairpins(leg, 120, speed)
+        assert render_trail.moving_time(xy, t, ele) == (t[-1], False), f"{leg} m legs at {speed} m/s, never stopping"
+    # a whole day: an hour along the valley, 50 minutes up 15 m hairpins, half an hour's lunch at the top (the fix
+    # wandering a few metres), 70 minutes down: 3:00 moving of 3:30
+    rng = np.random.default_rng(0)
+    valley = np.column_stack([np.arange(3600) * 1.2, np.zeros(3600)])
+    climb_xy, _, climb_z = _hairpins(15, 400, 0.55)
+    climb_xy, climb_z = climb_xy[:3000] - climb_xy[0] + valley[-1] + [1.2, 0], np.asarray(climb_z[:3000])
+    lunch = climb_xy[-1] + rng.normal(0, 3, (1800, 2))
+    down = lunch[-1] + np.column_stack([np.arange(1, 4201) * 1.0, np.zeros(4200)])
+    xy = np.vstack([valley, climb_xy, lunch, down])
+    ele = np.concatenate([np.full(3600, 1000.0), climb_z, climb_z[-1] + rng.normal(0, 2, 1800),
+                          climb_z[-1] - np.arange(1, 4201) * 0.07])
+    secs, paused = render_trail.moving_time(xy, np.arange(len(xy), dtype=float), list(ele))
+    assert paused and secs == pytest.approx(3 * 3600, abs=60)
+    mask = render_trail.paused_steps(xy, np.arange(len(xy), dtype=float), list(ele))
+    assert mask.sum() == pytest.approx(30 * 60, abs=60) and not mask[:6600 - 30].any(), "only the lunch is a pause"
+    assert not mask[6600 + 1800 + 30:].any()
+
+
 def test_summit_heights_are_read_from_osm_text():
     cases = {"2428": 2428.0, "2428.5": 2428.5, "2428 m": 2428.0, " 2428m ": 2428.0, "2428,5": 2428.5,
              "7966 ft": 7966 * 0.3048, "about 2400": None, "": None, None: None, float("nan"): None, "12000": None}
