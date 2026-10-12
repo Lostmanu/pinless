@@ -152,7 +152,7 @@ def test_summits_are_drawn_inside_the_map_highest_first_and_never_overlap():
         for (gx, gy, text, bounds, (lx, ly)), b in zip(placed, boxes):
             assert frame.contains(b) and frame.contains(Point(gx, gy)), "nothing outside the map"
             assert bounds[:2] == (lx, ly)
-            assert b.distance(route) >= render_trail.CASING_PT * render_trail.PT_MM / 2, "clear of the casing"
+            assert b.distance(route) >= render_trail.ROUTE_CLEAR_MM - 1e-9, "clear of the casing, with a gap"
         for a, b in itertools.combinations(boxes, 2):
             assert not a.intersects(b), "no two labels overlap"
         assert all(x0 < where[t][0] < x1 and y0 < where[t][1] < y1 for t in texts), "only summits inside the map"
@@ -189,6 +189,30 @@ def test_a_label_moves_to_stay_clear_of_the_edge_the_course_and_other_labels():
     a, b = render_trail.place_peaks([first, second], EXTENT, 1.0, [])
     assert side(a) == "right" and side(b) == "left", "its label would run into the first label"
     assert not box(*a[3]).intersects(box(*b[3]))
+
+
+def test_a_label_keeps_its_gap_from_the_course_and_a_wandering_stop_does_not_stall_it():
+    import time
+
+    mm = (EXTENT[1] - EXTENT[0]) / (render_trail.RIGHT - render_trail.LEFT)
+    clear = render_trail.ROUTE_CLEAR_MM
+    assert clear == pytest.approx(render_trail.CASING_PT * render_trail.PT_MM / 2 + render_trail.ROUTE_GAP_MM)
+    label_w = render_trail.place_text("GAP 2000 m", 0, 0, 1.0, render_trail.PEAK_PT, render_trail.TEXT)[2]
+    x_right = 5000 + (render_trail.TRI_W / 2 + 0.7 + label_w) * mm  # where a label on the right ends
+    for off, side in ((clear - 0.1, "left"), (clear + 0.1, "right")):  # the course this far beyond the label's end
+        wall = [np.array([[x_right + off * mm, 0.0], [x_right + off * mm, EXTENT[3]]])]
+        (p,) = render_trail.place_peaks([(5000.0, 4000.0, "Gap", 2000.0)], EXTENT, 1.0, wall)
+        assert ("right" if p[3][0] > p[0] else "left") == side, off
+    # twenty minutes standing by the course, the fix wandering a few metres every second: thousands of crossings
+    rng = np.random.default_rng(4)
+    walk = np.column_stack([np.linspace(1000, 9000, 4000), np.full(4000, 3000.0)])
+    stop = walk[2000] + rng.normal(0, 3, (1200, 2))
+    course = [np.vstack([walk[:2000], stop, walk[2000:]])]
+    t0 = time.perf_counter()
+    placed = render_trail.place_peaks([(5000.0, 3000.0 + 12 * mm, "Above", 2100.0)], EXTENT, 1.0, course)
+    assert time.perf_counter() - t0 < 10, "a buffer of that course took minutes"
+    route = LineString(np.column_stack(render_trail._grid_xy(EXTENT, *course[0].T)))
+    assert [p[2] for p in placed] == ["ABOVE 2100 m"] and box(*placed[0][3]).distance(route) >= clear - 1e-9
 
 
 def test_summits_load_from_the_cache_with_their_heights(tmp_path):

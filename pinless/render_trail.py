@@ -252,6 +252,7 @@ def _grid_xy(extent, x, y):
 
 TRI_W, TRI_UP, TRI_DOWN = 1.9, 1.1, 0.55  # the summit triangle (grid mm): width, apex above and base below the point
 EDGE_MM, GAP_MM, ROUTE_GAP_MM = 1.2, 0.8, 0.5
+ROUTE_CLEAR_MM = CASING_PT * PT_MM / 2 + ROUTE_GAP_MM  # a summit label keeps this far from the course's centre line
 
 
 def peak_label(name, ele):
@@ -274,11 +275,16 @@ def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS):
                 and MAP_TOP + EDGE_MM + TRI_UP <= gy <= MAP_TOP + MAP_H - EDGE_MM - TRI_DOWN):
             continue
         cand.append((ele is None, -(ele or 0.0), name.strip(), gx, gy, ele))
+    if not cand:
+        return []
     cand.sort(key=lambda c: c[:3])
     frame = _box(LEFT + EDGE_MM, MAP_TOP + EDGE_MM, RIGHT - EDGE_MM, MAP_TOP + MAP_H - EDGE_MM)
     lines = [np.column_stack(_grid_xy(extent, *np.asarray(c, dtype=float).T)) for c in course if len(c) > 1]
-    route = (shapely.union_all([LineString(c) for c in lines]).buffer(CASING_PT * PT_MM / 2 + ROUTE_GAP_MM)
-             if lines else None)
+    # a label keeps clear of the course by distance, not by a buffer of it: a stop where the fix wandered for twenty
+    # minutes crosses itself hundreds of times, and buffering that takes minutes
+    route = shapely.MultiLineString(lines) if lines else None
+    if route is not None:
+        shapely.prepare(route)
     marks, placed = [], []  # the labels and triangles drawn so far, padded
     for _, _, name, gx, gy, ele in cand:
         if len(placed) >= max_n:
@@ -295,7 +301,7 @@ def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS):
                    (right, up), (right, down), (left, up), (left, down))  # diagonal: a summit on the course
         for lx, ly in options:
             label = _box(lx, ly, lx + w, ly + h)
-            if (frame.contains(label) and (route is None or not label.intersects(route))
+            if (frame.contains(label) and (route is None or not shapely.dwithin(route, label, ROUTE_CLEAR_MM))
                     and not any(label.intersects(b) for b in marks)):
                 placed.append((gx, gy, text, label.bounds, (lx, ly)))
                 marks += [label.buffer(GAP_MM, join_style="mitre"), tri.buffer(GAP_MM / 2, join_style="mitre")]
