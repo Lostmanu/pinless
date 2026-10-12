@@ -493,6 +493,11 @@ def _chroma(rgb):
     return math.hypot(a, b)
 
 
+def _hue(rgb):
+    _, a, b = landcover.lab(rgb)
+    return math.degrees(math.atan2(b, a)) % 360
+
+
 # the class shares of a 10 km map (WorldCover 2021), measured by hand around public places
 SURVEY = {"Penalara": (40.85, {10: .776, 20: .078, 30: .134, 60: .012}),
           "Tabernas": (37.02, {10: .092, 20: .124, 30: .493, 60: .273, 50: .017}),
@@ -523,7 +528,37 @@ def test_a_dry_land_is_told_from_a_mountain_by_where_it_lies():
     for k, c in landcover.DRY.items():
         assert dry1[k] == pytest.approx(to_rgb(c)) and green[k] == pytest.approx(to_rgb(landcover.NATURE[k]))
         assert half[k] == pytest.approx(tuple((np.asarray(green[k]) + dry1[k]) / 2))
-    assert all(green[k] == dry1[k] for k in landcover.CLASSES if k not in landcover.DRY), "only grass, scrub, bare"
+    assert all(green[k] == dry1[k] for k in landcover.CLASSES if k not in landcover.DRY), "only the classes of DRY"
+
+
+def _lstar_spread(S, shares, dry):
+    """The standard deviation of L* over a map of these class shares, in the style's ground colours."""
+    pal = landcover.palette(S, dry)
+    L = {k: landcover._lstar(pal[k]) for k in shares}
+    mean = sum(L[k] * v for k, v in shares.items()) / sum(shares.values())
+    return math.sqrt(sum(v * (L[k] - mean) ** 2 for k, v in shares.items()) / sum(shares.values()))
+
+
+def test_a_dry_land_prints_its_relief_not_a_camouflage(monkeypatch):
+    for name, value in REAL.items():
+        monkeypatch.setattr(landcover, name, value)
+    G, Sh, B, T = landcover.GRASS, landcover.SHRUB, landcover.BARE, landcover.TREE
+    S = render_editorial.STYLES["huella"]
+    dry = landcover.palette(S, 1.0)
+    L = {k: landcover._lstar(dry[k]) for k in (G, Sh, B, T)}
+    assert max(L[G], L[Sh], L[B]) - min(L[G], L[Sh], L[B]) <= 6, "steppe and desert: one value, several hues"
+    assert all(abs(L[T] - L[k]) <= 10.5 for k in (G, Sh, B)), "the woods of a dry land, a step darker"
+    assert 55 <= _hue(dry[B]) <= 75 and _chroma(dry[B]) >= 35, "the desert orange"
+    assert 100 <= _hue(dry[T]) <= 130, "and its woods still green"
+    tabernas, penalara = SURVEY["Tabernas"][1], SURVEY["Penalara"][1]
+    assert _lstar_spread(S, tabernas, 1.0) < 4.0, "the badlands of Tabernas (6.1 L* with the first dry palette)"
+    assert _lstar_spread(S, penalara, 0.0) > 6.0, "while the woods and meadows of a green land keep their contrast"
+    mm = 25.4 / 150
+    assert landcover.general_sigma(0, 3.08, mm, dry=1.0) == pytest.approx(landcover.GENERAL_DRY_MM / mm), \
+        "Tabernas at A3: generalised to GENERAL_DRY_MM on paper"
+    assert landcover.GENERAL_DRY_MM >= 0.5
+    assert landcover.general_sigma(0, 3.08, mm, dry=0.0) == pytest.approx(0.5 * 9.21 / 3.08, abs=0.01), "green"
+    assert landcover.general_sigma(0, 3.08, mm, dry=0.5) == pytest.approx(0.5 * landcover.GENERAL_DRY_MM / mm)
 
 
 def test_the_map_learns_its_dryness_from_its_own_land(monkeypatch, tmp_path):

@@ -448,8 +448,10 @@ def general_sigma(level, raster_px_m, raster_px_mm, dry=0.0):
 # green land is rock and scree, a light stone.
 NATURE = {TREE: "#7fa65a", SHRUB: "#a9b77a", GRASS: "#c8d89a", CROP: "#e6dcae", BUILT: "#d9d2c8", BARE: "#d4ccbb",
           SNOW: "#f4f8fb", WETLAND: "#9cc7b4", MANGROVE: "#5f9a72", MOSS: "#b7bfa6"}
-# ... and in a dry land (dryness): grass and scrub in the straw and olive of a steppe, bare land the ochre of a desert
-DRY = {GRASS: "#ddd09a", SHRUB: "#c2b47f", BARE: "#e2b47c"}
+# ... and in a dry land (dryness): grass and scrub in the straw of a steppe, woods a dry olive, bare land the orange of
+# a desert. Their L* lie within 10 of each other (75 to 80, the woods 70): in a desert the relief carries the shape of
+# the land and the hue says what covers it; a wider spread printed the scattered scrub as a camouflage over the relief
+DRY = {GRASS: "#e0c38f", SHRUB: "#ceb98d", BARE: "#e8ad75", TREE: "#a6b079"}
 # WorldCover alone cannot tell a dry land from a mountain: the badlands of Tabernas (27 % bare, 49 % grassland) and the
 # Picos de Europa (32 % bare, 51 % grassland) hold the same classes. Where the map lies can: a land is dry as far as
 # it lies south of DRY_LAT (north of it in the south) and bare land covers DRY_BARE of the map; DESERT_BARE of bare
@@ -465,7 +467,7 @@ DARK_MIX = 0.35  # on dark paper each colour lies this share of the way from the
 SMOOTH_PX = 1.0  # the Gaussian over the coloured raster (pixels at 150 ppi, 0.17 mm): class edges read painted
 # The generalisation of the classes (general_sigma): half a data pixel, at least one raster pixel, in a dry land up to
 # GENERAL_DRY_MM on paper, and never more than GENERAL_MAX_MM on paper
-GENERAL_DATA, GENERAL_MIN, GENERAL_DRY_MM, GENERAL_MAX_MM = 0.5, 1.0, 0.0, 1.0
+GENERAL_DATA, GENERAL_MIN, GENERAL_DRY_MM, GENERAL_MAX_MM = 0.5, 1.0, 0.6, 1.0
 
 
 def _lstar(rgb):
@@ -630,8 +632,8 @@ def prepare_many(maps, log=print, root=None):
             sigma = general_sigma(L, job.px, job.map_w / job.shape[1], dry)
             out[job.i] = LandCover(generalise(raw, sigma), L, dry)
             if dry > 0:
-                say(job.i, "a dry land: grass and scrub in the colours of a steppe, bare land in the ochre of a "
-                           "desert")
+                say(job.i, "a dry land: grass and scrub in the straw of a steppe, woods a dry olive, bare land in "
+                           "the orange of a desert")
         remember_absent(sea, root)  # only once the whole print was read
     except _Unsupported:
         log("[ground] skipped: the land cover does not cover this map as it is; drawn with the style's ground")
