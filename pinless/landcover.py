@@ -10,7 +10,8 @@ activities never reach this module.
   Content-Range checked, one retry) and decoded by zlib + numpy (8-bit samples, DEFLATE, no predictor), cached under
   the Pinless cache in landcover/. A tile the dataset does not have (open sea) is water and is not asked for again.
 - The classes are resampled onto the map's own projected grid at 150 ppi, the relief's raster (nearest neighbour,
-  every node projected), then a 3x3 majority filter takes out the 10 m speckle.
+  every node projected), then generalised at the scale of the data: a lone 10 m pixel goes and the staircase of
+  the data's pixels rounds into the outline of a painted map (generalise).
 Any network or decoding failure means the style's plain ground (and one log line), never another data source.
 """
 from __future__ import annotations
@@ -412,21 +413,33 @@ def _classes(job, headers, L, root):
     return out.reshape(job.shape)
 
 
-def majority(classes):
-    """3x3 majority filter (edges repeated, numpy sliding windows): every pixel takes the class that most of the nine
-    pixels around it (itself included) hold, and keeps its own on a tie with it. Speckle of one or two 10 m pixels
-    goes; edges and anything three pixels wide stay."""
+def generalise(classes, sigma):
+    """The classes generalised as a cartographer would: every class's mask (1 where it lies, 0 elsewhere) is blurred
+    by a Gaussian of sigma raster pixels (edges repeated), and every pixel takes the class that weighs most around it,
+    keeping its own on a tie with it (among other classes, a tie goes to the smaller code). A straight edge stays
+    where it is, a patch narrower than about 1.4 sigma goes, corners and the staircase of the data's pixels round."""
     c = np.asarray(classes, dtype=np.uint8)
-    p = np.pad(c, 1, mode="edge")
-    best, best_n = c.copy(), np.zeros(c.shape, np.int16)
-    own_n = np.zeros(c.shape, np.int16)
-    for k in np.unique(c):  # ascending: among other classes, a tie goes to the smaller code
-        windows = np.lib.stride_tricks.sliding_window_view(p == k, (3, 3))
-        count = sum(windows[..., dy, dx].astype(np.int16) for dy in range(3) for dx in range(3))
-        better = count > best_n
-        best[better], best_n[better] = k, count[better]
-        own_n[c == k] = count[c == k]
-    return np.where(own_n >= best_n, c, best).astype(np.uint8)
+    present = np.unique(c)
+    if len(present) < 2 or sigma <= 0:
+        return c.copy()
+    best, best_w = c.copy(), np.full(c.shape, -1.0, np.float32)
+    own_w = np.zeros(c.shape, np.float32)
+    for k in present:  # ascending
+        mask = c == k
+        w = _gauss(mask.astype(np.float32), sigma)
+        better = w > best_w
+        best[better], best_w[better] = k, w[better]
+        own_w[mask] = w[mask]
+    return np.where(own_w >= best_w, c, best).astype(np.uint8)
+
+
+def general_sigma(level, raster_px_m, raster_px_mm, dry=0.0):
+    """The sigma (raster pixels) of the generalisation of a map: GENERAL_DATA of the data's pixel (a lone 10 m pixel
+    goes, a patch of three stays with rounded corners), never under GENERAL_MIN raster pixels, and in a dry land up to
+    GENERAL_DRY_MM on paper, so the scattered scrub of a steppe does not print as a camouflage; never over
+    GENERAL_MAX_MM on paper (a map of a kilometre or two, where a data pixel is millimetres wide)."""
+    data = GENERAL_DATA * _pixel_m(level) / raster_px_m
+    return min(max(GENERAL_MIN, data, float(dry) * GENERAL_DRY_MM / raster_px_mm), GENERAL_MAX_MM / raster_px_mm)
 
 
 # --- colours --------------------------------------------------------------------------------------------------------
@@ -450,6 +463,9 @@ COLD = 0.03
 WATER_BLUE, STREAM_BLUE, WATER_MIX = "#a9cfe0", "#6ea6c4", 0.65
 DARK_MIX = 0.35  # on dark paper each colour lies this share of the way from the paper to its light-paper colour
 SMOOTH_PX = 1.0  # the Gaussian over the coloured raster (pixels at 150 ppi, 0.17 mm): class edges read painted
+# The generalisation of the classes (general_sigma): half a data pixel, at least one raster pixel, in a dry land up to
+# GENERAL_DRY_MM on paper, and never more than GENERAL_MAX_MM on paper
+GENERAL_DATA, GENERAL_MIN, GENERAL_DRY_MM, GENERAL_MAX_MM = 0.5, 1.0, 0.0, 1.0
 
 
 def _lstar(rgb):
@@ -500,10 +516,10 @@ def water(S, line=False):
 
 
 def _gauss(img, sigma):
-    """Separable Gaussian of sigma pixels over the first two axes (edges repeated)."""
+    """Separable Gaussian of sigma pixels over the first two axes (edges repeated), in the image's own float type."""
     r = max(1, math.ceil(3 * sigma))
     k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
-    k /= k.sum()
+    k = (k / k.sum()).astype(img.dtype)
     for axis in (0, 1):
         pad = [(0, 0)] * img.ndim
         pad[axis] = (r, r)
@@ -609,9 +625,10 @@ def prepare_many(maps, log=print, root=None):
             log(f"[ground] downloading {len(todo)} blocks, {size / 2 ** 20:.1f} MB (one time, cached)")
         _download(headers, every, root)
         for job, L, _ in plans:
-            classes = majority(_classes(job, headers, L, root))
-            dry = dryness(shares(classes), job.lat)
-            out[job.i] = LandCover(classes, L, dry)
+            raw = _classes(job, headers, L, root)
+            dry = dryness(shares(raw), job.lat)
+            sigma = general_sigma(L, job.px, job.map_w / job.shape[1], dry)
+            out[job.i] = LandCover(generalise(raw, sigma), L, dry)
             if dry > 0:
                 say(job.i, "a dry land: grass and scrub in the colours of a steppe, bare land in the ochre of a "
                            "desert")

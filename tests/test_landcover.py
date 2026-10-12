@@ -1,5 +1,5 @@
 """The ground of the trail print: the ESA WorldCover reader, the tiles and what may be requested, the resampling and
-the majority filter, the colours and the course ink over them, the credit line and the command line. All offline: a
+the generalisation, the colours and the course ink over them, the credit line and the command line. All offline: a
 fake server serves synthetic WorldCover-like files (conftest.py forbids the network)."""
 import io
 import math
@@ -243,7 +243,8 @@ def test_a_missing_tile_is_water_and_is_not_asked_for_again(monkeypatch, tmp_pat
     lon, _ = landcover._nodes(landcover._Map(0, extent, crs, 60.0))
     east = (lon >= -3.0).reshape(out[0].classes.shape)
     assert (out[0].classes[east] == landcover.WATER).mean() > 0.99, "the missing tile is water"
-    assert (out[0].classes[~east] != landcover.WATER).mean() > 0.99, "the tile that exists keeps its land"
+    west = (lon < -3.05).reshape(east.shape)  # clear of the coast, which the generalisation rounds
+    assert (out[0].classes[west] != landcover.WATER).mean() > 0.99, "the tile that exists keeps its land"
     sea = landcover.url((39, -3))
     assert [c for c in calls if c[0] == sea] == [(sea, 0, landcover.HEADER_BYTES - 1)], "asked once, its header"
     calls.clear()
@@ -383,26 +384,69 @@ def test_a_failing_server_is_one_line_and_no_ground(monkeypatch):
                         "to add the land cover"]
 
 
-# --- the majority filter and the colours ------------------------------------------------------------------------------
+# --- the generalisation and the colours -------------------------------------------------------------------------------
 
-def test_the_majority_filter_takes_out_speckle_and_keeps_edges_and_bands():
+def test_the_generalisation_takes_out_speckle_and_keeps_edges_and_bands():
     T, G, B = landcover.TREE, landcover.GRASS, landcover.BARE
     a = np.full((20, 20), T, np.uint8)
     a[:, 12:] = G  # a straight edge
     a[3, 3] = B  # one pixel
     a[8, 3:5] = B  # two
     a[14:17, 2:9] = B  # a band three pixels wide
-    out = landcover.majority(a)
+    out = landcover.generalise(a, landcover.GENERAL_MIN)  # a map whose data pixel is no larger than its raster's
     assert out[3, 3] == T and (out[8, 3:5] == T).all(), "speckle goes"
     rows = [r for r in range(20) if r not in (14, 15, 16)]
     assert (out[rows, :12] == T).all(), "the rest of the woods stays woods"
     assert (out[:, 12:] == G).all(), "a straight edge stays where it was"
     assert (out[14:17, 3:8] == B).all() and (out[15, 2:9] == B).all(), "a band three wide stays (but its corners)"
-    tie = np.array([[T, T, T], [G, B, G], [B, B, G]], np.uint8)  # the centre: three of each class
-    assert landcover.majority(tie)[1, 1] == B, "a tie with its own class keeps it"
-    tie2 = np.array([[T, T, T], [G, B, G], [G, G, T]], np.uint8)  # four G, four T, its own B once
-    assert landcover.majority(tie2)[1, 1] == T, "between two others, the smaller code"
-    assert landcover.majority(a).dtype == np.uint8 and landcover.majority(a[:1, :1]).shape == (1, 1)
+    assert landcover.generalise(a, 1.0).dtype == np.uint8 and landcover.generalise(a[:1, :1], 1.0).shape == (1, 1)
+    assert np.array_equal(landcover.generalise(a, 0.0), a)
+
+
+def test_the_generalisation_works_at_the_scale_of_the_data(monkeypatch):
+    for name, value in REAL.items():
+        monkeypatch.setattr(landcover, name, value)
+    T, G, B = landcover.TREE, landcover.GRASS, landcover.BARE
+    mm = 25.4 / 150  # a raster pixel on paper
+    assert landcover.general_sigma(0, 1.86, mm) == pytest.approx(0.5 * 9.21 / 1.86, abs=0.01), "Zermatt at A3"
+    assert landcover.general_sigma(3, 80.0, mm) == landcover.GENERAL_MIN, "a coarse level: one raster pixel"
+    assert landcover.general_sigma(0, 0.4, mm) == pytest.approx(landcover.GENERAL_MAX_MM / mm), "at most 1 mm"
+    for r in (5, 3):  # data pixels of 5 and 3 raster pixels: Zermatt and Tabernas at A3
+        sigma = landcover.general_sigma(0, landcover._pixel_m(0) / r, mm)
+        a = np.full((20 * r, 20 * r), G, np.uint8)
+        a[2 * r:3 * r, 2 * r:3 * r] = B  # one data pixel
+        a[8 * r:11 * r, 8 * r:11 * r] = T  # a patch of 3 x 3 data pixels
+        out = landcover.generalise(a, sigma)
+        assert not (out == B).any(), f"{r}: a lone data pixel goes"
+        assert (out[9 * r:10 * r, 9 * r:10 * r] == T).all() and 0.75 < (out == T).mean() / (a == T).mean() <= 1.0, r
+        assert out[8 * r, 8 * r] == G and out[11 * r - 1, 11 * r - 1] == G, f"{r}: its corners rounded"
+        i, j = np.mgrid[:40 * r, :40 * r]
+        stairs = np.where(i // r + j // r < 40, T, G).astype(np.uint8)  # a diagonal edge drawn in data pixels
+        edge = (landcover.generalise(stairs, sigma) == T).sum(axis=1)[5 * r:35 * r]
+        assert np.abs(np.diff((stairs == T).sum(axis=1)[5 * r:35 * r])).max() == r, "setup: steps of a data pixel"
+        assert np.abs(np.diff(edge)).max() <= 2, f"{r}: a straight diagonal, not a staircase"
+        assert abs(edge.mean() - (stairs == T).sum(axis=1)[5 * r:35 * r].mean()) < 1, f"{r}: and where it was"
+
+
+def test_the_print_generalises_at_the_scale_of_the_data(monkeypatch):
+    def land(lon, lat):
+        out = np.full(np.shape(lon), landcover.GRASS, np.uint8)
+        i, j = np.floor((42 - lat) * 64).astype(int), np.floor((lon + 6) * 64).astype(int)
+        out[(i == 96) & (j == 96)] = landcover.BARE  # one lone data pixel
+        out[(abs(i - 100) <= 1) & (abs(j - 100) <= 1)] = landcover.TREE  # a patch of 3 x 3
+        return out
+
+    _serve(monkeypatch, {(39, -6): _tile_cog((39, -6), land)})
+    raw = []
+    real = landcover.generalise
+    monkeypatch.setattr(landcover, "generalise", lambda c, sigma: raw.append(c) or real(c, sigma))
+    extent, crs = _utm_extent(40.45, -4.45, 70000, 60000)
+    job = landcover._Map(0, extent, crs, 60.0)
+    assert job.level() == 0 and landcover._pixel_m(0) / job.px > 8, "setup: a data pixel of eight raster pixels"
+    out = landcover.prepare_many([(extent, crs, 60.0)], log=lambda *_: None)[0]
+    assert (raw[0] == landcover.BARE).sum() > 40 and (raw[0] == landcover.TREE).sum() > 400, "setup: both drawn"
+    assert not (out.classes == landcover.BARE).any(), "the lone data pixel goes"
+    assert (out.classes == landcover.TREE).sum() > 0.75 * (raw[0] == landcover.TREE).sum(), "the patch stays"
 
 
 def test_the_colours_of_the_classes_on_light_and_dark_paper():
