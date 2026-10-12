@@ -19,7 +19,7 @@ That is the whole thing. Pinless finds the area where you run most, downloads th
 
 On strava.com: **Settings > My Account > Download or Delete Your Account > Request your archive**. Strava emails you a link to a zip, which can take a while. Pass the zip as it is; there is no need to unzip it.
 
-It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros, Suunto, Komoot or any app that exports GPX.
+It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros, Suunto, Komoot or any app that exports GPX, or with a single such file: one hike downloaded from a trail app, a route planner or a watch is an export of one activity.
 
 ## Install, step by step
 
@@ -82,8 +82,8 @@ Good to know:
 - Twelve styles (below), plus the earlier `classic` and `sport` layouts.
 - Routes coloured by how often you ran them, or by month, pace or elevation (`--color-by`).
 - An optional band of charts: kilometres per month, the time of day you run and the direction of your streets (`--graphs`).
-- An atlas of every city you ran in (`--layout atlas`) and a finisher print of one race (`--layout race`), both below.
-- Shaded terrain relief where your area has hills (`--relief shade`), from the Copernicus elevation model. It sits under the routes, quieter than the faintest of them, and stays off the water; flat cities get none.
+- An atlas of every city you ran in (`--layout atlas`), a finisher print of one race (`--layout race`) and a trail print of one hike or mountain route (`--layout trail`), all below.
+- Shaded terrain relief where your area has hills (`--relief shade`, on by default for the trail print), from the Copernicus elevation model. It sits under the routes, quieter than the faintest of them, and stays off the water; flat cities get none.
 - One poster for two people, one ink each (`--with`), below.
 
 ## Styles
@@ -164,6 +164,25 @@ The course coloured by your pace along it (or `--color-by elevation` or `single`
 
 A run that starts or ends at one of your private places (a long run from home) is refused, since one course drawn from your door points at it. Pick another run, or pass `--allow-private-ends`: the print then shows one unbroken stretch of the run that stays more than 1.6 to 2.6 zone radii (800 to 1300 m by default, drawn at random each time) from those places, wherever the run comes back to them, shortened by a random 200 to 800 m at each end that one lies beyond, and its distance, time, pace, profile, climb and splits describe only that stretch.
 
+## Trail: one route as a print
+
+<p align="center">
+  <img src="docs/trail.jpg" width="40%" alt="Trail print of a loop over Penalara in the Sierra de Guadarrama, with terrain relief, paths, named summits, the elevation profile and the route numbers">
+  <img src="docs/wall-trail.jpg" width="58%" alt="The trail print in an oak frame hung above a sideboard">
+</p>
+<p align="center"><sub>Demo route: a synthetic hike on real OpenStreetMap paths, with heights from the Copernicus elevation model (<code>tools/simulate_hike.py</code>), not a real person's walk. Try it with <code>pinless demo/hike_demo.gpx --layout trail --title "Peñalara"</code>.</sub></p>
+
+```bash
+pinless my-hike.gpx --layout trail --title "Peñalara" --name "Lucia"
+pinless export_12345678.zip --layout trail --activity 2025-07-12 --title "Peñalara"
+```
+
+One hike, trail run or mountain loop on a topographic map: terrain relief (on by default for this print, `--relief off` turns it off), paths and tracks drawn stronger than on a city poster, woods and water, and up to six named summits with their heights. Under the map, the elevation profile with its highest point marked, and the route's length, elevation gain, high point, route type (loop, out and back or point to point) and time; when the clock shows pauses longer than two minutes, the moving time. The route is drawn in the style's accent colour, or coloured by `--color-by elevation` or `pace`.
+
+The export can be a Strava export or a single GPX, TCX or FIT file, as a trail app, a route planner or a watch downloads it. Every activity type counts for this print (`--type Hike` narrows the choice), and `--activity` picks one as for the race print. The headline is the place unless you give one with `--title`: the activity's own name is not printed by default, because names often say where a walk starts.
+
+The privacy rules are the race print's. A route that starts or ends at one of your private places, learned from every other activity in the export whatever its type, is refused; with `--allow-private-ends`, only one unbroken stretch well clear of those places is drawn, and every number describes that stretch. A single file holds no other activities to learn your places from, so only `--zone` protects its ends: if it starts at your door, add `--zone` there. The log says so, and says when a loop is drawn as if it started at a public trailhead.
+
 ## For two: one map, one ink each
 
 <p align="center">
@@ -206,9 +225,9 @@ A heatmap of your runs shows where you live. Pinless removes that before drawing
 1. It trims the first and last 300 m of every activity.
 2. It finds every place where your runs often start or end (home, work, the gym) and deletes all points inside an irregular zone around each one, including runs that only pass by. In the atlas this is done city by city, the private places of every city also protect the others (a long run grouped elsewhere can still start at home), and where you ran only a few times a single loop run is enough to hide where it started (a hotel, a family home).
 3. It checks the result. If any line still touches a zone, nothing is exported.
-   The race print works on a single course and always draws one unbroken stretch of it. A course that only passes one of your private places is drawn whole, since a gap in it would point at the very place it hides. A run that starts or ends at a private place (within 1.5 zone radii, in its first or last 300 m) is refused unless you pass `--allow-private-ends`, which keeps a stretch well clear of that place, as above; a `--zone` is always kept clear the same way. For the race print, a private place is also where two or more of your other runs start or end close to where this one does, within 1.5 zone radii of its first or last 300 m (a new home, a holiday flat, before years of history learn it). A loop from a place none of your other runs starts from (a first run from a hotel) cannot be told from a race start: it is drawn whole, and Pinless says so, so you can add a `--zone` there.
-4. It never prints coordinates or start points, and nothing outside the visible map is written into the PNG, PDF or SVG. The edges of an area Pinless finds from your runs, and the crop of `--fit`, are rounded outward to a grid of about 1 km, so the map's frame does not mark where a run at the edge of the area started (a partner's lodging, a hotel). Dates are printed only on the race print, where they are the point, and never an activity's own name: the race headline is the city or what you write with `--title`. The favourite street is never one within 1 km of a private zone.
-5. Your files never leave your computer. Only the area is sent out: its bounding box (on that 1 km grid, when Pinless finds the area) to OpenStreetMap's Overpass service for the streets, and its centre, rounded to about 1 km, to OpenStreetMap's Nominatim for the city name (in the atlas, the same for each city). A second export (`--with`) adds no request. When the main Overpass server is busy, Pinless tries the public mirror overpass.private.coffee; to use another server, set `PINLESS_OVERPASS` to its API address. With `--relief shade`, Pinless also downloads elevation data from the Copernicus DEM on Amazon S3, which learns which 1-degree cell, and which block of about 30 km inside it, your map covers; never your routes. Without it nothing is sent there. Downloaded elevation is cached next to the map data. Like the map data, that cache shows on your computer which areas you made posters of; delete the cache folder (`~/.cache/pinless`, or the folder in `PINLESS_CACHE`) to remove it.
+   The race print works on a single course and always draws one unbroken stretch of it. A course that only passes one of your private places is drawn whole, since a gap in it would point at the very place it hides. A run that starts or ends at a private place (within 1.5 zone radii, in its first or last 300 m) is refused unless you pass `--allow-private-ends`, which keeps a stretch well clear of that place, as above; a `--zone` is always kept clear the same way. For the race print, a private place is also where two or more of your other runs start or end close to where this one does, within 1.5 zone radii of its first or last 300 m (a new home, a holiday flat, before years of history learn it). A loop from a place none of your other runs starts from (a first run from a hotel) cannot be told from a race start: it is drawn whole, and Pinless says so, so you can add a `--zone` there. The trail print follows the same rules, with the places learned from every other activity of the export whatever its type; a single GPX, TCX or FIT file has no others, so only `--zone` protects its ends, and Pinless says so.
+4. It never prints coordinates or start points, and nothing outside the visible map is written into the PNG, PDF or SVG. The edges of an area Pinless finds from your runs, and the crop of `--fit`, are rounded outward to a grid of about 1 km, so the map's frame does not mark where a run at the edge of the area started (a partner's lodging, a hotel). Dates are printed only on the race and trail prints, where they are the point, and never an activity's own name: their headline is the place or what you write with `--title`. The favourite street is never one within 1 km of a private zone.
+5. Your files never leave your computer. Only the area is sent out: its bounding box (on that 1 km grid, when Pinless finds the area) to OpenStreetMap's Overpass service for the streets, and its centre, rounded to about 1 km, to OpenStreetMap's Nominatim for the city name (in the atlas, the same for each city). A second export (`--with`) adds no request. When the main Overpass server is busy, Pinless tries the public mirror overpass.private.coffee; to use another server, set `PINLESS_OVERPASS` to its API address. With `--relief shade` (on by default for the trail print), Pinless also downloads elevation data from the Copernicus DEM on Amazon S3, which learns which 1-degree cell, and which block of about 30 km inside it, your map covers; never your routes. Without it nothing is sent there. Downloaded elevation is cached next to the map data. Like the map data, that cache shows on your computer which areas you made posters of; delete the cache folder (`~/.cache/pinless`, or the folder in `PINLESS_CACHE`) to remove it.
 
 Stray GPS fixes at the start or end of a file (a watch that opens with yesterday's position, then jumps) are dropped on import. A run that starts in one place and ends in another, once, only has its ends trimmed. This reduces the risk; it is not a guarantee of anonymity. A map of where you run still says something about you. Look at the poster before you share it, and hide more places with `--zone LAT,LON,RADIUS_M` (repeatable).
 
@@ -217,14 +236,15 @@ Stray GPS fixes at the start or end of a file (a watch that opens with yesterday
 | Option | What it does |
 |---|---|
 | `--year 2025` | Only that year |
-| `--type Run` | Activity type from the export (`Run`, `Ride`, `Walk`, `Hike`...) |
+| `--type Run` | Activity type from the export (`Run`, `Ride`, `Walk`, `Hike`...); `Run` by default, any type for the trail print |
 | `--place "Valencia, Spain"` | Use a named place instead of the area where you run most |
 | `--bbox S,W,N,E` | Use an exact box |
 | `--title`, `--name`, `--headline city\|name` | Headline text and inscription |
-| `--layout editorial\|atlas\|race`, `--max-cities 9`, `--activity longest`, `--allow-private-ends` | One city, one small map per city, or one race |
+| `--layout editorial\|atlas\|race\|trail`, `--max-cities 9`, `--activity longest`, `--allow-private-ends` | One city, one small map per city, one race, or one route on a topographic map |
+| `--layout trail` with a single GPX, TCX or FIT file | One hike from a trail app or a watch: only `--zone` protects its ends, since a single file has no other activities to learn your places from |
 | `--color-by heat\|single\|month\|pace\|elevation`, `--graphs` | What the line colour says; the band of charts |
 | `--style huella\|carbon\|midnight\|...\|my-style.json`, `--size A4\|A3\|50x70` | One of twelve styles, or your own style file; paper |
-| `--relief off\|shade` | Terrain relief under the map where the land is hilly (off by default) |
+| `--relief off\|shade` | Terrain relief under the map where the land is hilly (off by default, on for the trail print) |
 | `--lang en\|es` | Labels in English or Spanish |
 | `--out`, `--pdf`, `--svg`, `--preview` | Outputs |
 | `--zone LAT,LON,R` | Extra private zone, latitude first, radius in metres (with `--with`, it hides both people's lines). On a single map, a zone that does not touch the map stops the export: it would hide nothing |
@@ -249,7 +269,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The demo export in `demo/` is a synthetic runner generated on real OpenStreetMap streets of Madrid by `tools/simulate_runner.py`. Its true home and work points are stored apart in `demo/truth.json`, only so the tests can check that no published line comes near them. The partner demo (`demo/strava_export_madrid_partner_demo.zip`) is a second synthetic runner with their own home and workplace, who runs some weekend runs side by side with the first one, from the first one's door; its places and the number of runs together are in `demo/truth_partner.json`.
+The demo export in `demo/` is a synthetic runner generated on real OpenStreetMap streets of Madrid by `tools/simulate_runner.py`. Its true home and work points are stored apart in `demo/truth.json`, only so the tests can check that no published line comes near them. The partner demo (`demo/strava_export_madrid_partner_demo.zip`) is a second synthetic runner with their own home and workplace, who runs some weekend runs side by side with the first one, from the first one's door; its places and the number of runs together are in `demo/truth_partner.json`. The demo hike (`demo/hike_demo.gpx`) is a synthetic loop over Peñalara built by `tools/simulate_hike.py` on OpenStreetMap paths, with heights sampled from the Copernicus elevation model; the print itself never samples heights, it only shades the relief.
 
 The tests run offline. The street statistics use `tests/data/madrid_streets.json.gz`, a small extract of the named OpenStreetMap streets around the demo runs (ODbL). `tools/make_street_fixture.py` rebuilds it from the full Madrid graph, and its `--check` option confirms that it gives the same street counts as the full graph.
 

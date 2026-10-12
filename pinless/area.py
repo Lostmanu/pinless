@@ -5,7 +5,8 @@
 - geocode_bbox: the bounding box of a named place (one Nominatim request through osmnx).
 - city_name: the city/town near a point (one Nominatim reverse request, the point rounded to about 1 km), for the
   headline.
-- fetch_basemap: streets (walk network), green and water for a bbox, cached on disk by rounded bbox.
+- fetch_basemap: streets (walk network), green, water, coastline and named summits for a bbox, cached on disk by
+  rounded bbox.
 Only the bbox of the area (and a point rounded to about 1 km for the city name) is sent to OpenStreetMap services;
 activity files never leave the machine.
 """

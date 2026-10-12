@@ -423,3 +423,18 @@ def test_a_style_file_draws_the_trail(monkeypatch, tmp_path):
                      str(tmp_path / "t.png")]) == 0
     assert captured["style"] == "file:alpine" and render_editorial.STYLES["file:alpine"]["accent"] == "#d9480f"
     assert (tmp_path / "t.png").stat().st_size > 0
+
+
+def test_the_demo_hike_reads_as_one_synthetic_loop():
+    import os
+
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "demo", "hike_demo.gpx")
+    (act,), rep = ingest.read_export(path)
+    assert rep.used == 1 and act.type == "Hike" and act.ele and act.times
+    crs = trail.render.utm_crs(*np.median(np.asarray(act.lonlat), axis=0))
+    tr = trail.Transformer.from_crs(4326, crs, always_xy=True)
+    xy = np.column_stack(tr.transform(*np.asarray(act.lonlat).T))
+    assert render_trail.route_type(xy) == "loop" and 12.5 < render_trail.along(xy)[-1] / 1000 < 13.5
+    assert 2400 < render_trail.high_point(xy, act.ele)[1] < 2440, "over Penalara (2428 m)"
+    secs, paused = render_trail.moving_time(xy, act.times, act.ele)
+    assert paused and act.times[-1] - secs == pytest.approx(35 * 60, abs=120), "the two stops, 20 and 15 minutes"

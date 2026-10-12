@@ -14,7 +14,8 @@ description: Make a print-ready poster of a runner's year from their Strava expo
 - If the export path is unknown, ask the user for it. Do not search their disk for it.
 - Add `--relief shade` only when the user asks for terrain or relief; it also downloads Copernicus elevation data
   from Amazon S3, which learns the 1-degree cells around the map and, where the land is hilly, the blocks of about
-  30 km inside them that cover it (never the routes); without it nothing is sent there.
+  30 km inside them that cover it (never the routes); without it nothing is sent there. `--layout trail` has it on
+  by default: tell the user, and pass `--relief off` if they do not want it.
 
 ## Steps
 1. Make sure it is installed: `pinless --help`. If not: `pip install https://github.com/Lostmanu/pinless/archive/refs/heads/main.zip`.
@@ -31,6 +32,10 @@ description: Make a print-ready poster of a runner's year from their Strava expo
    `--graphs` adds charts of km per month, time of day and direction under the map (single-city poster only).
    For one race as a finisher print: `--layout race --activity <YYYY-MM-DD | latest | longest | id>`, with
    `--title "<race name>"` if they want its name printed (the activity's own name is never printed by default).
+   For one hike or mountain route on a topographic map: `--layout trail`, with the export or a single GPX, TCX or
+   FIT file the user names (do not open it), and `--title "<route name>"` if they want one; relief is on by default.
+   A single file has no other activities to learn private places from: ask whether it starts at home, and if so
+   ask the user for a `--zone` there.
    For one poster of two people (a couple, two friends), ask the user for both export paths and both names; take
    them from the user only, never from a search or from the files. Do not open either export. Run:
    `pinless "<first.zip>" --with "<second.zip>" --name "<FIRST NAME>" --with-name "<SECOND NAME>" --year <YEAR> --style <STYLE> --out poster.png --pdf poster.pdf --preview poster.jpg`
