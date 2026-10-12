@@ -134,7 +134,10 @@ def run(sel, pool, a, log=print):
                                lang=a.lang, color_by=color_by, pdf_path=a.pdf, svg_path=a.svg,
                                preview_path=a.preview, times=route.times, ele=route.ele, stretch=stretch,
                                relief=relief_, peaks=peaks)
-    if info["legend"]["mode"] != color_by:
+    if info["legend"].get("flat"):
+        log(f"[colour] this route climbs less than {render_trail.FLAT_M:.0f} m: drawn in one colour, since colouring "
+            f"it by elevation would show only the altimeter's noise")
+    elif info["legend"]["mode"] != color_by:
         log(f"[colour] this activity has no {color_by} data: drawn in one colour")
     log(f"[render] {a.out} · {title or 'no title'} · {info['km']:.2f} km · {len(info['summits'])} summits named")
     return 0

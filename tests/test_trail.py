@@ -246,9 +246,9 @@ def _texts(monkeypatch):
     return boxes
 
 
-def _page(tmp_path, name="t.png", **kw):
+def _page(tmp_path, name="t.png", ele=None, **kw):
     xy = _loop(0, 0, 2000, n=600)
-    act = _hike(xy)
+    act = _hike(xy, ele=ele)
     extent = race.frame_course([(0, LineString(xy))], render_trail.map_aspect(), pad_frac=0.1)
     args = dict(dpi=20, title="Peñalara", place="Comunidad de Madrid, Spain", name="Lucia", date=START)
     args.update(kw)
@@ -281,6 +281,21 @@ def test_spanish_labels(monkeypatch, tmp_path):
     texts = {b[0] for b in boxes}
     assert {"RUTA", "CIRCULAR", "TIPO DE RUTA", "COTA MÁXIMA", "DESNIVEL POSITIVO", "DISTANCIA", "TIEMPO",
             "CADA RUTA DEJA HUELLA.", "PERFIL", "JUL 2025"} <= texts
+
+
+def test_the_elevation_key_and_the_profile_give_one_range_and_a_flat_route_is_not_coloured(monkeypatch, tmp_path):
+    boxes = _texts(monkeypatch)
+    info, act, xy = _page(tmp_path, color_by="elevation")  # the drawn piece leaves out 30 points at each end
+    e = render_trail.profile(xy, act.ele)[1]
+    assert (info["legend"]["lo"], info["legend"]["hi"]) == (pytest.approx(e.min()), pytest.approx(e.max()))
+    texts = [b[0] for b in boxes]
+    assert f"{e.min():.0f} – {e.max():.0f} m" in texts and f"{e.min():.0f} m" in texts and f"{e.max():.0f} m" in texts
+    rng = np.random.default_rng(5)
+    flat = list(2.0 + rng.normal(0, 0.6, 600))  # a walk in a river delta: the altimeter's noise and nothing else
+    info, _, _ = _page(tmp_path, color_by="elevation", ele=flat)
+    assert info["legend"] == {"mode": "single", "flat": True}
+    info, _, _ = _page(tmp_path, color_by="elevation", ele=list(2.0 + np.linspace(0, 25, 600)))
+    assert info["legend"]["mode"] == "elevation", "a climb of 25 m is coloured"
 
 
 def test_summits_on_the_page_stay_inside_the_map(monkeypatch, tmp_path):

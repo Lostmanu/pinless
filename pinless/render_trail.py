@@ -40,6 +40,8 @@ LOOP_M = 250.0  # a stretch whose ends are this close is a loop (unless its seco
 RETRACE_M, RETRACE_SHARE = 40.0, 0.70  # out and back: this share of the second half within this of the first
 PAUSE_S, PAUSE_MPS, WINDOW_S = 120.0, 0.3, 60.0  # a pause: longer than PAUSE_S below PAUSE_MPS, over WINDOW_S
 SMOOTH_S, STEP_S = 20.0, 5.0  # the track along which a pause must be slow too: averaged, then sampled
+FLAT_M = 20.0  # a stretch that climbs less than this from its lowest to its highest point is not coloured by height
+PROFILE_SPAN_M = 50.0  # the profile band shows at least this many metres of height
 MAX_PEAKS = 6
 PEAK_PT = 5.4  # summit labels (pt x k)
 CASING_PT = 3.4  # the course's casing in the paper colour (pt x k), as on the race print
@@ -460,10 +462,13 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
             values, cmap = 1 - np.clip((v - lo) / max(hi - lo, 1e-6), 0, 1), heat  # faster = stronger
             legend = {"mode": "pace", "lo": lo, "hi": hi}
         elif color_by == "elevation" and ele:
-            v = np.interp(at, dist, profile(xy, ele)[1])
-            lo, hi = float(v.min()), float(v.max())
-            values, cmap = np.clip((v - lo) / max(hi - lo, 1e-6), 0, 1), heat
-            legend = {"mode": "elevation", "lo": lo, "hi": hi}
+            e = profile(xy, ele)[1]  # the key's ends are the profile's: the lowest and highest of the stretch
+            lo, hi = float(e.min()), float(e.max())
+            if hi - lo < FLAT_M:  # a flat route: colouring it would colour the altimeter's noise
+                legend = {"mode": "single", "flat": True}
+            else:
+                values, cmap = np.clip((np.interp(at, dist, e) - lo) / (hi - lo), 0, 1), heat
+                legend = {"mode": "elevation", "lo": lo, "hi": hi}
     if values is None:
         values = np.zeros(len(segments))
     if len(segments):  # a casing in the paper colour lifts the course off the paths
@@ -482,7 +487,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     hi_point = None
     if ele:
         d, e = profile(xy, ele)
-        span = max(e.max() - e.min(), 10.0)
+        span = max(e.max() - e.min(), PROFILE_SPAN_M)  # a flat route stays flat, not a sawtooth of altimeter noise
         base, top = e.min() - 0.15 * span, e.max() + 0.30 * span
         pax = fig.add_axes([LEFT * k / wmm, 1 - (PROFILE_TOP + PROFILE_H) * k / hmm, (RIGHT - LEFT) * k / wmm,
                             PROFILE_H * k / hmm], zorder=2)
