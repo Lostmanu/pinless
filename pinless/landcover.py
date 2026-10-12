@@ -661,7 +661,8 @@ def prepare_many(maps, log=print, root=None):
     """One LandCover (or None) per map of a print. maps: [(extent, crs, map_w_mm)]; nothing else about the print
     (tracks, zones, activities) reaches this function. Any network or decoding failure means the style's ground on
     the whole print and one log line naming only the kind of failure."""
-    log("[ground] land cover from ESA WorldCover (Amazon S3; only the 3-degree tiles around the map are requested)")
+    log("[ground] land cover from ESA WorldCover (Amazon S3 learns the 3-degree tiles around the map and the blocks "
+        "that cover it, from about 9 by 7 km at 40 degrees of latitude, narrower nearer the poles; never your routes)")
     out = [None] * len(maps)
 
     def say(i, text):

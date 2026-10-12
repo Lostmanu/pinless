@@ -17,8 +17,9 @@ description: Make a print-ready poster of a runner's year from their Strava expo
   30 km inside them that cover it (never the routes); without it nothing is sent there. `--layout trail` has it on
   by default: tell the user, and pass `--relief off` if they do not want it.
 - `--layout trail` also paints the map's ground in the colours of the land from ESA WorldCover on Amazon S3, which
-  learns only the 3-degree tiles around the map and the blocks inside them (never the routes); pass `--ground style`
-  if the user does not want that request or prefers the plain paper.
+  learns only the 3-degree tiles around the map and the blocks inside them that cover it, about 9 by 7 km at 40
+  degrees of latitude (never the routes); pass `--ground style` if the user does not want that request or prefers
+  the plain paper.
 
 ## Steps
 1. Make sure it is installed: `pinless --help`. If not: `pip install https://github.com/Lostmanu/pinless/archive/refs/heads/main.zip`.

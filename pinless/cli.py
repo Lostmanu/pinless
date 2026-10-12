@@ -98,8 +98,9 @@ def main(argv=None):
     p.add_argument("--ground", default=None, choices=["nature", "style"],
                    help="trail: nature (default) paints the map's ground in the colours of the land, green woods "
                         "and meadows, wheat fields, stone rock, white snow, straw and orange in a dry land, from ESA "
-                        "WorldCover on Amazon S3 (only the 3-degree tiles around the map are requested; downloaded "
-                        "once, cached); style keeps the plain paper of the style")
+                        "WorldCover on Amazon S3, which learns the 3-degree tiles around the map and the blocks that "
+                        "cover it (from about 9 by 7 km at 40 degrees of latitude; never your routes); downloaded "
+                        "once, cached; style keeps the plain paper of the style")
     p.add_argument("--with", dest="with_export", default=None, metavar="EXPORT",
                    help="a second person's Strava export: one poster for two, one ink each (editorial)")
     p.add_argument("--with-name", default="", help="the second person's name (required with --with)")

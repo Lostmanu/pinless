@@ -199,8 +199,12 @@ def test_the_full_rectangle_is_requested_and_logged(monkeypatch, tmp_path):
     logs = []
     out = landcover.prepare_many([(extent, crs, 60.0)], log=logs.append)
     assert isinstance(out[0], landcover.LandCover) and out[0].level == 0
-    assert logs[0] == ("[ground] land cover from ESA WorldCover (Amazon S3; only the 3-degree tiles around the map "
-                       "are requested)")
+    assert logs[0] == ("[ground] land cover from ESA WorldCover (Amazon S3 learns the 3-degree tiles around the map "
+                       "and the blocks that cover it, from about 9 by 7 km at 40 degrees of latitude, narrower nearer "
+                       "the poles; never your routes)")
+    block_deg = REAL["BLOCK"] * landcover.TILE_DEG / REAL["WIDTH0"]  # what that line says of the real blocks
+    assert round(block_deg * relief.M_PER_DEG_LAT / 1000) == 9
+    assert round(block_deg * relief.M_PER_DEG_LAT * math.cos(math.radians(40)) / 1000) == 7
     hdr = landcover.read_header(files[(39, -6)], (39, -6))
     lv = hdr.levels[0]
     starts = {first: i for i, first in enumerate(lv.offsets)}
