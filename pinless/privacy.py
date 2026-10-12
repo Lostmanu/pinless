@@ -317,10 +317,12 @@ def clip_to_extent(pieces, extent, margin_frac=0.0):
     visible map, where a clip path would hide it but not remove it. The renderers call it themselves."""
     x0, x1, y0, y1 = extent
     mx, my = (x1 - x0) * margin_frac, (y1 - y0) * margin_frac
-    frame = Polygon([(x0 - mx, y0 - my), (x1 + mx, y0 - my), (x1 + mx, y1 + my), (x0 - mx, y1 + my)])
     out = []
     for i, line in pieces:
-        cut = line.intersection(frame)
+        # cut by the rectangle alone, without noding the line: a course that crosses itself (a stop where the fix
+        # wandered for minutes crosses itself thousands of times) keeps its own vertices, one piece where it stays
+        # in the map, instead of breaking at every crossing
+        cut = shapely.clip_by_rect(line, x0 - mx, y0 - my, x1 + mx, y1 + my)
         for part in getattr(cut, "geoms", [cut]):
             if isinstance(part, LineString) and not part.is_empty and part.length > 0:
                 out.append((i, part))
