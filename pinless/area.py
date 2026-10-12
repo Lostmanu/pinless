@@ -5,7 +5,8 @@
 - geocode_bbox: the bounding box of a named place (one Nominatim request through osmnx).
 - city_name: the city/town near a point (one Nominatim reverse request, the point rounded to about 1 km), for the
   headline.
-- fetch_basemap: streets (walk network), green and water for a bbox, cached on disk by rounded bbox.
+- fetch_basemap: streets (walk network), green, water, coastline and named summits for a bbox, cached on disk by
+  rounded bbox.
 Only the bbox of the area (and a point rounded to about 1 km for the city name) is sent to OpenStreetMap services;
 activity files never leave the machine.
 """
@@ -191,9 +192,21 @@ def place_names(lat: float, lon: float, lang: str = "en", timeout=20):
 
     The point is rounded to 0.01 degrees (about 1 km) before it is sent, answers are cached on disk, and requests are
     spaced at least 1.1 s apart (Nominatim usage policy)."""
+    return _lookup(lat, lon, lang, timeout, region=False)
+
+
+def place_region(lat: float, lon: float, lang: str = "en", timeout=20):
+    """(city, region, country) at a point, or ('', '', '') if the lookup fails: the same request as place_names
+    (the point rounded to about 1 km), with the region (state or province) as well, for a print in the hills where
+    the nearest municipality says little."""
+    return _lookup(lat, lon, lang, timeout, region=True)
+
+
+def _lookup(lat, lon, lang, timeout, region):
     import time
 
-    key = f"{lat:.2f},{lon:.2f},{lang}"
+    key = f"{lat:.2f},{lon:.2f},{lang}" + (",region" if region else "")
+    empty = ("", "", "") if region else ("", "")
     path = os.path.join(cache_root(), "places.json")
     try:
         with open(path, encoding="utf-8") as f:
@@ -213,10 +226,14 @@ def place_names(lat: float, lon: float, lang: str = "en", timeout=20):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.load(r)
     except Exception:
-        return ("", "")
+        return empty
     adr = d.get("address", {})
     city = next((adr[k] for k in ("city", "town", "village", "municipality", "county") if adr.get(k)), "")
-    out = (city or d.get("name", "") or "", adr.get("country", ""))
+    city = city or d.get("name", "") or ""
+    if region:
+        out = (city, next((adr[k] for k in ("state", "region", "province") if adr.get(k)), ""), adr.get("country", ""))
+    else:
+        out = (city, adr.get("country", ""))
     known[key] = list(out)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(known, f, ensure_ascii=False, indent=0)
@@ -341,13 +358,19 @@ LAYERS = (
     ("water", {"natural": ["water"], "waterway": ["river", "riverbank", "canal"], "water": True}),
     # OSM has no sea polygons: the sea (and estuaries like the Tagus) is whatever lies on the right of the coastline
     ("coast", {"natural": "coastline"}),
+    # named summits for the trail print (points with name and ele)
+    ("peaks", {"natural": "peak"}),
 )
+OPTIONAL = {"coast": "[osm] the coastline could not be fetched now: this map has no sea; run again later to add it",
+            "peaks": "[osm] the summits could not be fetched now: this map names none; run again later to add them"}
+ON_REQUEST = {"peaks"}  # only the trail print names summits: no other print asks Overpass for them
 
 
-def fetch_basemap(bbox, root=None, log=print):
+def fetch_basemap(bbox, root=None, log=print, extra=()):
     """Download (once) and cache the OSM layers for a bbox. Returns the folder that render.load_basemap reads.
     A layer is cached as empty only when OSM answers that there is nothing of that kind in the box; a server error
-    stops instead, so a busy server never leaves a map without its parks or water."""
+    stops instead, so a busy server never leaves a map without its parks or water. The layers of ON_REQUEST (the
+    summits) are fetched only when named in extra, so a city poster on a cache made before them stays offline."""
     import osmnx as ox
     from osmnx._errors import InsufficientResponseError
 
@@ -372,24 +395,27 @@ def fetch_basemap(bbox, root=None, log=print):
         ox.save_graphml(G, gpath)
     for nombre, tags in LAYERS:
         path = os.path.join(folder, f"{nombre}.gpkg")
-        if os.path.exists(path):
+        if os.path.exists(path) or (nombre in ON_REQUEST and nombre not in extra):
             continue
         log(f"[osm] downloading {nombre} for the area (one time, cached)...")
         try:
             gdf = _overpass(lambda: ox.features_from_bbox(box_, tags=tags), log)
-            kinds = ["LineString", "MultiLineString"] + ([] if nombre == "coast" else ["Polygon", "MultiPolygon"])
+            kinds = {"coast": ["LineString", "MultiLineString"], "peaks": ["Point"]}.get(
+                nombre, ["LineString", "MultiLineString", "Polygon", "MultiPolygon"])
             gdf = gdf[gdf.geometry.type.isin(kinds)]
-            keep = [c for c in ("leisure", "landuse", "natural", "waterway", "water", "name") if c in gdf.columns]
+            cols = ("name", "ele") if nombre == "peaks" else ("leisure", "landuse", "natural", "waterway", "water",
+                                                               "name")
+            keep = [c for c in cols if c in gdf.columns]
             gdf = gdf[keep + ["geometry"]].reset_index(drop=True)
         except InsufficientResponseError:  # OSM answered: nothing of that kind in the area
             import geopandas as gpd
             gdf = gpd.GeoDataFrame({"name": []}, geometry=[], crs=4326)
         except RuntimeError:
-            if nombre != "coast":
+            if nombre not in OPTIONAL:
                 raise
-            # the coast only paints the sea: without a server now, the map is drawn without it and nothing is
-            # cached, so the next run tries again
-            log("[osm] the coastline could not be fetched now: this map has no sea; run again later to add it")
+            # the coast only paints the sea and the summits only name the hills: without a server now, the map is
+            # drawn without them and nothing is cached, so the next run tries again
+            log(OPTIONAL[nombre])
             continue
         gdf.to_file(path, driver="GPKG")
     return folder

@@ -130,6 +130,22 @@ def test_numbers_count_every_city_and_the_maps_skip_the_ones_privacy_empties(mon
     assert all(c.pieces for c in drawn)
 
 
+def test_clip_keeps_a_course_that_crosses_itself_in_one_piece_with_its_own_vertices():
+    import numpy as np
+
+    rng = np.random.default_rng(3)
+    walk = np.column_stack([np.linspace(0, 3000, 600), np.zeros(600)])
+    stop = walk[300] + rng.normal(0, 3, (600, 2))  # ten minutes standing, the fix wandering: thousands of crossings
+    course = np.vstack([walk[:300], stop, walk[300:], [[3000, 900], [1500, 900], [1500, 100]]])  # out and in
+    out = privacy.clip_to_extent([(7, LineString(course))], (-100, 3100, -500, 500))
+    assert [i for i, _ in out] == [7, 7], "two pieces: the course leaves the map once and comes back"
+    first = np.asarray(out[0][1].coords)
+    assert len(first) == 1201 and np.array_equal(first[:1200], course[:1200]), "not broken at its own crossings"
+    for _, part in out:
+        x0, y0, x1, y1 = part.bounds
+        assert -100 - 1e-6 <= x0 and x1 <= 3100 + 1e-6 and -500 - 1e-6 <= y0 and y1 <= 500 + 1e-6
+
+
 def test_clip_keeps_only_what_is_inside_the_map():
     pieces = [(1, LineString([(-100, 0), (1100, 0)])), (2, LineString([(2000, 0), (3000, 0)]))]
     out = privacy.clip_to_extent(pieces, (0, 1000, -500, 500))
