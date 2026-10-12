@@ -232,6 +232,7 @@ def _towards(a, b, t):
     return to_hex(np.clip(a + (b - a) * t, 0, 1))
 
 
+WOODS = 1.25  # woods and meadows: a step further from the paper than on a city poster; the relief carries the rest
 TRAIL_INK = 0.55  # paths and tracks: this far from the paper towards the small-text colour
 TRAIL_W = 0.34  # their width (pt x k): about twice a side street's on a city poster
 FOOTPATH_DASH = (0, (5.0, 2.6))  # footpaths dashed (in line widths), as on a topographic map; tracks solid
@@ -252,7 +253,7 @@ def trail_style(S):
     that read at least as strongly (ROADS, trail_roads), and a stronger relief than on a city poster (trail_relief),
     since the course is one bold line."""
     out = dict(S)
-    out["green"] = _towards(S["bg"], S["green"], 1.8)
+    out["green"] = _towards(S["bg"], S["green"], WOODS)
     out["trail"] = _towards(S["bg"], S["sub"], TRAIL_INK)
     trail_l = abs(_lstar(to_rgb(out["trail"])) - _lstar(to_rgb(S["bg"])))
     course_l = abs(_lstar(to_rgb(S["accent"])) - _lstar(to_rgb(S["bg"])))

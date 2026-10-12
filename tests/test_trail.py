@@ -425,6 +425,18 @@ def test_the_trail_map_draws_its_paths_over_a_stronger_relief():
     plt.close(fig)
 
 
+def test_woods_are_only_a_step_stronger_than_on_a_city_poster():
+    """The land OpenStreetMap leaves without a wood or a meadow (the treeless summits, the very subject of the print)
+    must not read as a blank cut-out: the woods stay close to the paper, and the relief carries the terrain."""
+    from matplotlib.colors import to_rgb
+
+    for name, S in render_editorial.STYLES.items():
+        bg = render_editorial._lstar(to_rgb(S["bg"]))
+        poster = abs(render_editorial._lstar(to_rgb(S["green"])) - bg)
+        trail_ = abs(render_editorial._lstar(to_rgb(render_trail.trail_style(S)["green"])) - bg)
+        assert poster <= trail_ <= 1.35 * poster + 0.3, name
+
+
 def _lstar_image(path):
     from PIL import Image
 
