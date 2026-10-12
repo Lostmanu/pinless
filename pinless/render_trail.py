@@ -20,7 +20,7 @@ import pandas as pd
 import shapely
 from matplotlib import patheffects
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap, to_hex, to_rgb
-from matplotlib.patches import PathPatch, Polygon as MPolygon
+from matplotlib.patches import PathPatch, Polygon as MPolygon, Rectangle
 from shapely.geometry import LineString, box as _box
 
 from . import landcover, privacy
@@ -310,6 +310,7 @@ def trail_relief(S, ground=None):
 # --- the ground: the land cover under the map -------------------------------------------------------------------------
 
 GROUND_Z = 0.5  # the land cover: over the paper, under the water (2), the relief (3.5) and everything else
+FRAME_PT, FRAME_Z = 0.45, 4.7  # the hairline round a map with the land cover: the page's rules, under the course
 SIGNIFICANT = 0.05  # a ground colour that covers this share of the map sets how strong paths and roads must be
 # a course whose accent lies closer than COURSE_DE (CIEDE2000) to the ground under SINK_SHARE or more of its length
 # takes a route ink instead. Among the built-in styles: the forest style's deep green on tree cover (24 in a green
@@ -341,6 +342,13 @@ def draw_ground(ax, ground, extent, S, map_w_mm):
     colours = landcover.palette(S, ground.dry, land)
     return {"colours": {k: colours[k] for k in shares}, "shares": shares, "land": land,
             "mean": tuple(float(v) for v in rgb.reshape(-1, 3).mean(axis=0) / 255)}
+
+
+def frame_map(ax, S, k):
+    """A hairline round the map box in the colour and weight of the page's rules: over the land cover the map is a
+    coloured rectangle, and snow or pale rock at its edge would melt into the paper without one."""
+    ax.add_patch(Rectangle((0, 0), 1, 1, transform=ax.transAxes, fill=False, edgecolor=S["rule"],
+                           linewidth=FRAME_PT * k, joinstyle="miter", zorder=FRAME_Z, clip_on=False))
 
 
 def ground_style(TS, S, painted):
@@ -602,6 +610,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     streets, roads, trails = split_network(basemap)
     painted = draw_ground(ax, ground, extent, S, map_w) if ground is not None else None
     if painted is not None:  # the land cover already says where the woods and meadows are
+        frame_map(ax, S, k)
         TS = ground_style(TS, S, painted)
         streets = (streets[0], streets[1].iloc[:0], streets[2])
     draw_basemap(ax, streets, extent, TS, k, map_w)

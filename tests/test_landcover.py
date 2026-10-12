@@ -878,6 +878,25 @@ def test_the_ground_is_one_image_of_the_map_box_and_nothing_spills(tmp_path):
         _trail_page(tmp_path, classes=np.zeros((shape[0] + 1, shape[1]), np.uint8))
 
 
+def test_a_map_over_the_land_cover_has_a_hairline_frame(tmp_path):
+    from matplotlib.colors import to_rgb
+    S = render_editorial.STYLES["ocean"]
+    assert landcover.delta_e(landcover.palette(S)[landcover.SNOW], S["bg"]) < 3, "setup: snow as white as the paper"
+    paper = landcover._lstar(to_rgb(S["bg"]))
+    for classes, framed in ((landcover.SNOW, True), (False, False)):
+        _trail_page(tmp_path, style="ocean", size="A4", classes=classes, name="f.png", dpi=300)
+        png = np.asarray(Image.open(tmp_path / "f.png").convert("RGB")) / 255
+        k = png.shape[1] / 297  # pixels per layout millimetre
+        x0, x1 = render_trail.LEFT * k, render_trail.RIGHT * k
+        y0, y1 = render_trail.MAP_TOP * k, (render_trail.MAP_TOP + render_trail.MAP_H) * k
+        my, mx = int((y0 + y1) / 2), int(x0 + 0.1 * (x1 - x0))  # clear of the course, in the middle
+        strips = {"left": png[my, int(x0) - 4:int(x0) + 5], "right": png[my, int(x1) - 4:int(x1) + 5],
+                  "top": png[int(y0) - 4:int(y0) + 5, mx], "bottom": png[int(y1) - 4:int(y1) + 5, mx]}
+        for side, strip in strips.items():
+            darkest = min(landcover._lstar(c) for c in strip)
+            assert (paper - darkest > 3) == framed, f"{side}: a frame {'' if framed else 'only '}round the ground"
+
+
 def _foot_spy(monkeypatch):
     from pinless import atlas
     boxes = []
