@@ -311,10 +311,13 @@ def trail_relief(S, ground=None):
 
 GROUND_Z = 0.5  # the land cover: over the paper, under the water (2), the relief (3.5) and everything else
 SIGNIFICANT = 0.05  # a ground colour that covers this share of the map sets how strong paths and roads must be
-# a course whose accent lies closer than this (CIEDE2000) to the ground under most of it takes a route ink instead:
-# the forest style's deep green on tree cover (24) and the sunset orange on bare land (25) sink into it; every other
-# accent of the built-in styles lies 30 or more from every ground colour of its palette
+# a course whose accent lies closer than COURSE_DE (CIEDE2000) to the ground under SINK_SHARE or more of its length
+# takes a route ink instead. Among the built-in styles: the forest style's deep green on tree cover (24) and on
+# mangroves (19), and the sunset orange on the bare land of a dry land (25 at dryness 1, 29 at 0.5; 30 or more below
+# about 0.4) sink into it; every other accent lies 30 or more from every ground colour of its palette
 COURSE_DE = 30.0
+SINK_SHARE = 0.15
+UNDER_SHARE = 0.05  # a route ink keeps COURSE_DE from every ground colour under this share of the course or more
 FOOT_STEP, FOOT_LIFT = 3.0, 2.0  # three credit lines: their spacing (A3-grid mm), and how far the line above rises
 ROUTE_INKS = {False: (("deep red", "#a8231c"), ("deep blue", "#1f4f96"), ("black", "#141414")),  # light paper
               True: (("red", "#ff6b57"), ("blue", "#7cc3ff"), ("white", "#ffffff"))}  # dark paper
@@ -380,21 +383,29 @@ def ground_under(classes, extent, segments):
 
 
 def course_ink(S, colours, under):
-    """(ink, note): the style's accent, unless it lies closer than COURSE_DE (CIEDE2000) to the ground colour under
-    most of the course (it would sink into it); then the first route ink of ROUTE_INKS that lies at least COURSE_DE
-    from that colour (else the one that lies farthest), and a note for the log that says why (without any place)."""
+    """(ink, note): the style's accent, unless it lies closer than COURSE_DE (CIEDE2000) to the ground colours under
+    SINK_SHARE or more of the course's length (it would sink into them there); then the first route ink of
+    ROUTE_INKS that lies at least COURSE_DE from every ground colour under UNDER_SHARE or more of the course (else the
+    one whose nearest such colour lies farthest), and a note for the log that says why (without any place).
+    under: {class: share of the course's length} (ground_under)."""
     if not under:
         return S["accent"], None
-    dominant = max(sorted(under), key=lambda c: under[c])
-    ground = colours[dominant]
-    d = landcover.delta_e(S["accent"], ground)
-    if d >= COURSE_DE:
+    gap = {c: landcover.delta_e(S["accent"], colours[c]) for c in sorted(under)}
+    sink = {c: under[c] for c in gap if gap[c] < COURSE_DE}
+    if sum(sink.values()) < SINK_SHARE:
         return S["accent"], None
+    worst = max(sorted(sink), key=lambda c: sink[c])  # the ground it would sink into along most of the course
+    seen = [colours[c] for c in gap if under[c] >= UNDER_SHARE] or [colours[worst]]
+
+    def nearest(ink):
+        return min(landcover.delta_e(ink, g) for g in seen)
+
     inks = ROUTE_INKS[_lstar(to_rgb(S["bg"])) < 50]
-    name, ink = next((t for t in inks if landcover.delta_e(t[1], ground) >= COURSE_DE),
-                     max(inks, key=lambda t: landcover.delta_e(t[1], ground)))
-    return ink, (f"the course is drawn in {name}: the style's accent would sink into the {landcover.NAMES[dominant]} "
-                 f"under most of it (colour difference {d:.0f}, below {COURSE_DE:.0f})")
+    name, ink = next((t for t in inks if nearest(t[1]) >= COURSE_DE), max(inks, key=lambda t: nearest(t[1])))
+    share = sum(sink.values())
+    where = "most of it" if share > 0.5 else f"{round(share * 100)} % of it"
+    return ink, (f"the course is drawn in {name}: the style's accent would sink into the {landcover.NAMES[worst]} "
+                 f"under {where} (colour difference {gap[worst]:.0f}, below {COURSE_DE:.0f})")
 
 
 def split_network(basemap):

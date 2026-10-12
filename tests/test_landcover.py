@@ -633,6 +633,43 @@ def test_the_ground_under_the_course_is_measured_along_it():
     assert under[landcover.TREE] == pytest.approx(800 / 1600, abs=0.01)
     assert under[landcover.BARE] == pytest.approx(800 / 1600, abs=0.01)
     assert render_trail.ground_under(classes, extent, np.empty((0, 2, 2))) == {}
+    north = np.full((100, 200), landcover.GRASS, np.uint8)
+    north[:30] = landcover.TREE  # woods in the north (row 0), meadow to the south
+    along = np.array([[[100.0, 900.0], [1900.0, 900.0]], [[1900.0, 900.0], [1900.0, 200.0]]])  # 1800 m north, 700 m
+    under = render_trail.ground_under(north, extent, along)
+    assert under[landcover.TREE] == pytest.approx((1800 + 200) / 2500, abs=0.01), "the north is the top row"
+    assert under[landcover.GRASS] == pytest.approx(500 / 2500, abs=0.01)
+
+
+def test_the_course_ink_weighs_the_ground_along_the_whole_course():
+    T, G, B = landcover.TREE, landcover.GRASS, landcover.BARE
+    red = dict(render_trail.ROUTE_INKS[False])["deep red"]
+    forest = render_editorial.STYLES["forest"]
+    pal = landcover.palette(forest)
+    assert landcover.delta_e(forest["accent"], pal[T]) < render_trail.COURSE_DE <= landcover.delta_e(forest["accent"],
+                                                                                                    pal[G]), "setup"
+    for under, want in (({T: 0.8, G: 0.2}, red), ({T: 0.2, G: 0.8}, red), ({T: 0.15, G: 0.85}, red),
+                        ({T: 0.1, G: 0.9}, forest["accent"]), ({G: 1.0}, forest["accent"])):
+        assert render_trail.course_ink(forest, pal, under)[0] == want, under
+    # the ground under the demo courses, measured on the real prints: Penalara with the forest style, where the
+    # woods are under a fifth of the course, and Tabernas with the sunset style, where the orange bare land is
+    penalara = {G: 0.641, T: 0.193, landcover.SHRUB: 0.099, B: 0.067}
+    ink, why = render_trail.course_ink(forest, pal, penalara)
+    assert ink == red and why.startswith("the course is drawn in deep red: the style's accent would sink into the "
+                                         "tree cover under 19 % of it"), why
+    sunset = render_editorial.STYLES["sunset"]
+    tabernas = {G: 0.617, B: 0.253, landcover.BUILT: 0.125, landcover.SHRUB: 0.005}
+    dry = landcover.palette(sunset, 1.0)
+    ink, why = render_trail.course_ink(sunset, dry, tabernas)
+    assert ink == red and "bare land under 25 % of it" in why, why
+    assert all(landcover.delta_e(ink, dry[k]) >= render_trail.COURSE_DE for k in tabernas), "clear of all of them"
+    assert render_trail.course_ink(sunset, landcover.palette(sunset, 0.0), tabernas)[0] == sunset["accent"], \
+        "the same course in a green land keeps the accent"
+    from matplotlib.colors import to_rgb
+    reddish = {**pal, B: to_rgb("#b02a20")}  # a ground the deep red would sink into in turn
+    blue = dict(render_trail.ROUTE_INKS[False])["deep blue"]
+    assert render_trail.course_ink(forest, reddish, {T: 0.6, B: 0.4})[0] == blue, "clear of every ground under it"
+    assert render_trail.course_ink(forest, reddish, {T: 0.97, B: 0.03})[0] == red, "but a few metres of it"
 
 
 def test_paths_and_roads_keep_their_contrast_against_the_ground(monkeypatch, tmp_path):
