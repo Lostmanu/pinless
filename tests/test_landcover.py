@@ -800,7 +800,7 @@ def test_the_ground_is_drawn_north_up_under_the_course_with_its_own_inks(monkeyp
     for name in ("draw_basemap", "trail_network", "trail_roads"):
         TS = seen[name]
         assert TS["water"] == to_hex(landcover.water(S)) and TS["water_line"] == to_hex(landcover.water(S, line=True))
-        for key in ("trail", "road_minor", "road_major", "relief"):
+        for key in ("trail", "road_minor", "road_major", "relief", "street"):
             assert TS[key] == want[key], f"{name} draws with the ground's {key}"
         assert TS["trail"] != render_trail.trail_style(S)["trail"], "setup: the ground changes the path ink"
 
@@ -820,13 +820,16 @@ def test_paths_and_roads_keep_their_contrast_against_the_ground(monkeypatch, tmp
         out = render_trail.ground_style(TS, S, painted)
         dark = lstar(S["bg"]) < 50
         ref = (max if dark else min)((lstar(c) for c in painted["colours"].values()))
-        for key in ("trail", "road_minor", "road_major"):
-            gap = abs(lstar(TS[key]) - lstar(S["bg"]))
+        inks = [(key, TS[key], out[key]) for key in ("trail", "road_minor", "road_major")]
+        inks += [(f"street {cls}", TS["street"][cls][0], out["street"][cls][0]) for cls in ("path", "minor", "major")]
+        assert all(out["street"][cls][1] == TS["street"][cls][1] for cls in TS["street"]), "the same widths"
+        for key, before, after in inks:  # a town's footways and steps too: draw_basemap draws them in "street"
+            gap = abs(lstar(before) - lstar(S["bg"]))
             ends = [lstar(S["sub"]), lstar(S["ink"]), 100.0 if dark else 0.0]
             if all(abs(e - ref) < gap for e in ends):
                 continue  # no ink of the style gets there: the end colour itself
-            assert abs(lstar(out[key]) - ref) >= gap - 0.6, f"{name} {key}: against the ground as against the paper"
-            assert (lstar(out[key]) > ref) == dark, f"{name} {key}: on the side of the style's inks"
+            assert abs(lstar(after) - ref) >= gap - 0.6, f"{name} {key}: against the ground as against the paper"
+            assert (lstar(after) > ref) == dark, f"{name} {key}: on the side of the style's inks"
         assert out["relief"] != TS["relief"], f"{name}: the relief measured on the ground"
         for key, line in (("water", False), ("water_line", True)):
             assert to_rgb(out[key]) == pytest.approx(landcover.water(S, line=line), abs=1 / 255), f"{name}: {key}"

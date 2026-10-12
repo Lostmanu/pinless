@@ -353,8 +353,9 @@ def frame_map(ax, S, k):
 
 def ground_style(TS, S, painted):
     """The trail style over the land cover: its water (landcover.water), the relief measured on the ground's mean
-    colour, and the paths and roads re-inked along the way from the paper to the style's inks so they keep, against
-    the darkest ground colour that covers SIGNIFICANT of the map (the lightest on dark paper), the contrast they have
+    colour, and the paths, the roads and a town's footways and steps (the city poster's street colours, which
+    draw_basemap still uses) re-inked along the way from the paper to the style's inks so they keep, against the
+    darkest ground colour that covers SIGNIFICANT of the map (the lightest on dark paper), the contrast they have
     against the paper."""
     out = dict(TS)
     out["relief"] = trail_relief(S, painted["mean"])
@@ -366,9 +367,12 @@ def ground_style(TS, S, painted):
     ref = (max if dark else min)(big, key=_lstar)
     l_bg = _lstar(to_rgb(S["bg"]))
     shift = abs(l_bg - _lstar(ref))
+    def ink(colour):
+        return _ink_at(S["bg"], (S["sub"], S["ink"]), shift + abs(_lstar(to_rgb(colour)) - l_bg))
+
     for key in ("trail", "road_minor", "road_major"):
-        gap = abs(_lstar(to_rgb(TS[key])) - l_bg)
-        out[key] = _ink_at(S["bg"], (S["sub"], S["ink"]), shift + gap)
+        out[key] = ink(TS[key])
+    out["street"] = {cls: (ink(colour), width) for cls, (colour, width) in TS["street"].items()}
     return out
 
 
