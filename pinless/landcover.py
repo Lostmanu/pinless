@@ -164,10 +164,13 @@ def _tile_dir(root, tile):
 
 
 def _headers(tiles, root):
-    """{tile: Header, or None for a tile the dataset does not have}. Such a tile is remembered (and never asked for
-    again) only when another tile of the print exists: a server or a proxy that refuses every tile is not taken for
-    the open sea."""
-    out, fresh = {}, []
+    """({tile: Header, or None for a tile the dataset does not have}, [the tiles found missing in this run]).
+
+    A missing tile is the open sea only if the server, in this same run, sent the header of another tile of the print:
+    a server or a proxy that refuses everything must not be taken for the sea. When every other header came from the
+    cache, the first of them is asked for again to prove that the server answers; if it is refused too, the run
+    fails (LandCoverError). The caller remembers the missing tiles (remember_absent) once the whole print is read."""
+    out, fresh, answered = {}, [], False
     for tile in sorted(tiles):
         folder = _tile_dir(root, tile)
         if os.path.exists(os.path.join(folder, "absent")):
@@ -188,11 +191,21 @@ def _headers(tiles, root):
             fresh.append(tile)
             continue
         out[tile] = read_header(buf, tile)
+        answered = True
         relief._write_atomic(path, buf)  # only a header that parses is kept
-    if any(h is not None for h in out.values()):
-        for tile in fresh:
-            relief._write_atomic(os.path.join(_tile_dir(root, tile), "absent"), b"")
-    return out
+    known = [t for t in sorted(out) if out[t] is not None]
+    if fresh and known and not answered:
+        witness = _fetch(url(known[0]), 0, HEADER_BYTES - 1)
+        if witness is None:
+            raise LandCoverError("the server refuses a tile it has")
+        read_header(witness, known[0])
+    return out, (fresh if known else [])
+
+
+def remember_absent(tiles, root):
+    """Mark the tiles as missing from the dataset (the open sea), so they are never asked for again."""
+    for tile in tiles:
+        relief._write_atomic(os.path.join(_tile_dir(root, tile), "absent"), b"")
 
 
 def _decode(data, lv, br, bc):
@@ -584,7 +597,7 @@ def prepare_many(maps, log=print, root=None):
                 jobs.append(job)
         if not jobs:
             return out
-        headers = _headers(set().union(*(j.tiles for j in jobs)), root)
+        headers, sea = _headers(set().union(*(j.tiles for j in jobs)), root)
         if all(h is None for h in headers.values()):
             log("[ground] no land cover here: drawn with the style's ground")
             return out
@@ -602,6 +615,7 @@ def prepare_many(maps, log=print, root=None):
             if dry > 0:
                 say(job.i, "a dry land: grass and scrub in the colours of a steppe, bare land in the ochre of a "
                            "desert")
+        remember_absent(sea, root)  # only once the whole print was read
     except _Unsupported:
         log("[ground] skipped: the land cover does not cover this map as it is; drawn with the style's ground")
         return [None] * len(maps)

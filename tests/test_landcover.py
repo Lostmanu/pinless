@@ -166,7 +166,8 @@ def test_nearest_neighbour_on_the_map_grid_and_across_tiles(monkeypatch, tmp_pat
     _serve(monkeypatch, files)
     extent, crs = _utm_extent(40.5, -3.0, 60000, 50000)  # across the -3 meridian: two tiles
     job = landcover._Map(0, extent, crs, 60.0)
-    headers = landcover._headers(job.tiles, str(tmp_path / "lc"))
+    headers, sea = landcover._headers(job.tiles, str(tmp_path / "lc"))
+    assert sea == []
     L, blocks = landcover._plan(job, headers, str(tmp_path / "lc"))
     assert L == 0 and {b[0] for b in blocks} == {(39, -6), (39, -3)}
     got = landcover._classes(job, headers, L, str(tmp_path / "lc"))
@@ -246,6 +247,47 @@ def test_a_print_where_every_tile_is_missing_is_not_taken_for_the_sea(monkeypatc
     n = len(calls)
     landcover.prepare_many([(extent, crs, 60.0)], log=lambda *_: None)
     assert len(calls) == 2 * n, "asked again next time"
+
+
+def test_a_refusing_server_is_not_taken_for_the_sea_when_another_tile_is_cached(monkeypatch, tmp_path):
+    A, B = (39, -3), (39, -6)  # both on the server: land on both sides of the -3 meridian
+    files = {A: _tile_cog(A), B: _tile_cog(B)}
+    _serve(monkeypatch, files)
+    early, crs1 = _utm_extent(40.5, -5.0, 20000, 15000)  # an earlier print wholly in B: only B's header is cached
+    assert landcover._Map(0, early, crs1, 60.0).tiles == {B}
+    assert landcover.prepare_many([(early, crs1, 60.0)], log=lambda *_: None)[0] is not None
+    extent, crs = _utm_extent(40.5, -3.0, 20000, 15000)  # across the meridian: half in A, half in B
+    _serve(monkeypatch, {})  # a server, or a proxy, that refuses every request
+    logs = []
+    assert landcover.prepare_many([(extent, crs, 60.0)], log=logs.append) == [None]
+    assert logs[-1].startswith("[ground] skipped (LandCoverError): drawn with the style's ground; run the same")
+    assert not list(tmp_path.rglob("absent")), "nothing remembered as sea"
+    calls = _serve(monkeypatch, files)  # the server answers again: A is land
+    out = landcover.prepare_many([(extent, crs, 60.0)], log=lambda *_: None)
+    lon, _ = landcover._nodes(landcover._Map(0, extent, crs, 60.0))
+    east = (lon >= -3.0).reshape(out[0].classes.shape)
+    assert (out[0].classes[east] == landcover.WATER).mean() < 0.01, "A drawn as the land it is"
+    assert any(u == landcover.url(A) for u, *_ in calls)
+
+
+def test_a_tile_missing_next_to_a_cached_one_is_the_sea_once_the_server_answers(monkeypatch, tmp_path):
+    A, B = (39, -3), (39, -6)  # A is not on the server: the open sea
+    _serve(monkeypatch, {B: _tile_cog(B)})
+    early, crs1 = _utm_extent(40.5, -5.0, 20000, 15000)
+    assert landcover.prepare_many([(early, crs1, 60.0)], log=lambda *_: None)[0] is not None
+    calls = _serve(monkeypatch, {B: _tile_cog(B)})
+    extent, crs = _utm_extent(40.5, -3.0, 20000, 15000)
+    out = landcover.prepare_many([(extent, crs, 60.0)], log=lambda *_: None)
+    header = (0, landcover.HEADER_BYTES - 1)
+    assert [c[1:] for c in calls if c[0] == landcover.url(A)] == [header], "the missing tile, asked once"
+    assert [c[1:] for c in calls if c[0] == landcover.url(B)][0] == header, "the cached tile's header asked again"
+    lon, _ = landcover._nodes(landcover._Map(0, extent, crs, 60.0))
+    east = (lon >= -3.0).reshape(out[0].classes.shape)
+    assert (out[0].classes[east] == landcover.WATER).mean() > 0.99, "the missing tile is water"
+    assert (tmp_path / "cache" / "landcover" / "v200" / landcover.tile_name(A) / "absent").exists()
+    calls.clear()
+    assert np.array_equal(landcover.prepare_many([(extent, crs, 60.0)], log=lambda *_: None)[0].classes,
+                          out[0].classes) and calls == [], "remembered: the next run asks for nothing"
 
 
 def test_a_403_is_a_missing_tile_and_anything_else_fails(monkeypatch, tmp_path):
