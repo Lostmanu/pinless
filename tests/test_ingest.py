@@ -40,3 +40,53 @@ def test_stray_fixes_are_dropped_on_import(tmp_path):
     (act,), rep = ingest.read_export(str(tmp_path))
     assert act.lonlat[0] == (-3.70, 40.41) and len(act.lonlat) == 40, "the stale fix, recorded twice, is gone"
     assert act.times[0] == 0.0 and act.start.second == 0 and act.start.minute == 30
+
+
+HIKE = ("""<?xml version="1.0"?><gpx xmlns="http://www.topografix.com/GPX/1/1"><metadata><name>App export</name>
+</metadata><trk><name>Loop from the car park</name><type>hiking</type><trkseg>"""
+        + "".join(f'<trkpt lat="{40.82 + 0.0003 * i:.4f}" lon="-3.96"><ele>{1830 + 3 * i}</ele>'
+                  f'<time>2025-07-12T07:{i // 2:02d}:{30 * (i % 2):02d}Z</time></trkpt>' for i in range(40))
+        + "</trkseg></trk></gpx>").encode()
+
+
+def test_a_single_gpx_file_is_an_export_of_one_activity(tmp_path):
+    import gzip
+
+    for name, data in (("hike.gpx", HIKE), ("hike.GPX.gz", gzip.compress(HIKE))):
+        path = tmp_path / name
+        path.write_bytes(data)
+        (act,), rep = ingest.read_export(str(path))
+        assert rep.files_seen == rep.used == 1
+        assert act.type == "Hike" and act.name == "Loop from the car park", "type and name from the file"
+        assert len(act.lonlat) == 40 and act.ele[-1] == 1830.0 + 3 * 39 and act.times[-1] == 39 * 30.0
+    assert ingest.is_activity_file(str(tmp_path / "hike.gpx")) and not ingest.is_activity_file(str(tmp_path))
+
+
+def test_a_planned_route_without_track_points_is_read_from_its_route_points(tmp_path):
+    route = (b'<?xml version="1.0"?><gpx xmlns="http://www.topografix.com/GPX/1/1"><rte><name>Planned</name>'
+             b'<rtept lat="40.82" lon="-3.96"><ele>1830</ele></rtept><rtept lat="40.83" lon="-3.95"><ele>1900</ele>'
+             b'</rtept></rte></gpx>')
+    (tmp_path / "route.gpx").write_bytes(route)
+    (act,), _ = ingest.read_export(str(tmp_path / "route.gpx"))
+    assert act.lonlat == [(-3.96, 40.82), (-3.95, 40.83)] and act.name == "Planned" and act.times is None
+    assert act.type == "Unknown" and act.ele == [1830.0, 1900.0]
+
+
+def test_a_single_tcx_course_and_a_single_fit_file(tmp_path):
+    import datetime as dt
+
+    from _fit_fixture import write_fit
+
+    course = TCX.replace(b"<Activities><Activity", b"<Courses><Course><Name>Ridge walk</Name></Course><Activities>"
+                                                   b"<Activity")
+    course = course.replace(b"</Activities>", b"</Activities></Courses>")
+    (tmp_path / "walk.tcx").write_bytes(course)
+    (act,), _ = ingest.read_export(str(tmp_path / "walk.tcx"))
+    assert act.name == "Ridge walk" and act.type == "Run" and act.times == [0.0, 5.0]
+    start = dt.datetime(2025, 7, 12, 7, 0, tzinfo=dt.timezone.utc)
+    pts = [(-3.96, 40.82 + 0.001 * i, 30.0 * i, 1830.0 + 2 * i) for i in range(20)]
+    (tmp_path / "hike.fit").write_bytes(write_fit(pts, start))
+    (act,), rep = ingest.read_export(str(tmp_path / "hike.fit"))
+    assert rep.used == 1 and act.type == "Hike" and act.name == "" and act.start == start
+    assert abs(act.lonlat[0][0] + 3.96) < 1e-6 and abs(act.lonlat[0][1] - 40.82) < 1e-6, "semicircles to degrees"
+    assert act.times[-1] == 570.0 and abs(act.ele[-1] - 1868.0) < 0.3
