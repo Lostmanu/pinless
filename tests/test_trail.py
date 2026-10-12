@@ -700,14 +700,39 @@ def test_a_planned_route_without_clock_or_heights_still_draws(monkeypatch, tmp_p
     boxes = _texts(monkeypatch)
     xy = _line((0, 0), (3000, 0), (3000, 2500))
     plan = Activity(id="p", type="Unknown", start=None, lonlat=_lonlat(xy), source="x", times=None, ele=None)
-    extent = race.frame_course([(0, LineString(xy))], render_trail.map_aspect(), pad_frac=0.1)
+    aspect = render_trail.map_aspect(profile=False)
+    assert aspect < render_trail.map_aspect(), "no profile: the map takes its band"
+    extent = race.frame_course([(0, LineString(xy))], aspect, pad_frac=0.1)
+    x0, x1, y0, y1 = extent
+    low = y0 + (y1 - y0) * 12 / render_trail.BARE_MAP_H  # 12 mm above the bottom of the taller map
     info = render_trail.render(plan, xy, [(0, LineString(xy[20:-20]))], (EMPTY, EMPTY, EMPTY), extent,
-                               str(tmp_path / "p.png"), dpi=20, color_by="elevation")
+                               str(tmp_path / "p.png"), dpi=20, color_by="elevation",
+                               peaks=[(x0 + (x1 - x0) * 0.3, low, "Low Hill", 900.0)])
     assert info["secs"] is None and info["high"] is None and info["route_type"] == "point_to_point"
     assert info["legend"]["mode"] == "single", "no heights: one colour"
+    assert [s_[2] for s_ in info["summits"]] == ["LOW HILL 900 m"], "a summit in the band the profile would take"
+    _, gy, _, (bx0, by0, bx1, by1), _ = info["summits"][0]
+    assert render_trail.MAP_TOP + render_trail.MAP_H < gy and by1 < render_trail.MAP_TOP + render_trail.BARE_MAP_H
     cells = [b[0] for b in boxes if b[2] > render_trail.NUMBERS_TOP]
     assert cells.count("—") == 3 and "POINT TO POINT" in cells and "TIME" in cells
+    assert "km" in cells and not {"m", "h"} & set(cells), "no unit next to a dash"
     assert not any(b[0] in ("ELEVATION", "PERFIL") for b in boxes), "no profile without heights"
+
+
+def test_a_shrunk_value_sits_on_the_baseline_of_the_numbers(monkeypatch, tmp_path):
+    boxes = _texts(monkeypatch)
+    xy = _line((0, 0), (6000, 0), (6000, 3000))  # point to point: the longest value of the row
+    for size, lang, value in (("A3", "en", "POINT TO POINT"), ("A4", "es", "IDA Y VUELTA"), ("50x70", "en", "LOOP")):
+        del boxes[:]
+        route = xy if value == "POINT TO POINT" else (np.vstack([xy, xy[::-1]]) if value == "IDA Y VUELTA"
+                                                        else _loop(0, 0, 1500, n=400))
+        a = _hike(route)
+        extent = race.frame_course([(0, LineString(route))], render_trail.map_aspect(size), pad_frac=0.1)
+        render_trail.render(a, route, [(0, LineString(route))], (EMPTY, EMPTY, EMPTY), extent, str(tmp_path / "b.png"),
+                            dpi=20, size=size, lang=lang)
+        row = {b[0]: b for b in boxes if render_trail.NUMBERS_TOP < b[2] < render_trail.NUMBERS_TOP + 13}
+        kind, high = row[value], row[next(v for v in row if v.isdigit())]  # the high point: digits, no descender
+        assert kind[4] == pytest.approx(high[4], abs=0.25), f"{size} {value}: one baseline (to the overshoot of an O)"
 
 
 def test_a_single_file_is_warned_about_and_drawn_whatever_its_type_on_every_layout(monkeypatch, tmp_path, capsys):

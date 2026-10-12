@@ -34,6 +34,7 @@ from .render_sport import _num
 
 LEFT, RIGHT = 18.0, 279.0  # the A3 layout grid (mm), scaled by k for other paper sizes
 MAP_TOP, MAP_H = 90.0, 246.0
+BARE_MAP_H = 274.0  # without heights there is no profile: the map takes its band, down to 8 mm above the numbers
 PROFILE_TOP, PROFILE_H = 344.0, 22.0
 NUMBERS_TOP = 376.0
 LOOP_M = 250.0  # a stretch whose ends are this close is a loop (unless its second half retraces the first)
@@ -50,9 +51,21 @@ ROUTE_TYPES = {"loop": ("LOOP", "CIRCULAR"), "out_and_back": ("OUT & BACK", "IDA
                "point_to_point": ("POINT TO POINT", "LINEAL")}
 
 
-def map_aspect(size="A3"):
-    """Width / height of the map: the same on every paper size (the layout grid scales)."""
-    return (RIGHT - LEFT) / MAP_H
+def map_aspect(size="A3", profile=True):
+    """Width / height of the map: the same on every paper size (the layout grid scales); taller for a route without
+    heights, which has no profile under it."""
+    return (RIGHT - LEFT) / (MAP_H if profile else BARE_MAP_H)
+
+
+def _fit(extent, aspect):
+    """The extent grown about its centre to the aspect (width / height) of the map box."""
+    x0, x1, y0, y1 = extent
+    w, h = x1 - x0, y1 - y0
+    if abs(w / h - aspect) <= 1e-6 * aspect:
+        return extent
+    w, h = max(w, h * aspect), max(h, w / aspect)
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    return (cx - w / 2, cx + w / 2, cy - h / 2, cy + h / 2)
 
 
 # --- numbers -----------------------------------------------------------------------------------------------------------
@@ -339,11 +352,11 @@ def trail_roads(ax, roads, extent, S, k, map_w_mm):
                                    joinstyle="round", zorder=z))
 
 
-def _grid_xy(extent, x, y):
+def _grid_xy(extent, x, y, map_h=MAP_H):
     """Map coordinates to the A3 layout grid (mm, y down)."""
     x0, x1, y0, y1 = extent
     return (LEFT + (np.asarray(x) - x0) / (x1 - x0) * (RIGHT - LEFT),
-            MAP_TOP + (y1 - np.asarray(y)) / (y1 - y0) * MAP_H)
+            MAP_TOP + (y1 - np.asarray(y)) / (y1 - y0) * map_h)
 
 
 TRI_W, TRI_UP, TRI_DOWN = 1.9, 1.1, 0.55  # the summit triangle (grid mm): width, apex above and base below the point
@@ -351,11 +364,16 @@ EDGE_MM, GAP_MM, ROUTE_GAP_MM = 1.2, 0.8, 0.5
 ROUTE_CLEAR_MM = CASING_PT * PT_MM / 2 + ROUTE_GAP_MM  # a summit label keeps this far from the course's centre line
 
 
+def _baseline(value, k, **kw):
+    """How far below its top (A3-grid mm) place_text sets the baseline of a text."""
+    return float(place_text(value, 0, 0, k, **kw)[1].transform((0, 0))[1]) / k
+
+
 def peak_label(name, ele):
     return f"{name.strip().upper()} {ele:.0f} m" if ele is not None else name.strip().upper()
 
 
-def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS):
+def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS, map_h=MAP_H):
     """The summits to draw: [(gx, gy, text, (x0, y0, x1, y1) label box, (x, y) label top-left)] in the layout grid.
 
     peaks: (x, y, name, ele) in map units. Only named summits inside the map, highest first (unknown heights last),
@@ -366,16 +384,16 @@ def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS):
     for x, y, name, ele in peaks:
         if not isinstance(name, str) or not name.strip():
             continue
-        gx, gy = (float(v) for v in _grid_xy(extent, x, y))
+        gx, gy = (float(v) for v in _grid_xy(extent, x, y, map_h))
         if not (LEFT + EDGE_MM + TRI_W <= gx <= RIGHT - EDGE_MM - TRI_W
-                and MAP_TOP + EDGE_MM + TRI_UP <= gy <= MAP_TOP + MAP_H - EDGE_MM - TRI_DOWN):
+                and MAP_TOP + EDGE_MM + TRI_UP <= gy <= MAP_TOP + map_h - EDGE_MM - TRI_DOWN):
             continue
         cand.append((ele is None, -(ele or 0.0), name.strip(), gx, gy, ele))
     if not cand:
         return []
     cand.sort(key=lambda c: c[:3])
-    frame = _box(LEFT + EDGE_MM, MAP_TOP + EDGE_MM, RIGHT - EDGE_MM, MAP_TOP + MAP_H - EDGE_MM)
-    lines = [np.column_stack(_grid_xy(extent, *np.asarray(c, dtype=float).T)) for c in course if len(c) > 1]
+    frame = _box(LEFT + EDGE_MM, MAP_TOP + EDGE_MM, RIGHT - EDGE_MM, MAP_TOP + map_h - EDGE_MM)
+    lines = [np.column_stack(_grid_xy(extent, *np.asarray(c, dtype=float).T, map_h)) for c in course if len(c) > 1]
     # a label keeps clear of the course by distance, not by a buffer of it: a stop where the fix wandered for twenty
     # minutes crosses itself hundreds of times, and buffering that takes minutes
     route = shapely.MultiLineString(lines) if lines else None
@@ -446,7 +464,9 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     # the map: woods, water and a town's footways, the relief, the paths and tracks, the roads, the course, the
     # summits
     TS = trail_style(S)
-    m, map_w, map_h = LEFT * k, (RIGHT - LEFT) * k, MAP_H * k
+    grid_h = MAP_H if ele else BARE_MAP_H  # no heights, no profile: the map takes its band
+    extent = _fit(extent, map_aspect(size, profile=bool(ele)))  # trail.run frames it so already
+    m, map_w, map_h = LEFT * k, (RIGHT - LEFT) * k, grid_h * k
     ax = fig.add_axes([m / wmm, 1 - (MAP_TOP * k + map_h) / hmm, map_w / wmm, map_h / hmm], zorder=1)
     ax.set_xlim(extent[0], extent[1])
     ax.set_ylim(extent[2], extent[3])
@@ -490,7 +510,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
                                capstyle="round", joinstyle="round", zorder=4.8))
     draw_routes(ax, segments, np.full(len(segments), 30.0), 3.0, cmap, k, base=1.7, gain=0.0,
                 glow=S.get("glow", 0.0), values=values)
-    summits = place_peaks(peaks, extent, k, coords)
+    summits = place_peaks(peaks, extent, k, coords, map_h=grid_h)
     for gx, gy, text, _, (lx, ly) in summits:
         tri = [((gx - TRI_W / 2) * k, (gy + TRI_DOWN) * k), ((gx + TRI_W / 2) * k, (gy + TRI_DOWN) * k),
                (gx * k, (gy - TRI_UP) * k)]
@@ -534,16 +554,21 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     km = dist[-1] / 1000
     kind = route_type(xy)
     cells = [(_num(km, lang, 1), "km", "DISTANCIA" if es else "LENGTH"),
-             (f"+{climb(profile(xy, ele)[1]):.0f}" if ele else "—", "m", "DESNIVEL POSITIVO" if es else "ELEVATION GAIN"),
-             (f"{hi_point:.0f}" if hi_point is not None else "—", "m", "COTA MÁXIMA" if es else "HIGH POINT"),
+             (f"+{climb(profile(xy, ele)[1]):.0f}" if ele else "—", "m" if ele else "",
+              "DESNIVEL POSITIVO" if es else "ELEVATION GAIN"),
+             (f"{hi_point:.0f}" if hi_point is not None else "—", "m" if hi_point is not None else "",
+              "COTA MÁXIMA" if es else "HIGH POINT"),
              (ROUTE_TYPES[kind][1 if es else 0], "", "TIPO DE RUTA" if es else "ROUTE TYPE"),
              (fmt_hours(secs) if secs else "—", "h" if secs else "",
               ("TIEMPO EN MOVIMIENTO" if es else "MOVING TIME") if paused else ("TIEMPO" if es else "TIME"))]
     col = (RIGHT - LEFT) / len(cells)
+    base = _baseline("0", k, pt=40, font=DISPLAY, height=11)
     for i, (value, unit, label) in enumerate(cells):
         x = LEFT + i * col
         unit_w = place_text(unit, 0, 0, k, 9, REGULAR)[2] + 1.5 if unit else 0.0
-        w_, _ = T(x, ytop + 1, value, pt=40, font=DISPLAY, max_w=col - 9 - unit_w, height=11)
+        fit = dict(pt=40, font=DISPLAY, max_w=col - 9 - unit_w, height=11)
+        # a value shrunk to its column (POINT TO POINT) sits on the numbers' baseline, not under their top
+        w_, _ = T(x, ytop + 1 + base - _baseline(value, k, **fit), value, **fit)
         if unit:
             T(x + w_ + 1.5, ytop + 6.5, unit, pt=9, font=REGULAR, color=S["accent"])
         T(x, ytop + 15, label, pt=6.0, color=S["sub"], max_w=col - 4)

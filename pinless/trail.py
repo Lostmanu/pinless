@@ -107,7 +107,7 @@ def run(sel, pool, a, log=print):
             "it is drawn as a loop from a public trailhead. If it is not one (a hotel, a friend's home, your own "
             "door), add --zone there.")
 
-    extent = race.frame_course(pieces, render_trail.map_aspect(a.size), pad_frac=PAD)
+    extent = race.frame_course(pieces, render_trail.map_aspect(a.size, profile=bool(route.ele)), pad_frac=PAD)
     big = race.osm_box(extent, crs)
     try:
         folder = area.fetch_basemap(big, log=log)
