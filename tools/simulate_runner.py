@@ -58,6 +58,13 @@ PLACES = {
     "vallecas": (40.3920, -3.6585), "bernabeu": (40.4530, -3.6883),
 }
 
+# The races as run on the day: their courses measure 21.1 and 10.0 km along the recorded points (3 s sampling)
+RACE_COURSES = {
+    "Spring Half Marathon": ["castellana_n", "colon", "cibeles", "gran_via", "plaza_espana", "debod", "oeste", "rey",
+                             "segovia", "toledo", "matadero", "atocha_retiro", "retiro_e", "estanque"],
+    "New Year's Eve 10K": ["castellana_n", "colon", "cibeles", "atocha_retiro", "vallecas"],
+}
+
 # Route templates: sequence of places (start/end added automatically), weights, and kind
 TEMPLATES = [
     {"name": "Madrid Rio corto", "via": ["toledo", "segovia", "toledo"], "w": 26, "kind": "easy"},
@@ -379,6 +386,12 @@ def main():
                 coords = route_line(G, seq)
             trees = 1.5 if kind in ("long",) else 1.15
             pts, L = sample_track(coords, to_utm, rng, pace, a.dt, start_time, trees)
+            if kind == "race":  # the course of the day, from its own random stream: the draws above stay as they
+                # were, so every other run of the year is the same as before the courses were measured
+                course = route_line(G, [nearest_node(node_ids, ux, uy, *to_utm.transform(PLACES[k][1], PLACES[k][0]))
+                                        for k in RACE_COURSES[name]])
+                pts, L = sample_track(course, to_utm, random.Random(a.seed * 1_000_003 + day.toordinal()), pace, a.dt,
+                                      start_time, trees)
             fmt = rng.choices(["gpx", "gpx.gz", "tcx.gz"], weights=[60, 25, 15])[0]
             acts.append({"id": act_id, "date": start_time, "name": name, "type": "Run", "dist_km": L / 1000,
                          "elapsed": int((pts[-1][3] - pts[0][3]).total_seconds()), "fmt": fmt, "pts": pts, "kind": kind})

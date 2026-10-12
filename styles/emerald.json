@@ -5,7 +5,7 @@
   "water": "#163b30",
   "water_line": "#1f4a3d",
   "rule": "#3e5d52",
-  "street": {"major": ["#24493d", 0.32], "minor": ["#1b3d32", 0.17], "path": ["#17362c", 0.11]},
+  "street": {"major": ["#2a5144", 0.50], "minor": ["#22473a", 0.32], "path": ["#1f4135", 0.24]},
   "accent": "#e8c15a",
   "heat": ["#8f7a3c", "#b89645", "#e0b84f", "#f3d98c", "#fff4cf"],
   "glow": 0.12

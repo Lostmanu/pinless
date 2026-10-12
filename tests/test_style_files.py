@@ -29,11 +29,12 @@ def test_a_built_in_style_printed_as_a_file_loads_back_the_same(tmp_path, capsys
 
 
 def test_a_base_style_gives_everything_not_listed():
+    before = render_editorial.STYLES["huella"]["street"]["major"]
     S = styles.parse({"base": "huella", "accent": "tomato", "street": {"major": ["#000000", 0.5]}})
     huella = render_editorial.STYLES["huella"]
     assert S["accent"] == "#ff6347" and S["bg"] == huella["bg"] and S["who"] == huella["who"]
     assert S["street"]["major"] == ("#000000", 0.5) and S["street"]["minor"] == huella["street"]["minor"]
-    assert huella["street"]["major"] == ("#d5d0c4", 0.32), "the built-in style is not changed"
+    assert huella["street"]["major"] == before, "the built-in style is not changed"
 
 
 @pytest.mark.parametrize("data,message", [
