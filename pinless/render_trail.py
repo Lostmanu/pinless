@@ -205,17 +205,51 @@ TRAIL_INK = 0.55  # paths and tracks: this far from the paper towards the small-
 TRAIL_W = 0.34  # their width (pt x k): about twice a side street's on a city poster
 FOOTPATH_DASH = (0, (5.0, 2.6))  # footpaths dashed (in line widths), as on a topographic map; tracks solid
 TRACKS = {"track"}
+# the walking network of the hills, in the trail ink; a town's footways (sidewalks), pedestrian streets, steps and
+# cycleways stay in the street colours of every print, or every street of a village would be two dashed lines
+TRAILS = {"path", "track", "bridleway"}
+# roads over the relief, in an ink of their own between the paper and S["ink"]: their L* contrast against the paper is
+# this multiple of the trail ink's, held under this share of the course's (the course leads) but never under the
+# trail ink's; then their width (pt x k). Major roads get a casing in the paper colour.
+ROADS = {"major": (1.5, 0.75, 0.56), "minor": (1.15, 0.6, 0.36)}
+ROAD_CASING_PT = 0.3  # the major roads' casing, beyond the line (pt x k)
 
 
 def trail_style(S):
     """The style of the trail map, derived from S (so a style file works too; STYLES is not changed): woods and
-    meadows a step stronger, the paths and tracks in their own ink (trail_network), and a stronger relief than on a
-    city poster (trail_relief), since the course is one bold line."""
+    meadows a step stronger, the paths and tracks in their own ink (trail_network), the roads in inks of their own
+    that read at least as strongly (ROADS, trail_roads), and a stronger relief than on a city poster (trail_relief),
+    since the course is one bold line."""
     out = dict(S)
     out["green"] = _towards(S["bg"], S["green"], 1.8)
     out["trail"] = _towards(S["bg"], S["sub"], TRAIL_INK)
+    trail_l = abs(_lstar(to_rgb(out["trail"])) - _lstar(to_rgb(S["bg"])))
+    course_l = abs(_lstar(to_rgb(S["accent"])) - _lstar(to_rgb(S["bg"])))
+    for cls, (times, share, _) in ROADS.items():
+        target = max(trail_l, min(times * trail_l, share * course_l))
+        out[f"road_{cls}"] = _ink_at(S["bg"], (S["ink"], S["sub"]), target)
     out["relief"] = trail_relief(S)
     return out
+
+
+def _ink_at(bg, inks, target):
+    """The colour on the way from bg to the first of inks that gets there (else black or white, whichever lies
+    farther from bg) whose L* differs from bg's by target; the end colour itself if none gets there. A style file
+    with a faint ink still gets roads that read."""
+    l0 = _lstar(to_rgb(bg))
+
+    def gap(c):
+        return abs(_lstar(to_rgb(c)) - l0)
+
+    ends = [*inks, "#000000" if l0 >= 50 else "#ffffff"]
+    ink = next((c for c in ends if gap(c) >= target), max(ends, key=gap))
+    if gap(ink) <= target:
+        return to_hex(to_rgb(ink))
+    lo, hi = 0.0, 1.0
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if gap(_towards(bg, ink, mid)) < target else (lo, mid)
+    return _towards(bg, ink, hi)
 
 
 def trail_relief(S):
@@ -238,29 +272,55 @@ def trail_relief(S):
 
 
 def split_network(basemap):
-    """(the basemap without its paths and tracks, the paths and tracks): the streets and roads go to draw_basemap
-    as on every print, the walking network (draw_basemap's "path" class) is drawn by trail_network over the relief."""
+    """(the basemap with only its town footways, the roads, the paths and tracks). The roads (draw_basemap's major
+    and minor classes) are drawn by trail_roads and the walking network of the hills (TRAILS) by trail_network, both
+    over the relief; footways, pedestrian streets, steps and cycleways go to draw_basemap, as on every print."""
     edges, green, water = basemap
-    trails = ~edges["highway"].map(_hw).isin(MAJOR | MINOR).to_numpy(dtype=bool)
-    return (edges[~trails], green, water), edges[trails]
+    hw = edges["highway"].map(_hw)
+    roads = hw.isin(MAJOR | MINOR).to_numpy(dtype=bool)
+    trails = hw.isin(TRAILS).to_numpy(dtype=bool)
+    return (edges[~roads & ~trails], green, water), edges[roads], edges[trails]
+
+
+def _network_path(edges, extent, tol):
+    """One compound path of the edges, each street once whatever its direction, cut to the map and simplified to
+    what paper shows (as draw_basemap); None when nothing is left."""
+    if not len(edges):
+        return None
+    geoms = np.asarray(edges.geometry.values, dtype=object)
+    edges = edges[~pd.Series(shapely.to_wkb(shapely.normalize(geoms))).duplicated().to_numpy()]
+    return _line_path(p for g in _clip_simplify(edges.geometry, extent, tol) for p in _parts(g, ("LineString",)))
 
 
 def trail_network(ax, trails, extent, S, k, map_w_mm):
-    """Paths and tracks over the relief: tracks solid, footpaths dashed, one compound path each, in S["trail"].
-    Each street once whatever its direction, cut to the map and simplified to what paper shows (as draw_basemap)."""
+    """Paths and tracks over the relief: tracks solid, footpaths dashed, one compound path each, in S["trail"]."""
     if not len(trails):
         return
     tol = (extent[1] - extent[0]) / map_w_mm * PRINT_TOL_MM
-    geoms = np.asarray(trails.geometry.values, dtype=object)
-    keep = ~pd.Series(shapely.to_wkb(shapely.normalize(geoms))).duplicated().to_numpy()
-    trails = trails[keep]
     track = trails["highway"].map(_hw).isin(TRACKS).to_numpy()
     for mask, style in ((track, "solid"), (~track, FOOTPATH_DASH)):
-        path = _line_path(p for g in _clip_simplify(trails[mask].geometry, extent, tol)
-                          for p in _parts(g, ("LineString",)))
+        path = _network_path(trails[mask], extent, tol)
         if path is not None:
             ax.add_patch(PathPatch(path, fill=False, edgecolor=S["trail"], linewidth=TRAIL_W * k, linestyle=style,
                                    capstyle="butt", joinstyle="round", zorder=3.6))
+
+
+def trail_roads(ax, roads, extent, S, k, map_w_mm):
+    """Roads over the relief and the paths, in their own ink (trail_style), so a paved road reads at least as
+    strongly as a footpath: minor roads as a line, major roads as a line on a casing in the paper colour that cuts
+    the paths crossing them, as on a topographic map."""
+    if not len(roads):
+        return
+    tol = (extent[1] - extent[0]) / map_w_mm * PRINT_TOL_MM
+    major = roads["highway"].map(_hw).isin(MAJOR).to_numpy()
+    w_minor, w_major = ROADS["minor"][2] * k, ROADS["major"][2] * k
+    minor_path, major_path = _network_path(roads[~major], extent, tol), _network_path(roads[major], extent, tol)
+    for path, colour, width, z in ((minor_path, S["road_minor"], w_minor, 3.61),
+                                   (major_path, S["bg"], w_major + 2 * ROAD_CASING_PT * k, 3.62),
+                                   (major_path, S["road_major"], w_major, 3.63)):
+        if path is not None:
+            ax.add_patch(PathPatch(path, fill=False, edgecolor=colour, linewidth=width, capstyle="round",
+                                   joinstyle="round", zorder=z))
 
 
 def _grid_xy(extent, x, y):
@@ -367,7 +427,8 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     T(279, 69.5, name.upper(), pt=13.2, align="right", max_w=105)
     rule(80)
 
-    # the map: woods, water and roads, the relief, the paths and tracks, the course, the summits
+    # the map: woods, water and a town's footways, the relief, the paths and tracks, the roads, the course, the
+    # summits
     TS = trail_style(S)
     m, map_w, map_h = LEFT * k, (RIGHT - LEFT) * k, MAP_H * k
     ax = fig.add_axes([m / wmm, 1 - (MAP_TOP * k + map_h) / hmm, map_w / wmm, map_h / hmm], zorder=1)
@@ -375,10 +436,11 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     ax.set_ylim(extent[2], extent[3])
     ax.set_aspect("equal")
     ax.axis("off")
-    streets, trails = split_network(basemap)
+    streets, roads, trails = split_network(basemap)
     draw_basemap(ax, streets, extent, TS, k, map_w)
     drawn = draw_relief(ax, relief, extent, TS, basemap[2], k, map_w) if relief is not None else False
     trail_network(ax, trails, extent, TS, k, map_w)
+    trail_roads(ax, roads, extent, TS, k, map_w)
     cut = privacy.clip_to_extent(pieces, extent)
     coords = [c for c in (np.asarray(p.coords) for _, p in cut) if len(c) > 1]
     segments = np.concatenate([np.stack((c[:-1], c[1:]), axis=1) for c in coords]) if coords else np.empty((0, 2, 2))

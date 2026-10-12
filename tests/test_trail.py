@@ -345,18 +345,73 @@ def test_the_trail_map_draws_its_paths_over_a_stronger_relief():
         assert light <= render_editorial._keep_alpha(S, light_rgb, 0.6) + 1e-9, "the map under it keeps its contrast"
     own = dict(render_editorial.STYLES["huella"], relief=(((0, 0, 0), 0.1), ((1, 1, 1), 0.0)))
     assert render_trail.trail_style(own)["relief"] == own["relief"], "a style that sets its relief keeps it"
-    edges = gpd.GeoDataFrame({"highway": ["track", "path", "footway", "residential", "primary", ["path", "steps"]]},
-                             geometry=[LineString([(0, i), (5000, i)]) for i in range(0, 600, 100)])
-    streets, trails = render_trail.split_network((edges, EMPTY, EMPTY))
-    assert list(streets[0]["highway"]) == ["residential", "primary"] and len(trails) == 4
+    kinds = ["track", "path", "footway", "residential", "primary", ["path", "steps"], "bridleway", "pedestrian",
+             "cycleway", "steps", "corridor", "service", "trunk_link"]
+    edges = gpd.GeoDataFrame({"highway": kinds}, geometry=[LineString([(0, i), (5000, i)])
+                                                           for i in range(0, 100 * len(kinds), 100)])
+    base, roads, trails = render_trail.split_network((edges, EMPTY, EMPTY))
+    assert list(base[0]["highway"]) == ["footway", "pedestrian", "cycleway", "steps", "corridor"], \
+        "a town's sidewalks, steps and cycleways in the street colours of every print"
+    assert list(roads["highway"]) == ["residential", "primary", "service", "trunk_link"]
+    assert list(trails["highway"]) == ["track", "path", ["path", "steps"], "bridleway"]
     fig, ax = plt.subplots()
-    render_trail.trail_network(ax, trails, (0, 5000, -100, 700), render_trail.trail_style(own), 1.0, 261)
+    T = render_trail.trail_style(own)
+    render_trail.trail_network(ax, trails, (0, 5000, -100, 1400), T, 1.0, 261)
     solid, dashed = ax.patches
     assert solid.get_linestyle() == "solid" and dashed.get_linestyle() == render_trail.FOOTPATH_DASH, \
         "tracks solid, footpaths dashed"
     assert solid.zorder == dashed.zorder == 3.6, "over the relief (3.5), under the course"
     assert len(solid.get_path().vertices) == 2 and len(dashed.get_path().vertices) == 6
+    render_trail.trail_roads(ax, roads, (0, 5000, -100, 1400), T, 1.0, 261)
+    minor, casing, major = ax.patches[2:]
+    assert (minor.zorder, casing.zorder, major.zorder) == (3.61, 3.62, 3.63), "over the paths, under the course"
+    assert to_rgb(casing.get_edgecolor()[:3]) == to_rgb(own["bg"]) and casing.get_linewidth() > major.get_linewidth()
+    assert len(minor.get_path().vertices) == 4 and len(major.get_path().vertices) == 4
     plt.close(fig)
+
+
+def _lstar_image(path):
+    from PIL import Image
+
+    a = np.asarray(Image.open(path).convert("RGB"), dtype=float) / 255
+    lin = np.where(a <= 0.04045, a / 12.92, ((a + 0.055) / 1.055) ** 2.4)
+    y = lin @ np.array([0.2126, 0.7152, 0.0722])
+    return np.where(y > 216 / 24389, 116 * np.cbrt(y) - 16, y * 24389 / 27)
+
+
+def test_roads_read_at_least_as_strongly_as_footpaths(tmp_path):
+    """The contrast of what disappears when a layer is left out (the median change of L* over the pixels it covers):
+    a paved road, major or minor, is never fainter than a footpath or a track."""
+    from matplotlib.colors import to_rgb
+
+    kinds = ["primary", "path", "residential", "track", "secondary", "path", "unclassified", "track"]
+    edges = gpd.GeoDataFrame({"highway": kinds}, geometry=[LineString([(-3000, y), (3000, y)])
+                                                           for y in np.linspace(-2500, 2500, len(kinds))])
+    xy = _line((-200, -2900), (200, -2900))
+    act = _hike(xy)
+    extent = (-3500.0, 3500.0, -3500.0 / render_trail.map_aspect(), 3500.0 / render_trail.map_aspect())
+    for style in ("huella", "carbon", "blueprint", "lavender"):
+        out = {}
+        for name, drop in (("all", ()), ("no major", ("primary", "secondary")),
+                           ("no minor", ("residential", "unclassified")), ("no paths", ("path", "track"))):
+            path = tmp_path / f"{style}_{name}.png"
+            render_trail.render(act, xy, [(0, LineString(xy))], (edges[~edges["highway"].isin(drop)], EMPTY, EMPTY),
+                                extent, str(path), style=style, dpi=60)
+            out[name] = _lstar_image(path)
+
+        def contrast(name):
+            d = np.abs(out["all"] - out[name])
+            return float(np.median(d[d > 0.5]))
+
+        paths = contrast("no paths")
+        assert contrast("no major") >= paths and contrast("no minor") >= paths, style
+    for style, S in render_editorial.STYLES.items():
+        T = render_trail.trail_style(S)
+        bg = render_editorial._lstar(to_rgb(S["bg"]))
+        trail_l, course_l = (abs(render_editorial._lstar(to_rgb(c)) - bg) for c in (T["trail"], S["accent"]))
+        minor_l, major_l = (abs(render_editorial._lstar(to_rgb(T[f"road_{c}"])) - bg) for c in ("minor", "major"))
+        assert trail_l - 0.3 <= minor_l <= major_l, f"{style}: roads never fainter than paths, major the strongest"
+        assert major_l <= max(trail_l, 0.75 * course_l) + 0.3, f"{style}: the course leads (to 8-bit colour)"
 
 
 # --- privacy and the command line --------------------------------------------------------------------------------------
