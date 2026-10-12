@@ -16,6 +16,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import shapely
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap, to_hex, to_rgb
 from matplotlib.patches import PathPatch, Polygon as MPolygon
@@ -24,9 +25,10 @@ from shapely.geometry import LineString, box as _box
 from . import privacy
 from .atlas import _Page as Page
 from .colouring import fmt_pace
-from .render import MM, SIZES
-from .render_editorial import DISPLAY, REGULAR, STYLES, TEXT, _line_path, draw_basemap, draw_relief, draw_routes
-from .render_editorial import footer_credits, place_text, svg_rc
+from .render import MAJOR, MINOR, MM, SIZES, _hw
+from .render_editorial import DISPLAY, PRINT_TOL_MM, REGULAR, STYLES, TEXT, _clip_simplify, _keep_alpha, _line_path
+from .render_editorial import _lstar, _parts, _relief_alpha, draw_basemap, draw_relief, draw_routes, footer_credits
+from .render_editorial import place_text, svg_rc
 from .render_race import MONTHS, along, climb, pace_along, profile, restrict, vertex_positions
 from .render_sport import _num
 
@@ -85,13 +87,15 @@ def _runs(mask):
     return list(zip(edges[::2], edges[1::2]))
 
 
-def moving_time(xy, times):
+def moving_time(xy, times, ele=None):
     """(seconds, paused): the time without the pauses, or the elapsed time when there were none; (None, False)
     without a working clock.
 
     A pause is a stretch longer than PAUSE_S where the speed, measured as the straight-line distance covered over
     WINDOW_S around each moment (GPS jitter while standing adds up along the track, not across it), stays under
-    PAUSE_MPS. A watch that stopped recording while you stood (auto-pause) leaves one long step that is slow too."""
+    PAUSE_MPS. With elevations (ele, aligned with xy) the distance counts the climb too: a steep scramble covers
+    little ground, but it is not a pause. A watch that stopped recording while you stood (auto-pause) leaves one long
+    step that is slow too."""
     if times is None or len(times) < 2:
         return None, False
     t = np.maximum.accumulate(np.asarray(times, dtype=float))
@@ -99,12 +103,13 @@ def moving_time(xy, times):
     total = float(t[-1] - t[0])
     if not total > 0:
         return None, False
+    z = profile(xy, ele)[1] if ele is not None and len(ele) == len(xy) else np.zeros(len(xy))
     keep = np.concatenate([[True], np.diff(t) > 0])  # np.interp needs increasing times: drop repeated stamps
-    tt, px, py = t[keep], xy[keep, 0], xy[keep, 1]
+    tt, px, py, pz = t[keep], xy[keep, 0], xy[keep, 1], z[keep]
     mid = (t[:-1] + t[1:]) / 2
     lo = np.clip(mid - WINDOW_S / 2, t[0], t[-1])
     hi = np.clip(mid + WINDOW_S / 2, t[0], t[-1])
-    moved = np.hypot(np.interp(hi, tt, px) - np.interp(lo, tt, px), np.interp(hi, tt, py) - np.interp(lo, tt, py))
+    moved = np.sqrt(sum((np.interp(hi, tt, v) - np.interp(lo, tt, v)) ** 2 for v in (px, py, pz)))
     slow = moved < PAUSE_MPS * np.maximum(hi - lo, 1e-9)
     steps = np.diff(t)
     paused = sum(float(steps[i:j].sum()) for i, j in _runs(slow) if steps[i:j].sum() > PAUSE_S)
@@ -148,17 +153,66 @@ def _towards(a, b, t):
     return to_hex(np.clip(a + (b - a) * t, 0, 1))
 
 
+TRAIL_INK = 0.55  # paths and tracks: this far from the paper towards the small-text colour
+TRAIL_W = 0.34  # their width (pt x k): about twice a side street's on a city poster
+FOOTPATH_DASH = (0, (5.0, 2.6))  # footpaths dashed (in line widths), as on a topographic map; tracks solid
+TRACKS = {"track"}
+
+
 def trail_style(S):
-    """The style of the trail map, derived from S (so a style file works too; STYLES is not changed): paths and
-    tracks, the network that matters off the streets, drawn in the side-street colour and wider than on a city
-    poster; woods and meadows a step stronger."""
+    """The style of the trail map, derived from S (so a style file works too; STYLES is not changed): woods and
+    meadows a step stronger, the paths and tracks in their own ink (trail_network), and a stronger relief than on a
+    city poster (trail_relief), since the course is one bold line."""
     out = dict(S)
-    streets = dict(S["street"])
-    minor_colour, minor_w = S["street"]["minor"]
-    streets["path"] = (minor_colour, max(minor_w, S["street"]["path"][1]) * 1.6)
-    out["street"] = streets
     out["green"] = _towards(S["bg"], S["green"], 1.8)
+    out["trail"] = _towards(S["bg"], S["sub"], TRAIL_INK)
+    out["relief"] = trail_relief(S)
     return out
+
+
+def trail_relief(S):
+    """((shadow rgb, alpha), (light rgb, alpha)), as render_editorial.relief_colours, set against the course's own
+    colour (the accent, one bold line) instead of the faintest heat ink: light paper darkens by up to min(13, 0.35
+    route) L* and lightens by min(4, 0.2 route); dark paper darkens by min(8, 0.5 L*bg, 0.35 route) and lightens by
+    min(8, 0.3 route). The light side is held to what the map under it can bear, as on the other prints. A style
+    that sets "relief" keeps it."""
+    if "relief" in S:
+        return S["relief"]
+    bg = to_rgb(S["bg"])
+    lb = _lstar(bg)
+    route = abs(lb - _lstar(to_rgb(S["accent"])))
+    if lb >= 50:
+        shadow, ts, light, tl = S["ink"], min(13, 0.35 * route), "#ffffff", min(4, 0.2 * route)
+    else:
+        shadow, ts, light, tl = "#000000", min(8, 0.5 * lb, 0.35 * route), S["ink"], min(8, 0.3 * route)
+    a_light = min(_relief_alpha(bg, to_rgb(light), tl, 0.6), _keep_alpha(S, to_rgb(light), 0.6))
+    return ((to_rgb(shadow), _relief_alpha(bg, to_rgb(shadow), ts, 0.5)), (to_rgb(light), a_light))
+
+
+def split_network(basemap):
+    """(the basemap without its paths and tracks, the paths and tracks): the streets and roads go to draw_basemap
+    as on every print, the walking network (draw_basemap's "path" class) is drawn by trail_network over the relief."""
+    edges, green, water = basemap
+    trails = ~edges["highway"].map(_hw).isin(MAJOR | MINOR).to_numpy(dtype=bool)
+    return (edges[~trails], green, water), edges[trails]
+
+
+def trail_network(ax, trails, extent, S, k, map_w_mm):
+    """Paths and tracks over the relief: tracks solid, footpaths dashed, one compound path each, in S["trail"].
+    Each street once whatever its direction, cut to the map and simplified to what paper shows (as draw_basemap)."""
+    if not len(trails):
+        return
+    tol = (extent[1] - extent[0]) / map_w_mm * PRINT_TOL_MM
+    geoms = np.asarray(trails.geometry.values, dtype=object)
+    keep = ~pd.Series(shapely.to_wkb(shapely.normalize(geoms))).duplicated().to_numpy()
+    trails = trails[keep]
+    track = trails["highway"].map(_hw).isin(TRACKS).to_numpy()
+    for mask, style in ((track, "solid"), (~track, FOOTPATH_DASH)):
+        path = _line_path(p for g in _clip_simplify(trails[mask].geometry, extent, tol)
+                          for p in _parts(g, ("LineString",)))
+        if path is not None:
+            ax.add_patch(PathPatch(path, fill=False, edgecolor=S["trail"], linewidth=TRAIL_W * k, linestyle=style,
+                                   capstyle="butt", joinstyle="round", zorder=3.6))
 
 
 def _grid_xy(extent, x, y):
@@ -180,9 +234,9 @@ def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS):
     """The summits to draw: [(gx, gy, text, (x0, y0, x1, y1) label box, (x, y) label top-left)] in the layout grid.
 
     peaks: (x, y, name, ele) in map units. Only named summits inside the map, highest first (unknown heights last),
-    at most max_n. Each label goes right of its triangle, else left, above or below; a summit whose label would
-    leave the map, touch the course's casing or another summit's label or triangle is skipped, so nothing outside
-    the visible map is drawn. course: the drawn course lines in map units."""
+    at most max_n. Each label goes right of its triangle, else left, above, below or at a corner; a summit whose
+    label would leave the map, touch the course's casing or another summit's label or triangle wherever it goes is
+    skipped, so nothing outside the visible map is drawn. course: the drawn course lines in map units."""
     cand = []
     for x, y, name, ele in peaks:
         if not isinstance(name, str) or not name.strip():
@@ -207,8 +261,10 @@ def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS):
         if any(tri.intersects(b) for b in marks):  # under another summit's label or triangle (the course may run
             continue                              # over a summit: its triangle is drawn on top)
         cy = gy - (TRI_UP - TRI_DOWN) / 2
-        options = ((gx + TRI_W / 2 + 0.7, cy - h / 2), (gx - TRI_W / 2 - 0.7 - w, cy - h / 2),
-                   (gx - w / 2, gy - TRI_UP - 0.7 - h), (gx - w / 2, gy + TRI_DOWN + 0.7))
+        right, left = gx + TRI_W / 2 + 0.7, gx - TRI_W / 2 - 0.7 - w
+        up, down = gy - TRI_UP - 0.7 - h, gy + TRI_DOWN + 0.7
+        options = ((right, cy - h / 2), (left, cy - h / 2), (gx - w / 2, up), (gx - w / 2, down),  # beside, then
+                   (right, up), (right, down), (left, up), (left, down))  # diagonal: a summit on the course
         for lx, ly in options:
             label = _box(lx, ly, lx + w, ly + h)
             if (frame.contains(label) and (route is None or not label.intersects(route))
@@ -240,7 +296,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     xy, times, ele = restrict(track_xy, activity.times if times is None else times,
                               activity.ele if ele is None else ele, stretch)
     dist = along(xy)
-    secs, paused = moving_time(xy, times) if times else (None, False)
+    secs, paused = moving_time(xy, times, ele) if times else (None, False)
 
     # header
     T(18, 13, "P I N L E S S", pt=8.4)
@@ -256,7 +312,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     T(279, 69.5, name.upper(), pt=13.2, align="right", max_w=105)
     rule(80)
 
-    # the map: relief, paths and woods, the course, the summits
+    # the map: woods, water and roads, the relief, the paths and tracks, the course, the summits
     TS = trail_style(S)
     m, map_w, map_h = LEFT * k, (RIGHT - LEFT) * k, MAP_H * k
     ax = fig.add_axes([m / wmm, 1 - (MAP_TOP * k + map_h) / hmm, map_w / wmm, map_h / hmm], zorder=1)
@@ -264,12 +320,14 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     ax.set_ylim(extent[2], extent[3])
     ax.set_aspect("equal")
     ax.axis("off")
-    draw_basemap(ax, basemap, extent, TS, k, map_w)
+    streets, trails = split_network(basemap)
+    draw_basemap(ax, streets, extent, TS, k, map_w)
     drawn = draw_relief(ax, relief, extent, TS, basemap[2], k, map_w) if relief is not None else False
+    trail_network(ax, trails, extent, TS, k, map_w)
     cut = privacy.clip_to_extent(pieces, extent)
     coords = [c for c in (np.asarray(p.coords) for _, p in cut) if len(c) > 1]
     segments = np.concatenate([np.stack((c[:-1], c[1:]), axis=1) for c in coords]) if coords else np.empty((0, 2, 2))
-    heat = LinearSegmentedColormap.from_list("trail", S["heat"])
+    heat = LinearSegmentedColormap.from_list("trail", S["heat"][1:])  # the faintest ink would sink into the relief
     cmap, values, legend = ListedColormap([S["accent"]]), None, {"mode": "single"}
     if len(segments) and color_by in ("pace", "elevation"):
         pts = list(map(tuple, xy))
@@ -345,7 +403,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     for i, (value, unit, label) in enumerate(cells):
         x = LEFT + i * col
         unit_w = place_text(unit, 0, 0, k, 9, REGULAR)[2] + 1.5 if unit else 0.0
-        w_, _ = T(x, ytop + 1, value, pt=40, font=DISPLAY, max_w=col - 6 - unit_w, height=11)
+        w_, _ = T(x, ytop + 1, value, pt=40, font=DISPLAY, max_w=col - 9 - unit_w, height=11)
         if unit:
             T(x + w_ + 1.5, ytop + 6.5, unit, pt=9, font=REGULAR, color=S["accent"])
         T(x, ytop + 15, label, pt=6.0, color=S["sub"], max_w=col - 4)

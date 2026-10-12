@@ -64,6 +64,14 @@ def test_moving_time_leaves_out_long_pauses_only():
     secs, paused = render_trail.moving_time(gap, t)
     assert paused and secs == pytest.approx(t[-1] - 900, abs=40)
     assert render_trail.moving_time(walk, np.zeros(1800)) == (None, False), "a frozen clock: no time"
+    # a ten-minute scramble: 0.25 m/s over the ground, 0.2 m/s up; slow on the map, but no pause
+    scramble = np.column_stack([np.arange(600) * 0.25, np.zeros(600)])
+    climb = list(2000 + np.arange(600) * 0.2)
+    assert render_trail.moving_time(scramble, np.arange(600.0), climb) == (599.0, False)
+    secs, paused = render_trail.moving_time(scramble, np.arange(600.0))
+    assert paused and secs < 100, "without the heights it reads as a stop"
+    secs, paused = render_trail.moving_time(xy[:4000], np.arange(4000.0), list(np.full(4000, 1500.0)))
+    assert paused and secs == pytest.approx(3999 - 570, abs=20), "flat ground: the heights change nothing"
     assert render_trail.fmt_hours(4 * 3600 + 12 * 60 + 31) == "4:13" and render_trail.fmt_hours(52 * 60) == "0:52"
 
 
@@ -232,11 +240,38 @@ def test_every_style_draws_and_colours_follow_the_choice(tmp_path):
     assert info["legend"]["mode"] == "elevation" and (tmp_path / "t.svg").stat().st_size > 0
     info, _, _ = _page(tmp_path, color_by="pace")
     assert info["legend"]["mode"] == "pace"
-    S = render_editorial.STYLES["huella"]
-    T = render_trail.trail_style(S)
-    assert T["street"]["path"][0] == S["street"]["minor"][0] and T["street"]["path"][1] > S["street"]["minor"][1]
-    assert T["street"]["major"] == S["street"]["major"] and S["street"]["path"] == ("#e7e1d5", 0.11), \
-        "STYLES itself is not changed"
+
+
+def test_the_trail_map_draws_its_paths_over_a_stronger_relief():
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import to_rgb
+
+    def lstar(colour):
+        return render_editorial._lstar(to_rgb(colour))
+
+    for name, S in render_editorial.STYLES.items():
+        before = repr(S)
+        T = render_trail.trail_style(S)
+        assert repr(S) == before, "STYLES itself is not changed"
+        assert min(lstar(S["bg"]), lstar(S["sub"])) < lstar(T["trail"]) < max(lstar(S["bg"]), lstar(S["sub"])), name
+        (_, shadow), (light_rgb, light) = T["relief"]
+        (_, shadow0), _ = render_editorial.relief_colours(S)
+        assert shadow >= shadow0 and shadow > 0, f"{name}: the course is one bold line, the relief can show more"
+        assert light <= render_editorial._keep_alpha(S, light_rgb, 0.6) + 1e-9, "the map under it keeps its contrast"
+    own = dict(render_editorial.STYLES["huella"], relief=(((0, 0, 0), 0.1), ((1, 1, 1), 0.0)))
+    assert render_trail.trail_style(own)["relief"] == own["relief"], "a style that sets its relief keeps it"
+    edges = gpd.GeoDataFrame({"highway": ["track", "path", "footway", "residential", "primary", ["path", "steps"]]},
+                             geometry=[LineString([(0, i), (5000, i)]) for i in range(0, 600, 100)])
+    streets, trails = render_trail.split_network((edges, EMPTY, EMPTY))
+    assert list(streets[0]["highway"]) == ["residential", "primary"] and len(trails) == 4
+    fig, ax = plt.subplots()
+    render_trail.trail_network(ax, trails, (0, 5000, -100, 700), render_trail.trail_style(own), 1.0, 261)
+    solid, dashed = ax.patches
+    assert solid.get_linestyle() == "solid" and dashed.get_linestyle() == render_trail.FOOTPATH_DASH, \
+        "tracks solid, footpaths dashed"
+    assert solid.zorder == dashed.zorder == 3.6, "over the relief (3.5), under the course"
+    assert len(solid.get_path().vertices) == 2 and len(dashed.get_path().vertices) == 6
+    plt.close(fig)
 
 
 # --- privacy and the command line --------------------------------------------------------------------------------------
