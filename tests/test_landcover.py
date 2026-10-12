@@ -11,7 +11,7 @@ from PIL import Image
 from pyproj import Transformer
 from shapely.geometry import LineString
 
-from _cog_fixture import fake_server, landcover_levels, write_landcover_cog
+from _cog_fixture import fake_server, landcover_levels, real_landcover_header, write_landcover_cog
 from pinless import cli, landcover, race, relief, render, render_editorial, render_trail
 from test_race_graphs import EMPTY
 from test_trail import START, _hike, _lonlat, _loop, _trail_world
@@ -136,6 +136,20 @@ def test_a_class_the_dataset_does_not_have_is_refused(monkeypatch, tmp_path):
     assert landcover.prepare_many([(extent, crs, 60.0)], log=logs.append) == [None]
     assert "skipped (LandCoverError)" in logs[-1]
     assert not list((tmp_path / "cache" / "landcover").rglob("*.zz")), "a block that does not decode is not cached"
+
+
+def test_the_header_request_holds_a_full_size_header(monkeypatch):
+    for name, value in REAL.items():
+        monkeypatch.setattr(landcover, name, value)
+    head = real_landcover_header((39, -6))
+    assert len(head) == 27556, "the synthetic header ends where the 14 real v200 headers measured end"
+    buf = head + bytes(64 * 1024)  # the first blocks follow the header in the file
+    hdr = landcover.read_header(buf[:landcover.HEADER_BYTES], (39, -6))
+    assert [(lv.w, len(lv.offsets)) for lv in hdr.levels] == [(36000, 1296), (18000, 324), (9000, 81), (4500, 25),
+                                                               (2250, 9), (1125, 4), (562, 1)]
+    for cut in (16384, 27555):  # a shorter request turns the ground off for every real tile
+        with pytest.raises(landcover.LandCoverError):
+            landcover.read_header(buf[:cut], (39, -6))
 
 
 def test_tile_names_and_the_three_degree_grid_on_both_hemispheres():

@@ -29,7 +29,7 @@ from pyproj import Transformer
 from . import area, relief
 
 HOST = "esa-worldcover.s3.eu-central-1.amazonaws.com"
-HEADER_BYTES = 32768  # the seven IFDs of a real tile and their arrays end before 28 KB
+HEADER_BYTES = 32768  # the seven IFDs of a real tile and their arrays end at byte 27556 (tests pin it)
 TILE_DEG = 3  # a tile covers 3 x 3 degrees from its south-west corner
 WIDTH0 = 36000  # its pixels on each side at full resolution: 1/12000 degree, about 9 m north to south
 BLOCK = 1024  # the internal blocks of the real files, at every level: all that S3 learns inside a tile

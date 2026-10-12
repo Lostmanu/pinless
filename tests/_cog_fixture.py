@@ -5,6 +5,7 @@ encoded (byte planes, most significant first, then byte differences along the ro
 tiles zero-padded. With dtype=np.uint8 (the WorldCover-like files of write_landcover_cog) the tiles are the bytes
 themselves, zlib-compressed, with no predictor. Every argument can be bent to build files the reader must refuse.
 """
+import math
 import struct
 import zlib
 
@@ -152,6 +153,63 @@ def write_landcover_cog(tile=(39, -6), levels=None, block=16, tile_deg=3, **bent
               dtype=np.uint8)
     kw.update(bent)
     return write_cog(**kw)
+
+
+def real_landcover_header(tile=(39, -6), width0=36000, block=1024, n_levels=7):
+    """The first bytes of a full-size WorldCover tile (no blocks), laid out as the real v200 files are (measured on
+    14 tiles): GDAL's 184-byte ghost area, then each IFD followed by its palette (320) and, for the first, its GDAL
+    metadata and GeoTIFF arrays; then every level's block offsets and byte counts, level by level. Same tags, types
+    and counts as the real files, so the header ends at the same byte (27556). The offsets point past the header."""
+    S, W = tile
+    shape = [math.ceil((width0 >> L) / block) ** 2 for L in range(n_levels)]
+    first = 1 << 20
+    ifds = []
+    for L in range(n_levels):
+        w = width0 >> L
+        e = [(256, 3, [w]), (257, 3, [w]), (258, 3, [8]), (259, 3, [8]), (262, 3, [3]), (277, 3, [1]), (284, 3, [1]),
+             (317, 3, [1]), (320, 3, [0] * 768), (322, 3, [block]), (323, 3, [block]),
+             (324, 4, [first + 100 * i for i in range(shape[L])]), (325, 4, [100] * shape[L]), (339, 3, [1]),
+             (42113, 2, list(b"0\x00"))]
+        if L == 0:
+            e += [(33550, 12, [3 / width0, 3 / width0, 0.0]), (33922, 12, [0.0, 0.0, 0.0, float(W), float(S + 3), 0.0]),
+                  (34735, 3, [1, 1, 0, 7, 1024, 0, 1, 2, 1025, 0, 1, 1, 2048, 0, 1, 4326, 2049, 34737, 7, 0,
+                              2054, 0, 1, 9102, 2057, 34736, 1, 1, 2059, 34736, 1, 0]),
+                  (34736, 12, [298.257223563, 6378137.0]), (34737, 2, list(b"WGS 84|\x00")),
+                  (42112, 2, list(b"<GDALMetadata>" + b" " * (1094 - 30) + b"</GDALMetadata>\x00"))]
+        else:
+            e += [(254, 4, [1])]
+        ifds.append(sorted(e))
+    size = {2: 1, 3: 2, 4: 4, 12: 8}
+    fmt = {2: "B", 3: "H", 4: "I", 12: "d"}
+    pos, at, ifd_at = 8 + 184, {}, []
+    for L, e in enumerate(ifds):  # the IFDs and their own arrays, but the block arrays
+        ifd_at.append(pos)
+        pos += 2 + 12 * len(e) + 4
+        for tag, typ, vals in e:
+            if tag not in (324, 325) and len(vals) * size[typ] > 4:
+                at[L, tag] = pos
+                pos += len(vals) * size[typ]
+    for L, e in enumerate(ifds):  # then the block offsets and counts
+        for tag, typ, vals in e:
+            if tag in (324, 325) and len(vals) * size[typ] > 4:
+                at[L, tag] = pos
+                pos += len(vals) * size[typ]
+    buf = bytearray(pos)
+    buf[:8] = b"II*\x00" + struct.pack("<I", ifd_at[0])
+    for L, e in enumerate(ifds):
+        p = ifd_at[L]
+        struct.pack_into("<H", buf, p, len(e))
+        for k, (tag, typ, vals) in enumerate(e):
+            data = struct.pack(f"<{len(vals)}{fmt[typ]}", *vals)
+            q = p + 2 + 12 * k
+            if len(data) <= 4:
+                struct.pack_into("<HHI", buf, q, tag, typ, len(vals))
+                buf[q + 8:q + 8 + len(data)] = data
+            else:
+                struct.pack_into("<HHII", buf, q, tag, typ, len(vals), at[L, tag])
+                buf[at[L, tag]:at[L, tag] + len(data)] = data
+        struct.pack_into("<I", buf, p + 2 + 12 * len(e), ifd_at[L + 1] if L + 1 < n_levels else 0)
+    return bytes(buf)
 
 
 def fake_server(files, calls):
