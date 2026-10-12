@@ -170,6 +170,30 @@ def cut(track, others, trim_m, zone_r, user_zones=(), allow_private_ends=False, 
     return [(0, line)], rep, learned, numbers
 
 
+def frame_course(pieces, aspect, pad_frac=0.08, min_m=2000.0):
+    """The map extent (x0, x1, y0, y1) around the drawn pieces: their box padded by pad_frac of its longer side, at
+    least min_m wide and high, grown to the map's aspect (width / height)."""
+    pts = np.concatenate([np.asarray(p.coords) for _, p in pieces])
+    x0, y0 = pts.min(axis=0)
+    x1, y1 = pts.max(axis=0)
+    pad = pad_frac * max(x1 - x0, y1 - y0, min_m)
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    w, h = max(x1 - x0 + 2 * pad, min_m), max(y1 - y0 + 2 * pad, min_m / aspect)
+    if w / h > aspect:
+        h = w / aspect
+    else:
+        w = h * aspect
+    return (cx - w / 2, cx + w / 2, cy - h / 2, cy + h / 2)
+
+
+def osm_box(extent, crs):
+    """(south, west, north, east) in degrees for the OpenStreetMap download: the map box plus about 200 m, so the
+    streets reach its edges."""
+    inv = Transformer.from_crs(crs, 4326, always_xy=True)
+    lons, lats = inv.transform([extent[0], extent[1]], [extent[2], extent[3]])
+    return (min(lats) - 0.002, min(lons) - 0.002, max(lats) + 0.002, max(lons) + 0.002)
+
+
 def run(sel, pool, a, log=print):
     """sel: activities after the type/year filters; pool: every activity of that type, all years (for the places)."""
     chosen = pick(sel, a.activity)
@@ -219,21 +243,9 @@ def run(sel, pool, a, log=print):
         log("[privacy] this run starts and ends at the same place, and no other run of yours starts there: it is "
             "drawn as a race start. If it is not one (a hotel, a friend's home), add --zone there.")
 
-    pts = np.concatenate([np.asarray(p.coords) for _, p in pieces])
-    x0, y0 = pts.min(axis=0)
-    x1, y1 = pts.max(axis=0)
-    pad = 0.08 * max(x1 - x0, y1 - y0, 2000.0)
-    aspect = render_race.map_aspect(a.size)
-    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    w, h = max(x1 - x0 + 2 * pad, 2000.0), max(y1 - y0 + 2 * pad, 2000.0 / aspect)
-    if w / h > aspect:
-        h = w / aspect
-    else:
-        w = h * aspect
-    extent = (cx - w / 2, cx + w / 2, cy - h / 2, cy + h / 2)
+    extent = frame_course(pieces, render_race.map_aspect(a.size))
     inv = Transformer.from_crs(crs, 4326, always_xy=True)
-    lons, lats = inv.transform([extent[0], extent[1]], [extent[2], extent[3]])
-    big = (min(lats) - 0.002, min(lons) - 0.002, max(lats) + 0.002, max(lons) + 0.002)
+    big = osm_box(extent, crs)
     try:
         basemap = render.load_basemap(area.fetch_basemap(big, log=log), big, crs)
     except RuntimeError as ex:

@@ -1,5 +1,6 @@
-"""pinless EXPORT [--year 2025] [--name Lucía] [--place "Madrid"] [--layout editorial|atlas|race] [--style huella]
+"""pinless EXPORT [--year 2025] [--name Lucía] [--place "Madrid"] [--layout editorial|atlas|race|trail] [--style huella]
 pinless EXPORT --with EXPORT2 --name Lucía --with-name Marcos   (one poster for two, one ink each)
+pinless hike.gpx --layout trail --title "Peñalara"   (one route on a topographic map; EXPORT may be one GPX/TCX/FIT)
 
 With no area options it finds where you run most, fetches that area's OpenStreetMap data once (cached) and names the
 city. Everything else runs locally: the export never leaves the machine; only the area's bounding box (and its centre
@@ -21,6 +22,7 @@ from pyproj import Transformer
 from shapely.geometry import LineString, box
 
 from . import atlas, colouring, couple, frame, ingest, privacy, race, render, render_sport, render_editorial, stats
+from . import trail
 from . import relief, styles as own_styles
 from .localtime import local_start
 
@@ -51,25 +53,27 @@ def main(argv=None):
     p.add_argument("--cache", default=None, help="pre-fetched OSM folder name under ./cache (tools/fetch_osm.py)")
     p.add_argument("--title", default="", help="headline text; default: --place or the city found at the area centre")
     p.add_argument("--year", type=int, default=None, help="only activities that started that year (local time)")
-    p.add_argument("--type", default="Run")
-    p.add_argument("--layout", default="editorial", choices=["classic", "sport", "editorial", "atlas", "race"],
-                   help="atlas: one small map per city you ran in; race: one activity as a finisher print")
+    p.add_argument("--type", default=None,
+                   help="activity type (Run, Ride, Walk, Hike...); default Run, and any type for the trail layout")
+    p.add_argument("--layout", default="editorial", choices=["classic", "sport", "editorial", "atlas", "race", "trail"],
+                   help="atlas: one small map per city you ran in; race: one activity as a finisher print; trail: one "
+                        "route (a hike, a trail run) on a topographic map")
     p.add_argument("--max-cities", type=int, default=9, help="atlas: most cities on the print (1-12)")
     p.add_argument("--activity", default="longest",
-                   help="race: longest (default), latest, a date YYYY-MM-DD or an activity id")
+                   help="race and trail: longest (default), latest, a date YYYY-MM-DD or an activity id")
     p.add_argument("--allow-private-ends", action="store_true",
-                   help="race: draw a run that starts or ends at a private place, without that end and a random "
-                        "stretch more, with its numbers limited to what is drawn")
+                   help="race and trail: draw an activity that starts or ends at a private place, without that end "
+                        "and a random stretch more, with its numbers limited to what is drawn")
     p.add_argument("--graphs", action="store_true",
                    help="editorial: add km per month, time of day and direction charts under the map")
     p.add_argument("--color-by", default=None, choices=colouring.MODES,
                    help="route colour: heat (how often), single, month, pace or elevation (editorial and atlas); "
-                        "race: pace (default), elevation or single")
+                        "race: pace (default), elevation or single; trail: single (default), elevation or pace")
     p.add_argument("--name", default="", help="runner name for sport/editorial layouts (gifts)")
     p.add_argument("--headline", default="city", choices=["city", "name"],
                    help="editorial headline: city (default) or runner name")
     p.add_argument("--style", default=None,
-                   help="classic: nightrun|ink · sport: volt|pista · editorial, atlas and race: huella, carbon, "
+                   help="classic: nightrun|ink · sport: volt|pista · editorial, atlas, race and trail: huella, carbon, "
                         "midnight, blueprint, ink, graphite, neon, lavender, sunset, forest, blush, ocean, or your "
                         "own style file (my-style.json; see python -m pinless.styles)")
     p.add_argument("--size", default="A3", choices=sorted(render.SIZES))
@@ -84,17 +88,22 @@ def main(argv=None):
     p.add_argument("--pdf", default=None)
     p.add_argument("--svg", default=None, help="vector export for the editorial layout")
     p.add_argument("--preview", default=None, help="lightweight editorial JPEG preview (1600 px high)")
-    p.add_argument("--relief", default="off", choices=["off", "shade"],
-                   help="shade: terrain relief under the map where the land is hilly (editorial, atlas and race), from "
-                        "the Copernicus elevation model on Amazon S3, which learns the 1-degree cells around the map "
-                        "and, where the land is hilly, the blocks of about 30 km that cover it (never your routes); "
-                        "downloaded once (cached); flat areas get none")
+    p.add_argument("--relief", default=None, choices=["off", "shade"],
+                   help="shade: terrain relief under the map where the land is hilly (editorial, atlas, race and "
+                        "trail), from the Copernicus elevation model on Amazon S3, which learns the 1-degree cells "
+                        "around the map and, where the land is hilly, the blocks of about 30 km that cover it (never "
+                        "your routes); downloaded once (cached); flat areas get none. Default: shade for the trail "
+                        "layout, off for the others")
     p.add_argument("--with", dest="with_export", default=None, metavar="EXPORT",
                    help="a second person's Strava export: one poster for two, one ink each (editorial)")
     p.add_argument("--with-name", default="", help="the second person's name (required with --with)")
     p.add_argument("--with-type", default=None,
                    help="activity type in the second export, when it names the sport differently (default: --type)")
     a = p.parse_args(_glue_negative_values(sys.argv[1:] if argv is None else list(argv)))
+    if a.type is None and a.layout != "trail":  # a trail can be any activity: a hike, a walk, a trail run
+        a.type = "Run"
+    if a.relief is None:  # relief is the point of a mountain print
+        a.relief = "shade" if a.layout == "trail" else "off"
     if (a.with_name or a.with_type) and not a.with_export:
         p.error("--with-name and --with-type need --with")
     if a.with_export:
@@ -119,10 +128,10 @@ def main(argv=None):
         p.error("--zone needs LAT,LON,RADIUS_M: the latitude first (-90 to 90), then the longitude (-180 to 180), then "
                 "a radius in metres above 0")
     styles = {"classic": render.STYLES, "sport": render_sport.STYLES, "editorial": render_editorial.STYLES,
-              "atlas": render_editorial.STYLES, "race": render_editorial.STYLES}
+              "atlas": render_editorial.STYLES, "race": render_editorial.STYLES, "trail": render_editorial.STYLES}
     if own_styles.is_file(a.style):  # your own style: checked and loaded before any file is read
-        if a.layout not in ("editorial", "atlas", "race"):
-            p.error("a style file works with the editorial, atlas and race layouts")
+        if a.layout not in ("editorial", "atlas", "race", "trail"):
+            p.error("a style file works with the editorial, atlas, race and trail layouts")
         try:
             a.style, notes = own_styles.register(a.style)
         except own_styles.StyleError as ex:
@@ -136,14 +145,14 @@ def main(argv=None):
                 f"give a style file (my-style.json)")
     if a.graphs and a.layout != "editorial":
         p.error("--graphs is available for the editorial layout")
-    if a.color_by != "heat" and a.layout not in ("editorial", "atlas", "race"):
-        p.error("--color-by is available for the editorial, atlas and race layouts")
-    if a.svg and a.layout not in ("editorial", "atlas", "race"):
-        p.error("--svg is available for the editorial, atlas and race layouts")
-    if a.relief != "off" and a.layout not in ("editorial", "atlas", "race"):
-        p.error("--relief is available for the editorial, atlas and race layouts")
-    if (a.activity != "longest" or a.allow_private_ends) and a.layout != "race":
-        p.error("--activity and --allow-private-ends are for the race layout")
+    if a.color_by != "heat" and a.layout not in ("editorial", "atlas", "race", "trail"):
+        p.error("--color-by is available for the editorial, atlas, race and trail layouts")
+    if a.svg and a.layout not in ("editorial", "atlas", "race", "trail"):
+        p.error("--svg is available for the editorial, atlas, race and trail layouts")
+    if a.relief != "off" and a.layout not in ("editorial", "atlas", "race", "trail"):
+        p.error("--relief is available for the editorial, atlas, race and trail layouts")
+    if (a.activity != "longest" or a.allow_private_ends) and a.layout not in ("race", "trail"):
+        p.error("--activity and --allow-private-ends are for the race and trail layouts")
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.activity):
         try:
             dt.date.fromisoformat(a.activity)
@@ -151,9 +160,11 @@ def main(argv=None):
             p.error(f"--activity {a.activity}: not a real date (YYYY-MM-DD)")
     if a.layout == "race" and a.color_by not in ("heat", "pace", "elevation", "single"):
         p.error("the race layout colours its course by pace (default), elevation or single")
-    if a.layout == "race" and (a.bbox or a.place or a.cache or a.fit or a.headline != "city" or a.graphs):
-        p.error("the race layout frames its course by itself: --bbox, --place, --cache, --fit, --headline and --graphs "
-                "do not apply")
+    if a.layout == "trail" and a.color_by not in ("heat", "pace", "elevation", "single"):
+        p.error("the trail layout colours its route in one colour (default), or by elevation or pace")
+    if a.layout in ("race", "trail") and (a.bbox or a.place or a.cache or a.fit or a.headline != "city" or a.graphs):
+        p.error(f"the {a.layout} layout frames its course by itself: --bbox, --place, --cache, --fit, --headline and "
+                f"--graphs do not apply")
     if a.layout == "atlas" and (a.bbox or a.place or a.cache or a.fit or a.headline != "city"):
         p.error("the atlas finds every city by itself: --bbox, --place, --cache, --fit and --headline do not apply")
     if not 1 <= a.max_cities <= 12:
@@ -162,9 +173,9 @@ def main(argv=None):
         p.error("--headline name is available for the editorial layout")
     if a.headline == "name" and not a.name.strip():
         p.error("--headline name requires --name")
-    if a.preview and (a.layout not in ("editorial", "atlas", "race") or
+    if a.preview and (a.layout not in ("editorial", "atlas", "race", "trail") or
                       os.path.splitext(a.preview)[1].lower() not in (".jpg", ".jpeg")):
-        p.error("--preview requires the editorial, atlas or race layout and a .jpg or .jpeg filename")
+        p.error("--preview requires the editorial, atlas, race or trail layout and a .jpg or .jpeg filename")
     t0 = time.time()
 
     if a.with_export:
@@ -182,6 +193,10 @@ def main(argv=None):
         return code
     if a.layout == "race":  # one activity; zones from every activity of that type, whatever the year
         code = race.run(sel, [x for x in acts if x.type.lower() == a.type.lower()], a)
+        print(f"[done] {time.time() - t0:.0f}s")
+        return code
+    if a.layout == "trail":  # one activity; zones from every other activity of the export, whatever its type or year
+        code = trail.run(sel, acts, a)
         print(f"[done] {time.time() - t0:.0f}s")
         return code
     try:
@@ -281,9 +296,9 @@ def _zone_ok(text):
 
 
 def _select(acts, type_, year):
-    """The activities of a type (case-insensitive) and, when given, a year. The year of each run is the one where it
-    was run: a New Year's Eve run in Madrid at 00:30 belongs to the new year."""
-    return [x for x in acts if x.type.lower() == type_.lower()
+    """The activities of a type (case-insensitive; None: any type) and, when given, a year. The year of each run is
+    the one where it was run: a New Year's Eve run in Madrid at 00:30 belongs to the new year."""
+    return [x for x in acts if (type_ is None or x.type.lower() == type_.lower())
             and (year is None or ((t := local_start(x)) is not None and t.year == year))]
 
 

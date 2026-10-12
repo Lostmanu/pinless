@@ -105,8 +105,8 @@ def test_the_cli_draws_with_a_style_file(monkeypatch, tmp_path, capsys):
 
 
 @pytest.mark.parametrize("extra,message", [
-    (["--layout", "classic"], "a style file works with the editorial, atlas and race layouts"),
-    (["--layout", "sport"], "a style file works with the editorial, atlas and race layouts"),
+    (["--layout", "classic"], "a style file works with the editorial, atlas, race and trail layouts"),
+    (["--layout", "sport"], "a style file works with the editorial, atlas, race and trail layouts"),
     ([], "--style: mine: unknown key 'colour'"),
 ])
 def test_the_cli_refuses_a_style_file_it_cannot_use(extra, message, tmp_path, capsys):
