@@ -438,3 +438,17 @@ def test_the_demo_hike_reads_as_one_synthetic_loop():
     assert 2400 < render_trail.high_point(xy, act.ele)[1] < 2440, "over Penalara (2428 m)"
     secs, paused = render_trail.moving_time(xy, act.times, act.ele)
     assert paused and act.times[-1] - secs == pytest.approx(35 * 60, abs=120), "the two stops, 20 and 15 minutes"
+
+
+def test_a_planned_route_without_clock_or_heights_still_draws(monkeypatch, tmp_path):
+    boxes = _texts(monkeypatch)
+    xy = _line((0, 0), (3000, 0), (3000, 2500))
+    plan = Activity(id="p", type="Unknown", start=None, lonlat=_lonlat(xy), source="x", times=None, ele=None)
+    extent = race.frame_course([(0, LineString(xy))], render_trail.map_aspect(), pad_frac=0.1)
+    info = render_trail.render(plan, xy, [(0, LineString(xy[20:-20]))], (EMPTY, EMPTY, EMPTY), extent,
+                               str(tmp_path / "p.png"), dpi=20, color_by="elevation")
+    assert info["secs"] is None and info["high"] is None and info["route_type"] == "point_to_point"
+    assert info["legend"]["mode"] == "single", "no heights: one colour"
+    cells = [b[0] for b in boxes if b[2] > render_trail.NUMBERS_TOP]
+    assert cells.count("—") == 3 and "POINT TO POINT" in cells and "TIME" in cells
+    assert not any(b[0] in ("ELEVATION", "PERFIL") for b in boxes), "no profile without heights"
