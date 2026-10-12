@@ -34,8 +34,8 @@ description: Make a print-ready poster of a runner's year from their Strava expo
    `--title "<race name>"` if they want its name printed (the activity's own name is never printed by default).
    For one hike or mountain route on a topographic map: `--layout trail`, with the export or a single GPX, TCX or
    FIT file the user names (do not open it), and `--title "<route name>"` if they want one; relief is on by default.
-   A single file has no other activities to learn private places from: ask whether it starts at home, and if so
-   ask the user for a `--zone` there.
+   On any layout, a single file of one activity has no other activities to learn private places from: ask
+   whether it starts at home, and if so ask the user for a `--zone` there.
    For one poster of two people (a couple, two friends), ask the user for both export paths and both names; take
    them from the user only, never from a search or from the files. Do not open either export. Run:
    `pinless "<first.zip>" --with "<second.zip>" --name "<FIRST NAME>" --with-name "<SECOND NAME>" --year <YEAR> --style <STYLE> --out poster.png --pdf poster.pdf --preview poster.jpg`
