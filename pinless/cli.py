@@ -21,7 +21,7 @@ from pyproj import Transformer
 from shapely.geometry import LineString, box
 
 from . import atlas, colouring, couple, frame, ingest, privacy, race, render, render_sport, render_editorial, stats
-from . import relief
+from . import relief, styles as own_styles
 from .localtime import local_start
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -70,7 +70,8 @@ def main(argv=None):
                    help="editorial headline: city (default) or runner name")
     p.add_argument("--style", default=None,
                    help="classic: nightrun|ink · sport: volt|pista · editorial, atlas and race: huella, carbon, "
-                        "midnight, blueprint, ink, graphite, neon, lavender, sunset, forest, blush, ocean")
+                        "midnight, blueprint, ink, graphite, neon, lavender, sunset, forest, blush, ocean, or your "
+                        "own style file (my-style.json; see python -m pinless.styles)")
     p.add_argument("--size", default="A3", choices=sorted(render.SIZES))
     p.add_argument("--dpi", type=int, default=300)
     p.add_argument("--lang", default="en", choices=["en", "es"])
@@ -119,8 +120,20 @@ def main(argv=None):
                 "a radius in metres above 0")
     styles = {"classic": render.STYLES, "sport": render_sport.STYLES, "editorial": render_editorial.STYLES,
               "atlas": render_editorial.STYLES, "race": render_editorial.STYLES}
-    if a.style and a.style not in styles[a.layout]:
-        p.error(f"style {a.style!r} is not available for {a.layout}; choose {', '.join(styles[a.layout])}")
+    if own_styles.is_file(a.style):  # your own style: checked and loaded before any file is read
+        if a.layout not in ("editorial", "atlas", "race"):
+            p.error("a style file works with the editorial, atlas and race layouts")
+        try:
+            a.style, notes = own_styles.register(a.style)
+        except own_styles.StyleError as ex:
+            p.error(f"--style: {ex}")
+        if a.with_export and "who" not in render_editorial.STYLES[a.style]:
+            p.error('--style: a poster for two needs "who", five inks (or a "base" style to take them from)')
+        for note in notes:
+            print(f"[style] {note}")
+    elif a.style and a.style not in styles[a.layout]:
+        p.error(f"style {a.style!r} is not available for {a.layout}; choose {', '.join(styles[a.layout])}, or "
+                f"give a style file (my-style.json)")
     if a.graphs and a.layout != "editorial":
         p.error("--graphs is available for the editorial layout")
     if a.color_by != "heat" and a.layout not in ("editorial", "atlas", "race"):

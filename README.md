@@ -9,17 +9,64 @@
 <p align="center"><sub>A3 prints in standard 40x50 cm frames, drawn to scale (<code>tools/mockup.py</code>). Demo posters made from a synthetic runner (<code>tools/simulate_runner.py</code>), not from a real person.</sub></p>
 
 ```bash
-pip install git+https://github.com/Lostmanu/pinless
+pip install https://github.com/Lostmanu/pinless/archive/refs/heads/main.zip
 pinless export_12345678.zip --name "Lucia" --year 2025 --pdf poster.pdf
 ```
 
-That is the whole thing. Pinless finds the area where you run most, downloads that area's streets from OpenStreetMap once (cached), removes the places that would give away where you live, and writes `poster.png` and a vector `poster.pdf` ready for a print shop.
+That is the whole thing. Pinless finds the area where you run most, downloads that area's streets from OpenStreetMap once (cached), removes the places that would give away where you live, and writes `poster.png` and a vector `poster.pdf` ready for a print shop. It is free, it needs no account, and everything happens on your computer. New to the command line? See [Install, step by step](#install-step-by-step).
 
 ## Get your Strava export
 
 On strava.com: **Settings > My Account > Download or Delete Your Account > Request your archive**. Strava emails you a link to a zip, which can take a while. Pass the zip as it is; there is no need to unzip it.
 
 It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros, Suunto, Komoot or any app that exports GPX.
+
+## Install, step by step
+
+You need Python (free) and two commands. Nothing to sign up for.
+
+**Windows**
+
+1. Download Python 3.12 or 3.13 from [python.org/downloads](https://www.python.org/downloads/) and run the installer. On its first screen, tick **Add python.exe to PATH**, then click **Install Now**.
+2. Open **Terminal** (or **PowerShell**) from the Start menu and install Pinless:
+   ```
+   py -m pip install https://github.com/Lostmanu/pinless/archive/refs/heads/main.zip
+   ```
+   It downloads Pinless and the map libraries it uses, a few hundred MB, once.
+3. Put your Strava zip in your Downloads folder and make the poster:
+   ```
+   cd Downloads
+   py -m pinless export_12345678.zip --name "Lucia" --year 2025 --preview poster.jpg
+   ```
+   Use the real name of your zip. Open `poster.jpg` to look at it; `poster.png` (300 dpi) is the file for printing.
+
+**macOS**
+
+1. Download Python 3.12 or 3.13 from [python.org/downloads](https://www.python.org/downloads/), run the installer, then open **Terminal** (Applications > Utilities).
+2. Install Pinless:
+   ```
+   python3 -m pip install https://github.com/Lostmanu/pinless/archive/refs/heads/main.zip
+   ```
+3. Make the poster:
+   ```
+   cd ~/Downloads
+   python3 -m pinless export_12345678.zip --name "Lucia" --year 2025 --preview poster.jpg
+   ```
+
+**Linux**, or if pip answers "externally-managed-environment" (Homebrew Python): install it in its own folder.
+
+```
+python3 -m venv ~/pinless
+~/pinless/bin/pip install https://github.com/Lostmanu/pinless/archive/refs/heads/main.zip
+~/pinless/bin/pinless export_12345678.zip --name "Lucia" --year 2025 --preview poster.jpg
+```
+
+Good to know:
+
+- The first poster of a city takes a few minutes: Pinless downloads that area's streets once and keeps them for the next time.
+- If it says `[osm] STOP`, the public map servers are busy. Run the same command again later.
+- Add `--pdf poster.pdf` for a print shop, `--size A4`, `A3` or `50x70`, `--lang es` for Spanish labels, and any of the styles below with `--style`. `py -m pinless --help` (Windows) or `python3 -m pinless --help` lists every option.
+- To update Pinless, run the install command again with `--upgrade` after `install`.
 
 ## What you get
 
@@ -44,6 +91,41 @@ It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros
 <p align="center"><img src="docs/styles.jpg" width="100%" alt="The same Madrid poster in twelve styles"></p>
 
 `--style` picks one of `huella`, `carbon`, `midnight`, `blueprint`, `ink`, `graphite`, `neon`, `lavender`, `sunset`, `forest`, `blush` and `ocean`. They work for the poster, the atlas and the race print. The dark ones (`midnight`, `graphite`, `neon`) give the routes a soft glow, still drawn as vectors.
+
+## Your own style
+
+<p align="center"><img src="docs/custom-style.jpg" width="40%" alt="The Madrid poster in a style made from a small file: dark green paper, gold routes"></p>
+
+Any style is a small text file you can write yourself. This one (`styles/emerald.json` in this repository) starts from `carbon` and changes the paper, the map and the routes:
+
+```json
+{
+  "base": "carbon",
+  "bg": "#0e2a22",
+  "green": "#123329",
+  "water": "#163b30",
+  "water_line": "#1f4a3d",
+  "rule": "#3e5d52",
+  "street": {"major": ["#24493d", 0.32], "minor": ["#1b3d32", 0.17], "path": ["#17362c", 0.11]},
+  "accent": "#e8c15a",
+  "heat": ["#8f7a3c", "#b89645", "#e0b84f", "#f3d98c", "#fff4cf"],
+  "glow": 0.12
+}
+```
+
+```bash
+pinless export_12345678.zip --name "Lucia" --style emerald.json
+```
+
+- `base` (optional): one of the twelve styles; anything you do not list is taken from it.
+- `bg` paper, `ink` titles and numbers, `sub` small text, `accent` the year and the "km" unit.
+- `green` parks, `water` rivers, lakes and sea, `water_line` thin waterways, `rule` the lines between sections.
+- `street`: colour and line width in points of main roads, side streets and paths.
+- `heat`: five route colours, from a street run once to the one you ran most.
+- `glow` (optional, 0 to 0.5): a soft halo under the routes, for dark paper.
+- `who` (optional): five inks for the poster for two (first person, mostly first, both, mostly second, second).
+
+Colours are `#rrggbb` or a name such as `white`. To start from every value of a style, write it to a file with `python -m pinless.styles midnight > my-style.json` (on Windows, `py -m pinless.styles midnight > my-style.json`), then edit it. A file with a mistake is refused with a message that says what to change, and Pinless warns you when a colour would be hard to read on your paper. Style files work for the poster, the atlas, the race print and the poster for two.
 
 ## Colour and charts
 
@@ -141,7 +223,7 @@ Stray GPS fixes at the start or end of a file (a watch that opens with yesterday
 | `--title`, `--name`, `--headline city\|name` | Headline text and inscription |
 | `--layout editorial\|atlas\|race`, `--max-cities 9`, `--activity longest`, `--allow-private-ends` | One city, one small map per city, or one race |
 | `--color-by heat\|single\|month\|pace\|elevation`, `--graphs` | What the line colour says; the band of charts |
-| `--style huella\|carbon\|midnight\|...`, `--size A4\|A3\|50x70` | One of twelve styles; paper |
+| `--style huella\|carbon\|midnight\|...\|my-style.json`, `--size A4\|A3\|50x70` | One of twelve styles, or your own style file; paper |
 | `--relief off\|shade` | Terrain relief under the map where the land is hilly (off by default) |
 | `--lang en\|es` | Labels in English or Spanish |
 | `--out`, `--pdf`, `--svg`, `--preview` | Outputs |

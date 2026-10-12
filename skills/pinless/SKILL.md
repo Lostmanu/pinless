@@ -17,10 +17,11 @@ description: Make a print-ready poster of a runner's year from their Strava expo
   30 km inside them that cover it (never the routes); without it nothing is sent there.
 
 ## Steps
-1. Make sure it is installed: `pinless --help`. If not: `pip install git+https://github.com/Lostmanu/pinless`.
+1. Make sure it is installed: `pinless --help`. If not: `pip install https://github.com/Lostmanu/pinless/archive/refs/heads/main.zip`.
 2. Ask only for what you need: the export path, the year, the name to print (optional) and the style
    (`huella` warm paper, `carbon` dark green; also `midnight`, `blueprint`, `ink`, `graphite`, `neon`, `lavender`,
-   `sunset`, `forest`, `blush`, `ocean`).
+   `sunset`, `forest`, `blush`, `ocean`), or a style file they wrote (`--style my-style.json`; the README explains
+   its keys, and `python -m pinless.styles midnight > my-style.json` writes one to start from).
 3. Run:
    `pinless "<export.zip>" --year <YEAR> --name "<NAME>" --style <STYLE> --out poster.png --pdf poster.pdf --preview poster.jpg`
    Add `--place "<City, Country>"` only if the user wants a city other than where they run most,
