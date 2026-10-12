@@ -127,7 +127,9 @@ def run(sel, pool, a, log=print):
         log(f"[trail] title: {city or 'none'}. The activity's own name is not printed unless you pass it with "
             f"--title (names often say where a walk starts)")
     title = a.title or city
-    place = ", ".join(dict.fromkeys(v for v in (city if a.title else "", region, country) if v))
+    named = a.title.strip().casefold()  # the city in the subline, unless the title already says it
+    place = ", ".join(dict.fromkeys(v for v in (city if a.title else "", region, country)
+                                    if v and v.strip().casefold() != named))
     color_by = a.color_by if a.color_by in ("pace", "elevation", "single") else "single"
     info = render_trail.render(route, track, pieces, basemap, extent, a.out, style=a.style or "huella", size=a.size,
                                dpi=a.dpi, title=title, place=place, name=a.name, date=local_start(route),

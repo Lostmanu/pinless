@@ -588,6 +588,9 @@ def test_a_single_file_learns_no_places_and_says_so(monkeypatch, tmp_path, capsy
     assert "drawn as a loop from a public trailhead" in out, "the loop warning"
     assert captured["stretch"] == (0.0, pytest.approx(render_trail.along(captured["track"])[-1]))
     assert captured["title"] == "Sunday loop" and captured["place"] == "Rascafría, Comunidad de Madrid, Spain"
+    assert cli.main([str(tmp_path / "hike.gpx"), "--layout", "trail", "--dpi", "20", "--title", "RASCAFRÍA ",
+                     "--out", str(tmp_path / "t.png")]) == 0
+    assert captured["place"] == "Comunidad de Madrid, Spain", "the title already names the place"
     zone = ["--zone", f"{_lonlat([[0, 0]])[0][1]},{_lonlat([[0, 0]])[0][0]},400"]
     assert cli.main([str(tmp_path / "hike.gpx"), "--layout", "trail", "--dpi", "20", "--out",
                      str(tmp_path / "t.png")] + zone) == 2
