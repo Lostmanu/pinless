@@ -215,6 +215,22 @@ def test_a_label_keeps_its_gap_from_the_course_and_a_wandering_stop_does_not_sta
     assert [p[2] for p in placed] == ["ABOVE 2100 m"] and box(*placed[0][3]).distance(route) >= clear - 1e-9
 
 
+def test_summit_labels_and_triangles_have_a_halo_in_the_paper_colour():
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import to_rgba
+
+    placed = render_trail.place_peaks([(5000.0, 4000.0, "Peñalara", 2428.0)], EXTENT, 1.0, [])
+    fig, ax = plt.subplots()
+    S = render_editorial.STYLES["carbon"]
+    render_trail.draw_summits(ax, placed, S, 1.0)
+    assert len(ax.patches) == 2, "a triangle and a label"
+    for patch in ax.patches:
+        (halo,) = patch.get_path_effects()
+        assert to_rgba(halo._gc["foreground"]) == to_rgba(S["bg"]) and halo._gc["linewidth"] == render_trail.HALO_PT
+        assert to_rgba(patch.get_facecolor()) == to_rgba(S["sub"])
+    plt.close(fig)
+
+
 def test_summits_load_from_the_cache_with_their_heights(tmp_path):
     gpd.GeoDataFrame({"name": ["Peñalara", None, "Far"], "ele": ["2428 m", "2000", "1000"]},
                      geometry=[Point(-3.956, 40.851), Point(-3.95, 40.85), Point(0.0, 50.0)],
@@ -242,7 +258,14 @@ def _texts(monkeypatch):
         boxes.append((str(value), x0, y, x0 + w, y + h))
         return out
 
+    def drawn(value, x, y, k, pt=9, font=None, align="left", max_w=None, height=None, clear=None):
+        out = real(value, x, y, k, pt, font, align, max_w, height, clear)
+        if (x, y) != (0, 0):  # the summit labels, drawn with their halo (at 0, 0 a label is only measured)
+            boxes.append((str(value), x, y, x + out[2], y + out[3]))
+        return out
+
     monkeypatch.setattr(atlas, "place_text", spy)
+    monkeypatch.setattr(render_trail, "place_text", drawn)
     return boxes
 
 

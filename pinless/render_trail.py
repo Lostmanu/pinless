@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import shapely
+from matplotlib import patheffects
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap, to_hex, to_rgb
 from matplotlib.patches import PathPatch, Polygon as MPolygon
 from shapely.geometry import LineString, box as _box
@@ -45,6 +46,7 @@ FLAT_M = 20.0  # a stretch that climbs less than this from its lowest to its hig
 PROFILE_SPAN_M = 50.0  # the profile band shows at least this many metres of height
 MAX_PEAKS = 6
 PEAK_PT = 5.4  # summit labels (pt x k)
+HALO_PT = 1.2  # their halo in the paper colour, all round (pt x k)
 CASING_PT = 3.4  # the course's casing in the paper colour (pt x k), as on the race print
 PT_MM = 25.4 / 72
 ROUTE_TYPES = {"loop": ("LOOP", "CIRCULAR"), "out_and_back": ("OUT & BACK", "IDA Y VUELTA"),
@@ -423,6 +425,20 @@ def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS, map_h=MAP_H):
     return placed
 
 
+def draw_summits(ax, summits, S, k):
+    """The placed summits (place_peaks) on the page axes (millimetres, y down): a triangle and the label in the sub
+    colour, both with a thin halo in the paper colour, so a path or a contour that runs under a name does not run
+    through its letters, as on a topographic map."""
+    halo = [patheffects.withStroke(linewidth=HALO_PT * k, foreground=S["bg"])]
+    for gx, gy, text, _, (lx, ly) in summits:
+        tri = [((gx - TRI_W / 2) * k, (gy + TRI_DOWN) * k), ((gx + TRI_W / 2) * k, (gy + TRI_DOWN) * k),
+               (gx * k, (gy - TRI_UP) * k)]
+        ax.add_patch(MPolygon(tri, closed=True, facecolor=S["sub"], edgecolor="none", lw=0, path_effects=halo))
+        path, trans, _, _ = place_text(text, lx, ly, k, PEAK_PT, TEXT)
+        ax.add_patch(PathPatch(path, transform=trans + ax.transData, color=S["sub"], lw=0, snap=False,
+                               path_effects=halo))
+
+
 # --- the page ----------------------------------------------------------------------------------------------------------
 
 def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella", size="A3", dpi=300, title="",
@@ -511,11 +527,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     draw_routes(ax, segments, np.full(len(segments), 30.0), 3.0, cmap, k, base=1.7, gain=0.0,
                 glow=S.get("glow", 0.0), values=values)
     summits = place_peaks(peaks, extent, k, coords, map_h=grid_h)
-    for gx, gy, text, _, (lx, ly) in summits:
-        tri = [((gx - TRI_W / 2) * k, (gy + TRI_DOWN) * k), ((gx + TRI_W / 2) * k, (gy + TRI_DOWN) * k),
-               (gx * k, (gy - TRI_UP) * k)]
-        page.ax.add_patch(MPolygon(tri, closed=True, facecolor=S["sub"], edgecolor="none", lw=0))
-        T(lx, ly, text, pt=PEAK_PT, color=S["sub"])
+    draw_summits(page.ax, summits, S, k)
 
     # elevation profile under the map, its highest point marked
     hi_point = None
