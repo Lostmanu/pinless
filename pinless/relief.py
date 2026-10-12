@@ -152,9 +152,9 @@ _OPENER = urllib.request.build_opener(_NoRedirect)
 _RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+)")
 
 
-def _fetch(url_, first, last):
-    """Bytes first..last (inclusive) of url_, or None when the object does not exist (HTTP 404). A 5xx or a broken
-    connection is tried once more; anything that is not exactly the requested range raises."""
+def _fetch(url_, first, last, absent=(404,)):
+    """Bytes first..last (inclusive) of url_, or None when the object does not exist (an HTTP status in absent). A 5xx
+    or a broken connection is tried once more; anything that is not exactly the requested range raises."""
     req = urllib.request.Request(url_, headers={"User-Agent": area.USER_AGENT, "Range": f"bytes={first}-{last}"})
     for attempt in (1, 2):
         try:
@@ -170,7 +170,7 @@ def _fetch(url_, first, last):
                 raise ReliefError("short body")
             return body
         except urllib.error.HTTPError as ex:
-            if ex.code == 404:
+            if ex.code in absent:
                 return None
             if ex.code < 500 or attempt == 2:
                 raise

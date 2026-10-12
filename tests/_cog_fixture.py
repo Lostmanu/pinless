@@ -2,7 +2,8 @@
 
 write_cog writes a classic TIFF: the header, the IFDs and their arrays first, then the tiles, each predictor-3
 encoded (byte planes, most significant first, then byte differences along the row) and zlib-compressed, the edge
-tiles zero-padded. Every argument can be bent to build files the reader must refuse.
+tiles zero-padded. With dtype=np.uint8 (the WorldCover-like files of write_landcover_cog) the tiles are the bytes
+themselves, zlib-compressed, with no predictor. Every argument can be bent to build files the reader must refuse.
 """
 import struct
 import zlib
@@ -32,14 +33,15 @@ def _encode(tile):
 
 
 def write_cog(cell=(40, -4), levels=None, tile=16, endian="<", compression=8, predictor=3, sample_format=3,
-              raster_type=2, tiepoint=None, ifd_at_end=False, bits=32, scale=None, tags=None, ifd_loop=False):
+              raster_type=2, tiepoint=None, ifd_at_end=False, bits=32, scale=None, tags=None, ifd_loop=False,
+              dtype=np.float32):
     """bytes of a GeoTIFF for a cell (south, west) with one IFD per array in `levels` (full resolution first).
 
     tile: the tile size of every level, or one entry per level, each a size or a (width, height) pair.
     tags={(level, tag): (type, values)} replaces (or adds) an entry of that level's IFD; ifd_loop points the last
     IFD back at the first."""
     N, W = cell
-    levels = [np.asarray(a, dtype=np.float32) for a in levels]
+    levels = [np.asarray(a, dtype=dtype) for a in levels]
     h0, w0 = levels[0].shape
     sizes = [t if isinstance(t, tuple) else (t, t) for t in (tile if isinstance(tile, list) else [tile] * len(levels))]
     tiles = []  # per level: compressed tiles, row-major
@@ -48,10 +50,10 @@ def write_cog(cell=(40, -4), levels=None, tile=16, endian="<", compression=8, pr
         out = []
         for br in range(-(-h // th)):
             for bc in range(-(-w // tw)):
-                t = np.zeros((th, tw), np.float32)
+                t = np.zeros((th, tw), dtype)
                 part = a[br * th:(br + 1) * th, bc * tw:(bc + 1) * tw]
                 t[:part.shape[0], :part.shape[1]] = part
-                out.append(_encode(t))
+                out.append(_encode(t) if dtype == np.float32 else zlib.compress(t.tobytes()))
         tiles.append(out)
 
     def entries(L, offsets, counts):
@@ -127,6 +129,29 @@ def write_cog(cell=(40, -4), levels=None, tile=16, endian="<", compression=8, pr
             buf[t:t + len(b)] = b
             t += len(b)
     return bytes(buf)
+
+
+def landcover_levels(a0, n):
+    """The levels of a WorldCover-like tile: every overview keeps one pixel of each 2 x 2 block (its top-left one),
+    so a level of WIDTH0 >> L pixels comes out of an odd size too (as the real 1125 to 562)."""
+    out = [np.asarray(a0, dtype=np.uint8)]
+    for _ in range(n - 1):
+        prev = out[-1]
+        h, w = prev.shape[0] // 2, prev.shape[1] // 2
+        out.append(prev[:2 * h:2, :2 * w:2].copy())
+    return out
+
+
+def write_landcover_cog(tile=(39, -6), levels=None, block=16, tile_deg=3, **bent):
+    """bytes of a WorldCover-like GeoTIFF for a 3-degree tile (south, west): uint8 classes, DEFLATE without a
+    predictor, PixelIsArea, the tiepoint on the north-west corner. bent: write_cog arguments to bend."""
+    S, W = tile
+    w0 = levels[0].shape[1]
+    kw = dict(cell=(S, W), levels=levels, tile=block, predictor=1, sample_format=1, bits=8, raster_type=1,
+              tiepoint=(0.0, 0.0, 0.0, float(W), float(S + tile_deg), 0.0), scale=(tile_deg / w0, tile_deg / w0, 0.0),
+              dtype=np.uint8)
+    kw.update(bent)
+    return write_cog(**kw)
 
 
 def fake_server(files, calls):
