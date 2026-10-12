@@ -233,7 +233,7 @@ Stray GPS fixes at the start or end of a file (a watch that opens with yesterday
 
 ## Use it from a coding agent
 
-`skills/pinless/SKILL.md` lets Claude Code, Codex, Cursor or any agent that reads Agent Skills make the poster for you. The skill only runs the command above. It tells the agent not to open your export, so your GPS points stay out of the conversation.
+`skills/pinless/SKILL.md` lets any coding agent that reads Agent Skills make the poster for you. The skill only runs the command above. It tells the agent not to open your export, so your GPS points stay out of the conversation.
 
 ## How it compares
 
