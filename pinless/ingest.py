@@ -136,16 +136,20 @@ def _parse_time(s):
 
 
 def _float(x):
+    """A finite number, or None: "NaN", "inf" or text is no measurement."""
     try:
-        return float(x)
+        v = float(x)
     except (TypeError, ValueError):
         return None
+    return v if math.isfinite(v) else None
 
 
 def _lonlat(lon, lat):
-    """(lon, lat) in degrees, or None when either is missing or not a number."""
+    """(lon, lat) in degrees, or None when either is missing, not a finite number or off the globe."""
     lo, la = _float(lon), _float(lat)
-    return None if lo is None or la is None else (lo, la)
+    if lo is None or la is None or not (-180 <= lo <= 180 and -90 <= la <= 90):
+        return None
+    return lo, la
 
 
 def _text(el):

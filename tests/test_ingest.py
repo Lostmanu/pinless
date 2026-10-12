@@ -158,3 +158,15 @@ def test_a_file_of_many_walks_from_home_hides_home_as_a_folder_of_them_does(monk
         hx, hy = Transformer.from_crs(4326, crs, always_xy=True).transform(*home)
         assert MultiLineString([p for _, p in seen["pieces"]]).distance(Point(hx, hy)) >= 200, export.name
         assert "zones suggested 1" in capsys.readouterr().out
+
+
+def test_a_point_that_is_not_a_finite_number_is_dropped_and_a_height_that_is_not_one_is_missing(tmp_path):
+    import math
+
+    bad = HIKE.replace(b"<ele>1863</ele>", b"<ele>NaN</ele>").replace(b'lat="40.8260"', b'lat="NaN"')
+    bad = bad.replace(b'lon="-3.96"><ele>1866', b'lon="inf"><ele>1866').replace(b'lat="40.8290"', b'lat="91.5"')
+    (tmp_path / "bad.gpx").write_bytes(bad)
+    (act,), _ = ingest.read_export(str(tmp_path / "bad.gpx"))
+    assert len(act.lonlat) == 37 and all(math.isfinite(v) for p in act.lonlat for v in p), "three points dropped"
+    assert act.ele is None, "a height that is not a number: no profile rather than a broken one"
+    assert len(act.times) == 37
