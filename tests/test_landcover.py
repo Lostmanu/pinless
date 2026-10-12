@@ -672,6 +672,47 @@ def test_the_course_ink_weighs_the_ground_along_the_whole_course():
     assert render_trail.course_ink(forest, reddish, {T: 0.97, B: 0.03})[0] == red, "but a few metres of it"
 
 
+def test_the_ground_is_drawn_north_up_under_the_course_with_its_own_inks(monkeypatch, tmp_path):
+    from matplotlib.colors import to_hex, to_rgb
+    xy0 = _loop(0, 0, 2000, n=600)
+    extent = race.frame_course([(0, LineString(xy0))], render_trail.map_aspect(), pad_frac=0.1)
+    x0, x1, y0, y1 = extent
+    H, W = relief.raster_shape(render_trail.RIGHT - render_trail.LEFT, extent)
+    classes = np.full((H, W), landcover.BARE, np.uint8)
+    classes[:H // 2] = landcover.TREE  # woods in the north half, rock in the south half
+    seen = {}
+    for name in ("draw_basemap", "trail_network", "trail_roads"):
+        real = getattr(render_trail, name)
+        monkeypatch.setattr(render_trail, name, lambda *a, _n=name, _r=real, **k: seen.update({_n: a[3]}) or _r(*a, **k))
+    S = render_editorial.STYLES["forest"]
+    for frac, want in ((0.2, S["accent"]), (0.8, dict(render_trail.ROUTE_INKS[False])["deep red"])):
+        y = y0 + frac * (y1 - y0)  # a course across the south of the map (on the rock), then across the north (woods)
+        xy = np.column_stack([np.linspace(x0 + 0.25 * (x1 - x0), x1 - 0.25 * (x1 - x0), 300), np.full(300, y)])
+        seen.clear()
+        info = render_trail.render(_hike(xy), xy, [(0, LineString(xy))], (EMPTY, EMPTY, EMPTY), extent,
+                                   str(tmp_path / "ns.png"), dpi=60, style="forest",
+                                   ground=landcover.LandCover(classes, 0, 0.0))
+        assert info["course_ink"] == want, "the ink follows the ground under the course, not the whole map's"
+        png = np.asarray(Image.open(tmp_path / "ns.png").convert("RGB")).astype(int)
+        k = png.shape[1] / 297
+        left, top, bottom = render_trail.LEFT * k, render_trail.MAP_TOP * k, (render_trail.MAP_TOP + render_trail.MAP_H) * k
+        pal = {c: np.round(np.asarray(landcover.palette(S)[c]) * 255) for c in (landcover.TREE, landcover.BARE)}
+        assert np.abs(png[int(top + 6 * k), int(left + 10 * k)] - pal[landcover.TREE]).max() <= 2, "woods north"
+        assert np.abs(png[int(bottom - 6 * k), int(left + 10 * k)] - pal[landcover.BARE]).max() <= 2, "rock south"
+        on = png[int(round(top + (1 - frac) * (bottom - top))), png.shape[1] // 2]
+        assert np.abs(on - np.round(np.asarray(to_rgb(want)) * 255)).max() <= 3, "the course over the ground"
+    painted = {"colours": {c: landcover.palette(S)[c] for c in (landcover.TREE, landcover.BARE)},
+               "shares": landcover.shares(classes),
+               "mean": tuple(landcover.ground_rgb(classes, S).reshape(-1, 3).mean(0) / 255)}
+    want = render_trail.ground_style(render_trail.trail_style(S), S, painted)
+    for name in ("draw_basemap", "trail_network", "trail_roads"):
+        TS = seen[name]
+        assert TS["water"] == to_hex(landcover.water(S)) and TS["water_line"] == to_hex(landcover.water(S, line=True))
+        for key in ("trail", "road_minor", "road_major", "relief"):
+            assert TS[key] == want[key], f"{name} draws with the ground's {key}"
+        assert TS["trail"] != render_trail.trail_style(S)["trail"], "setup: the ground changes the path ink"
+
+
 def test_paths_and_roads_keep_their_contrast_against_the_ground(monkeypatch, tmp_path):
     from matplotlib.colors import to_rgb
 
