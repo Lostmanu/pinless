@@ -750,6 +750,22 @@ def test_the_demo_hike_reads_as_one_synthetic_loop():
     assert paused and act.times[-1] - secs == pytest.approx(35 * 60, abs=120), "the two stops, 20 and 15 minutes"
 
 
+def test_the_desert_demo_hike_reads_as_one_synthetic_out_and_back():
+    import os
+
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "demo", "hike_desert_demo.gpx")
+    (act,), rep = ingest.read_export(path)
+    assert rep.used == 1 and act.type == "Hike" and act.ele and act.times
+    lon, lat = np.median(np.asarray(act.lonlat), axis=0)
+    assert 36.98 < lat < 37.10 and -2.56 < lon < -2.36, "in the Desierto de Tabernas"
+    crs = trail.render.utm_crs(lon, lat)
+    xy = np.column_stack(trail.Transformer.from_crs(4326, crs, always_xy=True).transform(*np.asarray(act.lonlat).T))
+    assert render_trail.route_type(xy) == "out_and_back" and 14.5 < render_trail.along(xy)[-1] / 1000 < 15.5
+    assert 670 < render_trail.high_point(xy, act.ele)[1] < 690, "up the badlands below El Puntal"
+    secs, paused = render_trail.moving_time(xy, act.times, act.ele)
+    assert paused and act.times[-1] - secs == pytest.approx(20 * 60, abs=120), "the stop at the top, 20 minutes"
+
+
 def test_a_planned_route_without_clock_or_heights_still_draws(monkeypatch, tmp_path):
     boxes = _texts(monkeypatch)
     xy = _line((0, 0), (3000, 0), (3000, 2500))
