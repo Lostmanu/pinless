@@ -469,6 +469,87 @@ def test_a_trail_from_home_is_refused_or_cut_far_from_it_with_its_numbers(monkey
     assert "not printed unless you pass it with --title" in out and "Walk from home" not in out
 
 
+def test_a_hike_from_home_is_refused_with_type_hike_because_of_the_runs_from_home(monkeypatch, tmp_path, capsys):
+    pool = [_hike(t, i, kind="Run") for i, t in enumerate(POOL)]
+    captured = {}
+    _trail_world(monkeypatch, pool + [_hike(_loop(0, 0, 2500, n=500), "from-home")], captured, tmp_path)
+    assert cli.main(["x.zip", "--layout", "trail", "--type", "Hike", "--dpi", "20", "--out",
+                     str(tmp_path / "t.png")]) == 2 and not captured, "the places come from every activity, not the hikes"
+    assert "[privacy] STOP" in capsys.readouterr().out
+
+
+def test_with_private_ends_allowed_every_number_describes_the_drawn_stretch(monkeypatch, tmp_path, capsys):
+    from pinless.render_race import climb, restrict
+
+    boxes = _texts(monkeypatch)
+    pool = [_hike(t, i, kind="Run") for i, t in enumerate(POOL)]
+    xy = _loop(0, 0, 2500, n=800)
+    d = render_trail.along(xy)
+    ele = list(1500 + 900 * np.exp(-((d - 300) / 400) ** 2) + 100 * np.sin(2 * np.pi * d / 3000))  # summit near home
+    t = d / 1.1
+    t[len(t) // 2:] += 1800  # a half-hour stop half way: the moving time is the stretch's, not the whole walk's
+    walk = Activity(id="from-home", type="Hike", start=START, lonlat=_lonlat(xy), source="x", times=list(t), ele=ele)
+    captured = {}
+    _trail_world(monkeypatch, pool + [walk], captured, tmp_path)
+    assert cli.main(["x.zip", "--layout", "trail", "--activity", "from-home", "--allow-private-ends", "--color-by",
+                     "elevation", "--dpi", "20", "--out", str(tmp_path / "t.png")]) == 0
+    out = capsys.readouterr().out
+    assert "(numbers for the drawn stretch only)" in out and "public trailhead" not in out
+    track, info = captured["track"], captured["info"]
+    sx, st, se = restrict(track, captured["times"], captured["ele"], captured["stretch"])
+    whole = (track, captured["times"], captured["ele"])
+    e, e_all = render_trail.profile(sx, se)[1], render_trail.profile(track, captured["ele"])[1]
+    assert info["route_type"] == render_trail.route_type(sx) == "point_to_point" != render_trail.route_type(track)
+    assert info["secs"] == pytest.approx(render_trail.moving_time(sx, st, se)[0])
+    assert info["secs"] != pytest.approx(render_trail.moving_time(*whole)[0], abs=60)
+    assert info["high"] == pytest.approx(render_trail.high_point(sx, se)[1]) and info["high"] < e_all.max() - 100
+    gain, gain_all = climb(e), climb(e_all)
+    assert abs(gain - gain_all) > 50 and f"+{gain:.0f}" in [b[0] for b in boxes]
+    assert f"{e.min():.0f} – {e.max():.0f} m" in [b[0] for b in boxes], "the profile of the stretch"
+    assert (info["legend"]["lo"], info["legend"]["hi"]) == (pytest.approx(e.min()), pytest.approx(e.max()))
+    assert info["legend"]["hi"] < e_all.max() - 100, "the elevation key of the stretch"
+
+
+def test_the_place_is_looked_up_from_the_middle_of_the_drawn_stretch(monkeypatch, tmp_path):
+    xy = _line((0, 0), (0, 12000), step=20.0)  # from home, straight north; a big --zone at home
+    walk = _hike(xy, "north")
+    captured, asked = {}, []
+    _trail_world(monkeypatch, [walk], captured, tmp_path)
+    monkeypatch.setattr(trail.area, "place_region", lambda lat, lon, lang="en": asked.append((lat, lon)) or
+                        ("Somewhere", "", ""))
+    lon0, lat0 = _lonlat([[0, 0]])[0]
+    assert cli.main(["x.gpx", "--layout", "trail", "--zone", f"{lat0},{lon0},3000", "--allow-private-ends", "--dpi",
+                     "20", "--out", str(tmp_path / "t.png")]) == 0
+    piece = np.asarray(captured["pieces"][0][1].coords)
+    crs = trail.render.utm_crs(*np.median(np.asarray(walk.lonlat), axis=0))
+    inv = trail.Transformer.from_crs(crs, 4326, always_xy=True)
+    lon, lat = inv.transform(*np.median(piece, axis=0))
+    lon_w, lat_w = inv.transform(*np.median(captured["track"], axis=0))
+    assert asked == [(round(lat, 2), round(lon, 2))], "the middle of what is drawn, rounded to about 1 km"
+    assert round(lat_w, 2) != round(lat, 2), "not the middle of the whole walk, which reaches towards home"
+
+
+def test_a_free_text_type_is_logged_as_other(monkeypatch, tmp_path, capsys):
+    walk = _hike(_loop(0, 0, 2500, n=500), kind="Evening walk from Calle Mayor 5")
+    _trail_world(monkeypatch, [walk], {}, tmp_path)
+    assert cli.main(["x.gpx", "--layout", "trail", "--dpi", "20", "--out", str(tmp_path / "t.png")]) == 0
+    out = capsys.readouterr().out
+    assert "[trail] the route: one other activity" in out and "Calle Mayor" not in out
+
+
+def test_a_single_file_is_trimmed_at_both_ends(monkeypatch, tmp_path):
+    loop = _hike(_loop(0, 0, 2500, n=500), "only")
+    (tmp_path / "hike.gpx").write_bytes(_gpx(loop))
+    captured = {}
+    _trail_world(monkeypatch, None, captured, tmp_path)
+    assert cli.main([str(tmp_path / "hike.gpx"), "--layout", "trail", "--dpi", "20", "--out",
+                     str(tmp_path / "t.png")]) == 0
+    track, piece = LineString(captured["track"]), captured["pieces"][0][1]
+    first, last = (track.project(Point(piece.coords[i])) for i in (0, -1))
+    assert first == pytest.approx(300, abs=1) and last == pytest.approx(track.length - 300, abs=1)
+    assert piece.distance(Point(captured["track"][0])) > 290, "nothing drawn within 300 m of where it starts"
+
+
 def _gpx(act):
     pts = "".join(f'<trkpt lat="{la:.7f}" lon="{lo:.7f}"><ele>{e:.1f}</ele><time>'
                   f'{(act.start + dt.timedelta(seconds=t)).strftime("%Y-%m-%dT%H:%M:%SZ")}</time></trkpt>'
