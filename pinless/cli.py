@@ -96,8 +96,8 @@ def main(argv=None):
                         "your routes); downloaded once (cached); flat areas get none. Default: shade for the trail "
                         "layout, off for the others")
     p.add_argument("--ground", default=None, choices=["nature", "style"],
-                   help="trail: nature (default) paints the map's ground in the colours of the land, green woods, "
-                        "light green meadows, wheat fields, ochre bare land and deserts, white snow, from ESA "
+                   help="trail: nature (default) paints the map's ground in the colours of the land, green woods "
+                        "and meadows, wheat fields, stone rock, white snow, straw and orange in a dry land, from ESA "
                         "WorldCover on Amazon S3 (only the 3-degree tiles around the map are requested; downloaded "
                         "once, cached); style keeps the plain paper of the style")
     p.add_argument("--with", dest="with_export", default=None, metavar="EXPORT",
