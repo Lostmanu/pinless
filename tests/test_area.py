@@ -167,10 +167,31 @@ def test_an_older_cache_gets_its_coast_and_summits_for_its_own_whole_box(tmp_pat
     for name in ("green", "water"):
         gpd.GeoDataFrame({"name": []}, geometry=[], crs=4326).to_file(os.path.join(folder, f"{name}.gpkg"))
     assert area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lambda *_: None) == folder
-    assert [t for _, t in asked] == [{"natural": "coastline"}, {"natural": "peak"}]
+    assert [t for _, t in asked] == [{"natural": "coastline"}], "a city poster never asks for the summits"
+    assert not os.path.exists(os.path.join(folder, "peaks.gpkg"))
+    assert area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lambda *_: None,
+                              extra=("peaks",)) == folder
+    assert [t for _, t in asked] == [{"natural": "coastline"}, {"natural": "peak"}], "the trail print does, once"
     assert {a[0] for a in asked} == {(-3.8, 40.3, -3.6, 40.5)}, "the folder's own box (west, south, east, north)"
     assert len(gpd.read_file(os.path.join(folder, "coast.gpkg"))) == 0
     assert len(gpd.read_file(os.path.join(folder, "peaks.gpkg"))) == 0
+
+
+def test_a_city_poster_on_a_cache_without_summits_stays_offline_while_overpass_is_busy(tmp_path, monkeypatch):
+    asked = []
+    monkeypatch.setattr(area, "_overpass", lambda call, log, empty_ok=True: asked.append(1) or (_ for _ in ()).throw(
+        RuntimeError("no OpenStreetMap (Overpass) server answered; try again later")))
+    folder = os.path.join(tmp_path, "bbox_40.300_m3.800_40.500_m3.600")
+    os.makedirs(folder)
+    ox.save_graphml(_tiny_graph(), os.path.join(folder, "walk.graphml"))
+    for name in ("green", "water", "coast"):
+        gpd.GeoDataFrame({"name": []}, geometry=[], crs=4326).to_file(os.path.join(folder, f"{name}.gpkg"))
+    lines = []
+    for _ in range(3):
+        assert area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lines.append) == folder
+    assert asked == [] and lines == [], "no request, no message: the summits are only the trail print's"
+    area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lines.append, extra=("peaks",))
+    assert asked == [1] and any("this map names none" in s_ for s_ in lines)
 
 
 def _empty_answer():
@@ -196,7 +217,7 @@ def test_a_missing_coast_or_summits_do_not_stop_the_map(tmp_path, monkeypatch, l
     monkeypatch.setattr(socket, "gethostbyname_ex", lambda h: (h, [], ["192.0.2.1"]))
     monkeypatch.setattr(ox, "graph_from_bbox", lambda *a, **k: _tiny_graph())
     monkeypatch.setattr(ox, "features_from_bbox", lambda box_, tags: features(box_, tags))
-    folder = area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lines.append)
+    folder = area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lines.append, extra=("peaks",))
     assert os.path.exists(os.path.join(folder, "green.gpkg"))
     assert not os.path.exists(os.path.join(folder, f"{layer}.gpkg"))
     assert any(said in s for s in lines)
@@ -217,7 +238,8 @@ def test_summits_are_cached_as_points_with_their_name_and_height(tmp_path, monke
     monkeypatch.setattr(socket, "gethostbyname_ex", lambda h: (h, [], ["192.0.2.1"]))
     monkeypatch.setattr(ox, "graph_from_bbox", lambda *a, **k: _tiny_graph())
     monkeypatch.setattr(ox, "features_from_bbox", features)
-    folder = area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lambda *_: None)
+    folder = area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lambda *_: None,
+                                extra=("peaks",))
     peaks = gpd.read_file(os.path.join(folder, "peaks.gpkg"))
     assert list(peaks.columns) == ["name", "ele", "geometry"] and list(peaks.geometry.type) == ["Point"]
     assert peaks.loc[0, "name"] == "Penalara" and peaks.loc[0, "ele"] == "2428"

@@ -110,7 +110,7 @@ def run(sel, pool, a, log=print):
     extent = race.frame_course(pieces, render_trail.map_aspect(a.size, profile=bool(route.ele)), pad_frac=PAD)
     big = race.osm_box(extent, crs)
     try:
-        folder = area.fetch_basemap(big, log=log)
+        folder = area.fetch_basemap(big, log=log, extra=("peaks",))
         basemap = render.load_basemap(folder, big, crs)
     except RuntimeError as ex:
         log(f"[osm] STOP: {ex}. Run the same command again later.")

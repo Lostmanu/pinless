@@ -363,12 +363,14 @@ LAYERS = (
 )
 OPTIONAL = {"coast": "[osm] the coastline could not be fetched now: this map has no sea; run again later to add it",
             "peaks": "[osm] the summits could not be fetched now: this map names none; run again later to add them"}
+ON_REQUEST = {"peaks"}  # only the trail print names summits: no other print asks Overpass for them
 
 
-def fetch_basemap(bbox, root=None, log=print):
+def fetch_basemap(bbox, root=None, log=print, extra=()):
     """Download (once) and cache the OSM layers for a bbox. Returns the folder that render.load_basemap reads.
     A layer is cached as empty only when OSM answers that there is nothing of that kind in the box; a server error
-    stops instead, so a busy server never leaves a map without its parks or water."""
+    stops instead, so a busy server never leaves a map without its parks or water. The layers of ON_REQUEST (the
+    summits) are fetched only when named in extra, so a city poster on a cache made before them stays offline."""
     import osmnx as ox
     from osmnx._errors import InsufficientResponseError
 
@@ -393,7 +395,7 @@ def fetch_basemap(bbox, root=None, log=print):
         ox.save_graphml(G, gpath)
     for nombre, tags in LAYERS:
         path = os.path.join(folder, f"{nombre}.gpkg")
-        if os.path.exists(path):
+        if os.path.exists(path) or (nombre in ON_REQUEST and nombre not in extra):
             continue
         log(f"[osm] downloading {nombre} for the area (one time, cached)...")
         try:

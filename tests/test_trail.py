@@ -486,7 +486,8 @@ def test_roads_read_at_least_as_strongly_as_footpaths(tmp_path):
 def _trail_world(monkeypatch, acts, captured, tmp_path, prepared=None):
     if acts is not None:
         monkeypatch.setattr(ingest, "read_export", lambda path: (acts, ingest.IngestReport()))
-    monkeypatch.setattr(trail.area, "fetch_basemap", lambda bbox, log=print: str(tmp_path))
+    monkeypatch.setattr(trail.area, "fetch_basemap", lambda bbox, log=print, extra=(): captured.update(extra=extra)
+                        or str(tmp_path))
     monkeypatch.setattr(trail.render, "load_basemap", lambda folder, bbox, crs: (EMPTY, EMPTY, EMPTY))
     monkeypatch.setattr(trail.area, "place_region", lambda lat, lon, lang="en": ("Rascafría", "Comunidad de Madrid",
                                                                                  "España" if lang == "es" else "Spain"))
@@ -683,7 +684,7 @@ def test_a_full_trail_run_writes_png_pdf_and_preview(monkeypatch, tmp_path, caps
                      "--preview", str(folder / "t.jpg"), "--color-by", "elevation"]) == 0
     assert sorted(p.name for p in folder.iterdir()) == ["t.jpg", "t.pdf", "t.png"]
     assert all((folder / f).stat().st_size > 0 for f in ("t.jpg", "t.pdf", "t.png"))
-    assert [s[2] for s in captured["info"]["summits"]] == ["PEÑALARA 2428 m"]
+    assert [s[2] for s in captured["info"]["summits"]] == ["PEÑALARA 2428 m"] and captured["extra"] == ("peaks",)
     assert captured["info"]["legend"]["mode"] == "elevation" and captured["date"] == START
     pdf = (folder / "t.pdf").read_bytes()
     assert b"CreationDate" not in pdf and b"hike.gpx" not in pdf
