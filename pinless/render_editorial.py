@@ -27,7 +27,7 @@ from matplotlib.transforms import Affine2D
 from shapely.geometry import box as _box
 from shapely.geometry.polygon import orient
 
-from . import colouring, privacy
+from . import colouring, landcover, privacy
 from . import relief as _relief
 from .graphs import draw_band
 from .render import MAJOR, MINOR, MM, SIZES, _hw, heat_raster
@@ -349,15 +349,16 @@ def draw_relief(ax, relief, extent, S, water, k, map_w_mm):
     return True
 
 
-def footer_credits(text, S, lang, y, osm_max_w, relief_max_w, dataset=None):
+def footer_credits(text, S, lang, y, osm_max_w, relief_max_w, dataset=None, ground=False, step=3.4):
     """The credit lines at the foot of a print: OpenStreetMap at y; with relief, the Copernicus notice takes that
-    line and OpenStreetMap moves up one, so the bottom margin never changes."""
-    osm = "© OpenStreetMap contributors · ODbL · openstreetmap.org/copyright"
-    if dataset is None:
-        text(18, y, osm, pt=6.2, color=S["sub"], max_w=osm_max_w)
-        return
-    text(18, y - 3.4, osm, pt=6.2, color=S["sub"], max_w=osm_max_w)
-    text(18, y, _relief.notice(dataset, lang), pt=6.2, color=S["sub"], max_w=relief_max_w)
+    line and OpenStreetMap moves up one, so the bottom margin never changes. With the land cover of the trail print
+    (ground), its line goes between them. The bottom line may reach relief_max_w, the others osm_max_w."""
+    lines = (["© OpenStreetMap contributors · ODbL · openstreetmap.org/copyright"]
+             + ([landcover.notice(lang)] if ground else []) + ([_relief.notice(dataset, lang)] if dataset else []))
+    for i, line in enumerate(lines):
+        last = i == len(lines) - 1
+        text(18, y - (len(lines) - 1 - i) * step, line, pt=6.2, color=S["sub"],
+             max_w=relief_max_w if last and len(lines) > 1 else osm_max_w)
 
 
 def draw_routes(ax, segments, counts, cap, cmap, k, base=0.55, gain=ROUTE_GAIN, scale=1.0, glow=0.0, values=None):

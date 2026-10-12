@@ -8,15 +8,16 @@ The privacy rules are the race print's (race.cut), reused as they are:
   protects its ends, and the log says so (and, for a loop, that it is drawn as if it started at a public trailhead).
 - The title is never the activity's own name unless the user gives it with --title: a name can say where a walk
   starts. No start or finish pin is drawn.
-Only the map box (for the OpenStreetMap layers and, with relief, the Copernicus cells) and the middle of the drawn
-stretch rounded to about 1 km (for the place name) leave the machine.
+Only the map box (for the OpenStreetMap layers, and the Copernicus cells of the relief and the WorldCover tiles of the
+ground when they are on) and the middle of the drawn stretch rounded to about 1 km (for the place name) leave the
+machine.
 """
 from __future__ import annotations
 
 import numpy as np
 from pyproj import Transformer
 
-from . import area, ingest, privacy, race, relief, render, render_trail
+from . import area, ingest, landcover, privacy, race, relief, render, render_trail
 from .localtime import local_start
 from .render_race import along
 
@@ -121,9 +122,11 @@ def run(sel, pool, a, log=print):
         return 4
     peaks = load_peaks(folder, big, crs)
     k = render.SIZES[a.size][0] / 297
+    map_w = (render_trail.RIGHT - render_trail.LEFT) * k
     mode = getattr(a, "relief", None) or "shade"  # the point of a mountain print: on unless --relief off
-    relief_ = relief.prepare_many([(extent, crs, (render_trail.RIGHT - render_trail.LEFT) * k)],
-                                  log=log)[0] if mode == "shade" else None
+    relief_ = relief.prepare_many([(extent, crs, map_w)], log=log)[0] if mode == "shade" else None
+    ground = getattr(a, "ground", None) or "nature"  # the colours of the land: on unless --ground style
+    ground_ = landcover.prepare_many([(extent, crs, map_w)], log=log)[0] if ground == "nature" else None
     inv = Transformer.from_crs(crs, 4326, always_xy=True)
     mid_lon, mid_lat = inv.transform(*np.median(np.asarray(pieces[0][1].coords), axis=0))
     city, region, country = area.place_region(round(float(mid_lat), 2), round(float(mid_lon), 2), lang=a.lang)
@@ -139,7 +142,7 @@ def run(sel, pool, a, log=print):
                                dpi=a.dpi, title=title, place=place, name=a.name, date=local_start(route),
                                lang=a.lang, color_by=color_by, pdf_path=a.pdf, svg_path=a.svg,
                                preview_path=a.preview, times=route.times, ele=route.ele, stretch=stretch,
-                               relief=relief_, peaks=peaks)
+                               relief=relief_, peaks=peaks, ground=ground_, log=log)
     if info["legend"].get("flat"):
         log(f"[colour] this route climbs less than {render_trail.FLAT_M:.0f} m: drawn in one colour, since colouring "
             f"it by elevation would show only the altimeter's noise")

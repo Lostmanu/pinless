@@ -69,6 +69,7 @@ class _Unsupported(LandCoverError):
 class LandCover:
     classes: np.ndarray  # uint8 (H, W), row 0 north: the WorldCover class of every pixel of the map raster
     level: int
+    dry: float = 0.0  # how dry the land is (dryness), 0 to 1
 
 
 @dataclass(frozen=True)
@@ -279,6 +280,8 @@ class _Map:
         if not (x1 > x0 and y1 > y0 and self.map_w > 0):
             raise ValueError("an empty map")
         self.shape = relief.raster_shape(self.map_w, self.extent)
+        lon_c, lat_c = Transformer.from_crs(crs, 4326, always_xy=True).transform((x0 + x1) / 2, (y0 + y1) / 2)
+        self.lat = float(lat_c)  # the latitude of the map's centre: how dry its land may be (dryness)
         self.px = (x1 - x0) / self.shape[1]  # the map raster's pixel (metres on the map's own projection)
         # every tile the map could need, whatever the level: fixed before any request is made
         lat_a, lat_b, lon_a, lon_b = relief._lonlat_box(self.extent, crs, max(map(self.pad, range(NOMINAL_LEVELS))))
@@ -415,11 +418,22 @@ def majority(classes):
 
 # --- colours --------------------------------------------------------------------------------------------------------
 
-# The nature palette for light paper: the colours of the land, as a painted terrain map shows it
-NATURE = {TREE: "#7fa65a", SHRUB: "#a9b77a", GRASS: "#c8d89a", CROP: "#e6dcae", BUILT: "#d9d2c8", BARE: "#e2b47c",
+# The nature palette for light paper: the colours of the land, as a painted terrain map shows it. Bare land in a
+# green land is rock and scree, a light stone.
+NATURE = {TREE: "#7fa65a", SHRUB: "#a9b77a", GRASS: "#c8d89a", CROP: "#e6dcae", BUILT: "#d9d2c8", BARE: "#d4ccbb",
           SNOW: "#f4f8fb", WETLAND: "#9cc7b4", MANGROVE: "#5f9a72", MOSS: "#b7bfa6"}
+# ... and in a dry land (dryness): grass and scrub in the straw and olive of a steppe, bare land the ochre of a desert
+DRY = {GRASS: "#ddd09a", SHRUB: "#c2b47f", BARE: "#e2b47c"}
+# WorldCover alone cannot tell a dry land from a mountain: the badlands of Tabernas (27 % bare, 49 % grassland) and the
+# Picos de Europa (32 % bare, 51 % grassland) hold the same classes. Where the map lies can: a land is dry as far as
+# it lies south of DRY_LAT (north of it in the south) and bare land covers DRY_BARE of the map; DESERT_BARE of bare
+# land is a desert at any latitude; snow, ice, moss and lichen on COLD of the map make it a cold land, never a dry one.
+DRY_LAT = (37.0, 42.0)  # degrees from the equator: dry at the first, not at all from the second
+DRY_BARE = (0.10, 0.25)
+DESERT_BARE = (0.50, 0.75)
+COLD = 0.03
 DARK_MIX = 0.35  # on dark paper each colour lies this share of the way from the paper to its light-paper colour
-SMOOTH_PX = 0.6  # the Gaussian over the coloured raster (pixels at 150 ppi): class edges read painted, not stepped
+SMOOTH_PX = 1.0  # the Gaussian over the coloured raster (pixels at 150 ppi, 0.17 mm): class edges read painted
 
 
 def _lstar(rgb):
@@ -433,13 +447,28 @@ def is_dark(S):
     return _lstar(to_rgb(S["bg"])) < 50
 
 
-def palette(S):
-    """{class: (r, g, b)} of the ground in a style: NATURE on light paper; on dark paper the same colours pulled
-    towards the paper (DARK_MIX of the way from it), darker and quieter, so a dark poster stays dark. Water takes the
-    style's water and land without data the paper."""
+def _ramp(v, a, b):
+    return min(1.0, max(0.0, (v - a) / (b - a)))
+
+
+def dryness(shares, lat):
+    """How dry the land of a map is, from 0 (a green land) to 1 (a dry one): see DRY_LAT. shares: {class: share of the
+    map}; lat: the latitude of the map's centre."""
+    bare = shares.get(BARE, 0.0)
+    dry = max((1 - _ramp(abs(lat), *DRY_LAT)) * _ramp(bare, *DRY_BARE), _ramp(bare, *DESERT_BARE))
+    return dry * (1 - _ramp(shares.get(SNOW, 0.0) + shares.get(MOSS, 0.0), 0.0, COLD))
+
+
+def palette(S, dry=0.0):
+    """{class: (r, g, b)} of the ground in a style: NATURE on light paper, its grass, scrub and bare land dry of the
+    way to DRY; on dark paper the same colours pulled towards the paper (DARK_MIX of the way from it), darker and
+    quieter, so a dark poster stays dark. Water takes the style's water and land without data the paper."""
     bg = np.asarray(to_rgb(S["bg"]))
     mix = DARK_MIX if is_dark(S) else 1.0
-    out = {k: tuple(float(v) for v in bg + (np.asarray(to_rgb(c)) - bg) * mix) for k, c in NATURE.items()}
+    land = {k: np.asarray(to_rgb(c)) for k, c in NATURE.items()}
+    for k, c in DRY.items():
+        land[k] = land[k] + (np.asarray(to_rgb(c)) - land[k]) * float(dry)
+    out = {k: tuple(float(v) for v in bg + (c - bg) * mix) for k, c in land.items()}
     out[WATER] = tuple(to_rgb(S["water"]))
     out[NO_DATA] = tuple(float(v) for v in bg)
     return out
@@ -459,10 +488,10 @@ def _gauss(img, sigma):
     return img
 
 
-def ground_rgb(classes, S):
+def ground_rgb(classes, S, dry=0.0):
     """uint8 (H, W, 3): the classes in the style's ground colours, smoothed by SMOOTH_PX after colouring."""
     lut = np.zeros((256, 3))
-    for k, c in palette(S).items():
+    for k, c in palette(S, dry).items():
         lut[k] = c
     rgb = _gauss(lut[np.asarray(classes, dtype=np.uint8)], SMOOTH_PX)
     return np.clip(np.round(rgb * 255), 0, 255).astype(np.uint8)
@@ -555,7 +584,12 @@ def prepare_many(maps, log=print, root=None):
             log(f"[ground] downloading {len(todo)} blocks, {size / 2 ** 20:.1f} MB (one time, cached)")
         _download(headers, every, root)
         for job, L, _ in plans:
-            out[job.i] = LandCover(majority(_classes(job, headers, L, root)), L)
+            classes = majority(_classes(job, headers, L, root))
+            dry = dryness(shares(classes), job.lat)
+            out[job.i] = LandCover(classes, L, dry)
+            if dry > 0:
+                say(job.i, "a dry land: grass and scrub in the colours of a steppe, bare land in the ochre of a "
+                           "desert")
     except _Unsupported:
         log("[ground] skipped: the land cover does not cover this map as it is; drawn with the style's ground")
         return [None] * len(maps)

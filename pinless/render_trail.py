@@ -23,12 +23,14 @@ from matplotlib.colors import LinearSegmentedColormap, ListedColormap, to_hex, t
 from matplotlib.patches import PathPatch, Polygon as MPolygon
 from shapely.geometry import LineString, box as _box
 
-from . import privacy
+from . import landcover, privacy
 from .atlas import _Page as Page
 from .colouring import fmt_pace
+from .relief import raster_shape as relief_raster_shape
 from .render import MAJOR, MINOR, MM, SIZES, _hw
 from .render_editorial import DISPLAY, PRINT_TOL_MM, REGULAR, STYLES, TEXT, _clip_simplify, _keep_alpha, _line_path
-from .render_editorial import _lstar, _parts, _relief_alpha, draw_basemap, draw_relief, draw_routes, footer_credits
+from .render_editorial import _lstar, _parts, _poly_path, _relief_alpha, draw_basemap, draw_relief, draw_routes
+from .render_editorial import footer_credits
 from .render_editorial import place_text, svg_rc
 from .render_race import MONTHS, along, climb, pace_along, profile, restrict, vertex_positions
 from .render_sport import _num
@@ -70,7 +72,7 @@ def _fit(extent, aspect):
     return (cx - w / 2, cx + w / 2, cy - h / 2, cy + h / 2)
 
 
-# --- numbers -----------------------------------------------------------------------------------------------------------
+# --- numbers ----------------------------------------------------------------------------------------------------------
 
 def _resample(xy, step):
     """Points every `step` metres along the track (and its last point), with their along-track distances."""
@@ -224,7 +226,7 @@ def parse_ele(value):
     return v if -500 <= v <= 9000 else None
 
 
-# --- the map -----------------------------------------------------------------------------------------------------------
+# --- the map ----------------------------------------------------------------------------------------------------------
 
 def _towards(a, b, t):
     """The colour t of the way from a to b (t > 1 goes past b), clipped to the sRGB cube."""
@@ -284,12 +286,13 @@ def _ink_at(bg, inks, target):
     return _towards(bg, ink, hi)
 
 
-def trail_relief(S):
+def trail_relief(S, ground=None):
     """((shadow rgb, alpha), (light rgb, alpha)), as render_editorial.relief_colours, set against the course's own
     colour (the accent, one bold line) instead of the faintest heat ink: light paper darkens by up to min(13, 0.35
     route) L* and lightens by min(4, 0.2 route); dark paper darkens by min(8, 0.5 L*bg, 0.35 route) and lightens by
-    min(8, 0.3 route). The light side is held to what the map under it can bear, as on the other prints. A style
-    that sets "relief" keeps it."""
+    min(8, 0.3 route). The light side is held to what the map under it can bear, as on the other prints. Over the
+    land cover (ground: its mean colour) the same changes of L* are measured on that colour instead of the paper.
+    A style that sets "relief" keeps it."""
     if "relief" in S:
         return S["relief"]
     bg = to_rgb(S["bg"])
@@ -299,8 +302,97 @@ def trail_relief(S):
         shadow, ts, light, tl = S["ink"], min(13, 0.35 * route), "#ffffff", min(4, 0.2 * route)
     else:
         shadow, ts, light, tl = "#000000", min(8, 0.5 * lb, 0.35 * route), S["ink"], min(8, 0.3 * route)
-    a_light = min(_relief_alpha(bg, to_rgb(light), tl, 0.6), _keep_alpha(S, to_rgb(light), 0.6))
-    return ((to_rgb(shadow), _relief_alpha(bg, to_rgb(shadow), ts, 0.5)), (to_rgb(light), a_light))
+    base = bg if ground is None else ground
+    a_light = min(_relief_alpha(base, to_rgb(light), tl, 0.6), _keep_alpha(S, to_rgb(light), 0.6))
+    return ((to_rgb(shadow), _relief_alpha(base, to_rgb(shadow), ts, 0.5)), (to_rgb(light), a_light))
+
+
+# --- the ground: the land cover under the map -------------------------------------------------------------------------
+
+GROUND_Z = 0.5  # the land cover: over the paper, under the water (2), the relief (3.5) and everything else
+SIGNIFICANT = 0.05  # a ground colour that covers this share of the map sets how strong paths and roads must be
+# a course whose accent lies closer than this (CIEDE2000) to the ground under most of it takes a route ink instead:
+# the forest style's deep green on tree cover (24) and the sunset orange on bare land (25) sink into it; every other
+# accent of the built-in styles lies 30 or more from every ground colour of its palette
+COURSE_DE = 30.0
+FOOT_STEP, FOOT_LIFT = 3.0, 2.0  # three credit lines: their spacing (A3-grid mm), and how far the line above rises
+ROUTE_INKS = {False: (("deep red", "#a8231c"), ("deep blue", "#1f4f96"), ("black", "#141414")),  # light paper
+              True: (("red", "#ff6b57"), ("blue", "#7cc3ff"), ("white", "#ffffff"))}  # dark paper
+
+
+def draw_ground(ax, ground, extent, S, map_w_mm):
+    """The land cover as ONE image of exactly the map box (interpolation 'none': a PDF or SVG embeds that array as
+    it is), clipped to the box, at the bottom of the map. Returns its colours: {class: rgb} of the classes drawn,
+    their shares of the map and the mean colour."""
+    if ground.classes.shape != relief_raster_shape(map_w_mm, extent):
+        raise ValueError("the land cover raster does not match the map")
+    rgb = landcover.ground_rgb(ground.classes, S, ground.dry)
+    x0, x1, y0, y1 = extent
+    im = ax.imshow(rgb, extent=extent, origin="upper", interpolation="none", zorder=GROUND_Z)
+    im.set_clip_path(PathPatch(_poly_path([_box(x0, y0, x1, y1)]), transform=ax.transData))
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
+    shares = landcover.shares(ground.classes)
+    colours = landcover.palette(S, ground.dry)
+    return {"colours": {k: colours[k] for k in shares}, "shares": shares,
+            "mean": tuple(float(v) for v in rgb.reshape(-1, 3).mean(axis=0) / 255)}
+
+
+def ground_style(TS, S, painted):
+    """The trail style over the land cover: the relief measured on the ground's mean colour, and the paths and roads
+    re-inked along the way from the paper to the style's inks so they keep, against the darkest ground colour that
+    covers SIGNIFICANT of the map (the lightest on dark paper), the contrast they have against the paper."""
+    out = dict(TS)
+    out["relief"] = trail_relief(S, painted["mean"])
+    dark = _lstar(to_rgb(S["bg"])) < 50
+    big = [c for k, c in painted["colours"].items() if painted["shares"][k] >= SIGNIFICANT] or [painted["mean"]]
+    ref = (max if dark else min)(big, key=_lstar)
+    l_bg = _lstar(to_rgb(S["bg"]))
+    shift = abs(l_bg - _lstar(ref))
+    for key in ("trail", "road_minor", "road_major"):
+        gap = abs(_lstar(to_rgb(TS[key])) - l_bg)
+        out[key] = _ink_at(S["bg"], (S["sub"], S["ink"]), shift + gap)
+    return out
+
+
+def ground_under(classes, extent, segments):
+    """{class: share of the course's length} of the land cover under the drawn course (segments: (n, 2, 2) in map
+    units), sampled about once per pixel of the raster."""
+    if not len(segments):
+        return {}
+    H, W = classes.shape
+    x0, x1, y0, y1 = extent
+    a, b = segments[:, 0], segments[:, 1]
+    length = np.hypot(*(b - a).T)
+    n = np.maximum(1, np.ceil(length / ((x1 - x0) / W))).astype(int)
+    seg = np.repeat(np.arange(len(segments)), n)
+    t = (np.arange(n.sum()) - np.repeat(np.cumsum(n) - n, n) + 0.5) / n[seg]
+    p = a[seg] + (b - a)[seg] * t[:, None]
+    col = np.clip(((p[:, 0] - x0) / (x1 - x0) * W).astype(int), 0, W - 1)
+    row = np.clip(((y1 - p[:, 1]) / (y1 - y0) * H).astype(int), 0, H - 1)
+    weight, cls = (length / n)[seg], classes[row, col]
+    total = weight.sum()
+    if not total > 0:
+        return {}
+    return {int(c): float(weight[cls == c].sum() / total) for c in np.unique(cls)}
+
+
+def course_ink(S, colours, under):
+    """(ink, note): the style's accent, unless it lies closer than COURSE_DE (CIEDE2000) to the ground colour under
+    most of the course (it would sink into it); then the first route ink of ROUTE_INKS that lies at least COURSE_DE
+    from that colour (else the one that lies farthest), and a note for the log that says why (without any place)."""
+    if not under:
+        return S["accent"], None
+    dominant = max(sorted(under), key=lambda c: under[c])
+    ground = colours[dominant]
+    d = landcover.delta_e(S["accent"], ground)
+    if d >= COURSE_DE:
+        return S["accent"], None
+    inks = ROUTE_INKS[_lstar(to_rgb(S["bg"])) < 50]
+    name, ink = next((t for t in inks if landcover.delta_e(t[1], ground) >= COURSE_DE),
+                     max(inks, key=lambda t: landcover.delta_e(t[1], ground)))
+    return ink, (f"the course is drawn in {name}: the style's accent would sink into the {landcover.NAMES[dominant]} "
+                 f"under most of it (colour difference {d:.0f}, below {COURSE_DE:.0f})")
 
 
 def split_network(basemap):
@@ -440,16 +532,17 @@ def draw_summits(ax, summits, S, k):
                                path_effects=halo))
 
 
-# --- the page ----------------------------------------------------------------------------------------------------------
+# --- the page ---------------------------------------------------------------------------------------------------------
 
 def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella", size="A3", dpi=300, title="",
            place="", name="", date=None, lang="en", color_by="single", pdf_path=None, svg_path=None, preview_path=None,
-           times=None, ele=None, stretch=None, relief=None, peaks=()):
+           times=None, ele=None, stretch=None, relief=None, peaks=(), ground=None, log=None):
     """activity: the route; track_xy: its (end-cleaned) projected track, with times and ele aligned to it (default:
     the activity's); pieces: the privacy-cut pieces (index, LineString), drawn; stretch: (start_m, end_m) along the
     track that the numbers describe (default: all of it); place: the subline (region, country); date: the local
     datetime of the activity; relief: a relief.Relief for the map; peaks: (x, y, name, ele) of OSM summits in map
-    units, of which place_peaks draws up to six inside the map."""
+    units, of which place_peaks draws up to six inside the map; ground: a landcover.LandCover for the map (the
+    colours of the land under it); log: where to say which ink the course took over the ground, and why."""
     S = STYLES[style]
     es = lang == "es"
     wmm, hmm = SIZES[size]
@@ -490,6 +583,10 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     ax.set_aspect("equal")
     ax.axis("off")
     streets, roads, trails = split_network(basemap)
+    painted = draw_ground(ax, ground, extent, S, map_w) if ground is not None else None
+    if painted is not None:  # the land cover already says where the woods and meadows are
+        TS = ground_style(TS, S, painted)
+        streets = (streets[0], streets[1].iloc[:0], streets[2])
     draw_basemap(ax, streets, extent, TS, k, map_w)
     drawn = draw_relief(ax, relief, extent, TS, basemap[2], k, map_w) if relief is not None else False
     trail_network(ax, trails, extent, TS, k, map_w)
@@ -498,7 +595,10 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     coords = [c for c in (np.asarray(p.coords) for _, p in cut) if len(c) > 1]
     segments = np.concatenate([np.stack((c[:-1], c[1:]), axis=1) for c in coords]) if coords else np.empty((0, 2, 2))
     heat = LinearSegmentedColormap.from_list("trail", S["heat"][1:])  # the faintest ink would sink into the relief
-    cmap, values, legend = ListedColormap([S["accent"]]), None, {"mode": "single"}
+    ink, why = S["accent"], None
+    if painted is not None:
+        ink, why = course_ink(S, painted["colours"], ground_under(ground.classes, extent, segments))
+    cmap, values, legend = ListedColormap([ink]), None, {"mode": "single"}
     if len(segments) and color_by in ("pace", "elevation"):
         pts = list(map(tuple, xy))
         pairs = {pq: i for i, pq in enumerate(zip(pts[:-1], pts[1:]))}
@@ -586,20 +686,25 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
             T(x + w_ + 1.5, ytop + 6.5, unit, pt=9, font=REGULAR, color=S["accent"])
         T(x, ytop + 15, label, pt=6.0, color=S["sub"], max_w=col - 4)
 
-    # footer: what the line colour means, attribution
+    # footer: what the line colour means, attribution (three credit lines sit closer, and the line above them rises)
     rule(398)
-    T(18, 404, "CADA RUTA DEJA HUELLA." if es else "EVERY ROUTE LEAVES A TRACE.", pt=6.8)
+    three = drawn and painted is not None
+    top = 404 - (FOOT_LIFT if three else 0.0)
+    T(18, top, "CADA RUTA DEJA HUELLA." if es else "EVERY ROUTE LEAVES A TRACE.", pt=6.8)
     if legend["mode"] in ("pace", "elevation"):
-        T(212, 404, ("RITMO" if es else "PACE") if legend["mode"] == "pace" else ("ALTITUD" if es else "ELEVATION"),
+        T(212, top, ("RITMO" if es else "PACE") if legend["mode"] == "pace" else ("ALTITUD" if es else "ELEVATION"),
           pt=5.8, color=S["sub"], align="right")
         for i, v in enumerate(np.linspace(0, 1, 6)):
-            page.ax.plot([(218 + i * 8.4) * k, (225 + i * 8.4) * k], [405 * k, 405 * k], color=heat(v), lw=1.3 * k,
-                         solid_capstyle="round")
+            page.ax.plot([(218 + i * 8.4) * k, (225 + i * 8.4) * k], [(top + 1) * k, (top + 1) * k], color=heat(v),
+                         lw=1.3 * k, solid_capstyle="round")
         lo_t = fmt_pace(legend["hi"]) if legend["mode"] == "pace" else f"{legend['lo']:.0f} m"
         hi_t = fmt_pace(legend["lo"]) if legend["mode"] == "pace" else f"{legend['hi']:.0f} m"
-        T(218, 407.6, lo_t, pt=4.6, color=S["sub"])
-        T(268, 407.6, hi_t, pt=4.6, color=S["sub"], align="right")
-    footer_credits(T, S, lang, 412, 200, 238, relief.dataset if drawn else None)
+        T(218, top + 3.6, lo_t, pt=4.6, color=S["sub"])
+        T(268, top + 3.6, hi_t, pt=4.6, color=S["sub"], align="right")
+    footer_credits(T, S, lang, 412, 200, 238, relief.dataset if drawn else None, ground=painted is not None,
+                   step=FOOT_STEP if three else 3.4)
+    if why and legend["mode"] == "single" and log is not None:
+        log(f"[ground] {why}")
 
     # No timestamps, activity ids, source paths or author metadata, as on the other prints.
     fig.savefig(out_path, dpi=dpi, facecolor=S["bg"], metadata={"Software": "Pinless"})
@@ -614,4 +719,5 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
         fig.savefig(preview_path, dpi=1600 * 25.4 / hmm, facecolor=S["bg"], pil_kwargs={"quality": 88, "optimize": True})
     plt.close(fig)
     return {"km": km, "secs": secs, "paused": paused, "legend": legend, "route_type": kind, "high": hi_point,
-            "summits": summits, "relief": drawn}
+            "summits": summits, "relief": drawn, "ground": painted is not None,
+            "course_ink": ink if legend["mode"] == "single" else None}

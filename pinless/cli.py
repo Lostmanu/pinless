@@ -95,6 +95,11 @@ def main(argv=None):
                         "around the map and, where the land is hilly, the blocks of about 30 km that cover it (never "
                         "your routes); downloaded once (cached); flat areas get none. Default: shade for the trail "
                         "layout, off for the others")
+    p.add_argument("--ground", default=None, choices=["nature", "style"],
+                   help="trail: nature (default) paints the map's ground in the colours of the land, green woods, "
+                        "light green meadows, wheat fields, ochre bare land and deserts, white snow, from ESA "
+                        "WorldCover on Amazon S3 (only the 3-degree tiles around the map are requested; downloaded "
+                        "once, cached); style keeps the plain paper of the style")
     p.add_argument("--with", dest="with_export", default=None, metavar="EXPORT",
                    help="a second person's Strava export: one poster for two, one ink each (editorial)")
     p.add_argument("--with-name", default="", help="the second person's name (required with --with)")
@@ -107,6 +112,10 @@ def main(argv=None):
         a.type = "Run"
     if a.relief is None:  # relief is the point of a mountain print
         a.relief = "shade" if a.layout == "trail" else "off"
+    if a.ground is not None and a.layout != "trail":
+        p.error("--ground is available for the trail layout only, for now")
+    if a.ground is None:
+        a.ground = "nature" if a.layout == "trail" else "style"
     if (a.with_name or a.with_type) and not a.with_export:
         p.error("--with-name and --with-type need --with")
     if a.with_export:

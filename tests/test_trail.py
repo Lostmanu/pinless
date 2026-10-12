@@ -8,7 +8,7 @@ import pytest
 import shapely
 from shapely.geometry import LineString, Point, box
 
-from pinless import atlas, cli, ingest, race, relief, render_editorial, render_trail, trail
+from pinless import atlas, cli, ingest, landcover, race, relief, render_editorial, render_trail, trail
 from pinless.ingest import Activity
 from test_race_graphs import EMPTY, HOME, POOL, _line, _lonlat, _loop
 
@@ -493,6 +493,7 @@ def _trail_world(monkeypatch, acts, captured, tmp_path, prepared=None):
                                                                                  "España" if lang == "es" else "Spain"))
     calls = [] if prepared is None else prepared
     monkeypatch.setattr(relief, "prepare_many", lambda maps, log=print: calls.append(maps) or [None] * len(maps))
+    monkeypatch.setattr(landcover, "prepare_many", lambda maps, log=print: [None] * len(maps))
     real = render_trail.render
 
     def spy(*args, **kw):
