@@ -20,6 +20,9 @@ from . import area, ingest, privacy, race, relief, render, render_trail
 from .localtime import local_start
 from .render_race import along
 
+ONE_ACTIVITY = ("[privacy] this export holds one activity (a single file): no private places can be learned from "
+                "other activities, so only --zone protects where it starts and ends. If it starts at home, add --zone "
+                "there.")
 PAD = 0.10  # the map reaches this share of the route's longer side beyond it: room for the hills around it
 KINDS = {"Run", "TrailRun", "Walk", "Hike", "Ride", "MountainBikeRide", "GravelRide", "EBikeRide", "BackcountrySki",
          "NordicSki", "AlpineSki", "Snowshoe", "RockClimbing", "Swim", "Unknown"}
@@ -77,8 +80,7 @@ def run(sel, pool, a, log=print):
     track = project(route)
     others = [project(c) for x in pool if x is not chosen for c in [ingest.clean(x)] if c and len(c.lonlat) > 1]
     if not others:
-        log("[privacy] this export holds one activity (a single file): no private places can be learned from other "
-            "activities, so only --zone protects where it starts and ends. If it starts at home, add --zone there.")
+        log(ONE_ACTIVITY)
     try:
         pieces, rep, learned, stretch = race.cut(track, others, a.trim, a.zone_radius, zones,
                                                  allow_private_ends=a.allow_private_ends)

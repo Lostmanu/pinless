@@ -452,3 +452,30 @@ def test_a_planned_route_without_clock_or_heights_still_draws(monkeypatch, tmp_p
     cells = [b[0] for b in boxes if b[2] > render_trail.NUMBERS_TOP]
     assert cells.count("—") == 3 and "POINT TO POINT" in cells and "TIME" in cells
     assert not any(b[0] in ("ELEVATION", "PERFIL") for b in boxes), "no profile without heights"
+
+
+def test_a_single_file_is_warned_about_and_drawn_whatever_its_type_on_every_layout(monkeypatch, tmp_path, capsys):
+    run = _hike(_line((0, 0), (3000, 0), (3000, 2200)), "commute", kind="Run", speed=3.0)
+    (tmp_path / "run.gpx").write_bytes(_gpx(run).replace(b"<type>hiking</type>", b""))  # a planner names no type
+    captured = {}
+    _trail_world(monkeypatch, None, captured, tmp_path)
+    monkeypatch.setattr(trail.area, "city_name", lambda lat, lon, lang="en": "Madrid")
+    monkeypatch.setattr(trail.area, "place_names", lambda lat, lon, lang="en": ("Madrid", "Spain"))
+    got = {}
+    monkeypatch.setattr(atlas, "run", lambda sel, a: got.update(atlas=[(x.id, x.type) for x in sel]) or 0)
+    for layout in ("editorial", "race", "atlas", "trail"):
+        assert cli.main([str(tmp_path / "run.gpx"), "--layout", layout, "--dpi", "20", "--out",
+                         str(tmp_path / f"{layout}.png")]) == 0, layout
+        out = capsys.readouterr().out
+        assert out.count(trail.ONE_ACTIVITY) == 1, f"{layout}: only --zone protects a single file's ends"
+    assert got["atlas"] == [("run", "Unknown")], "no --type: the file's one activity, whatever its type"
+    assert cli.main([str(tmp_path / "run.gpx"), "--type", "Ride", "--out", str(tmp_path / "x.png")]) == 2
+    assert "this export has: Unknown 1" in capsys.readouterr().out
+    monkeypatch.setattr(ingest, "read_export", lambda path: ([run, _hike(_loop(0, 0, 900), "h")], ingest.IngestReport()))
+    assert cli.main(["x.zip", "--layout", "atlas"]) == 0 and got["atlas"] == [("commute", "Run")], "an export: runs"
+    assert trail.ONE_ACTIVITY not in capsys.readouterr().out
+    odd = Activity(id="o", type="Walk to Calle Mayor 5", start=START, lonlat=run.lonlat, source="x")
+    monkeypatch.setattr(ingest, "read_export", lambda path: ([odd, _hike(_loop(0, 0, 900), "h")], ingest.IngestReport()))
+    assert cli.main(["x.zip"]) == 2
+    out = capsys.readouterr().out
+    assert "this export has: other 1, Hike 1" in out and "Calle Mayor" not in out, "a file's own type is never logged"

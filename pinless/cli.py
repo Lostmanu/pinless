@@ -54,7 +54,8 @@ def main(argv=None):
     p.add_argument("--title", default="", help="headline text; default: --place or the city found at the area centre")
     p.add_argument("--year", type=int, default=None, help="only activities that started that year (local time)")
     p.add_argument("--type", default=None,
-                   help="activity type (Run, Ride, Walk, Hike...); default Run, and any type for the trail layout")
+                   help="activity type (Run, Ride, Walk, Hike...); default Run, and any type for the trail layout or a "
+                        "single GPX, TCX or FIT file")
     p.add_argument("--layout", default="editorial", choices=["classic", "sport", "editorial", "atlas", "race", "trail"],
                    help="atlas: one small map per city you ran in; race: one activity as a finisher print; trail: one "
                         "route (a hike, a trail run) on a topographic map")
@@ -100,7 +101,9 @@ def main(argv=None):
     p.add_argument("--with-type", default=None,
                    help="activity type in the second export, when it names the sport differently (default: --type)")
     a = p.parse_args(_glue_negative_values(sys.argv[1:] if argv is None else list(argv)))
-    if a.type is None and a.layout != "trail":  # a trail can be any activity: a hike, a walk, a trail run
+    # a trail can be any activity (a hike, a walk, a trail run), and so can a single file: a GPX from a trail app or
+    # a route planner often names no type at all
+    if a.type is None and (a.with_export or (a.layout != "trail" and not ingest.is_activity_file(a.export))):
         a.type = "Run"
     if a.relief is None:  # relief is the point of a mountain print
         a.relief = "shade" if a.layout == "trail" else "off"
@@ -183,16 +186,21 @@ def main(argv=None):
     acts, rep = ingest.read_export(a.export)
     print(f"[ingest] files {rep.files_seen} · used {rep.used} · no GPS {rep.no_gps} · unreadable {rep.unreadable} · "
           f"unsupported {rep.unsupported}")
+    if len(acts) == 1 and a.layout != "trail":  # the trail print says it where it learns its places
+        print(trail.ONE_ACTIVITY)
     sel = _select(acts, a.type, a.year)
     if not sel:
-        print("no activities match the type/year filters")
+        kinds = ", ".join(f"{t} {n}" for t, n in Counter(x.type if x.type in trail.KINDS else "other"  # free text
+                                                         for x in acts).most_common(6))  # in a file: never logged
+        print("no activities match the type/year filters" + (f" (this export has: {kinds}; choose the type with "
+                                                             f"--type)" if kinds else ""))
         return 2
     if a.layout == "atlas":
         code = atlas.run(sel, a)
         print(f"[done] {time.time() - t0:.0f}s")
         return code
     if a.layout == "race":  # one activity; zones from every activity of that type, whatever the year
-        code = race.run(sel, [x for x in acts if x.type.lower() == a.type.lower()], a)
+        code = race.run(sel, [x for x in acts if a.type is None or x.type.lower() == a.type.lower()], a)
         print(f"[done] {time.time() - t0:.0f}s")
         return code
     if a.layout == "trail":  # one activity; zones from every other activity of the export, whatever its type or year
