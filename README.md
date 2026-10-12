@@ -19,7 +19,7 @@ That is the whole thing. Pinless finds the area where you run most, downloads th
 
 On strava.com: **Settings > My Account > Download or Delete Your Account > Request your archive**. Strava emails you a link to a zip, which can take a while. Pass the zip as it is; there is no need to unzip it.
 
-It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros, Suunto, Komoot or any app that exports GPX, or with a single such file: one hike downloaded from a trail app, a route planner or a watch is an export of one activity.
+It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros, Suunto, Komoot or any app that exports GPX, or with a single such file: one hike downloaded from a trail app, a route planner or a watch is an export of one activity, and a file that holds several tracks (an app's export of all your walks) is read as one activity per track, so the places where they start and end are learned as in a folder of files.
 
 ## Install, step by step
 

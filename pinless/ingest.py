@@ -142,68 +142,86 @@ def _float(x):
         return None
 
 
+def _lonlat(lon, lat):
+    """(lon, lat) in degrees, or None when either is missing or not a number."""
+    lo, la = _float(lon), _float(lat)
+    return None if lo is None or la is None else (lo, la)
+
+
 def _text(el):
     return el.text.strip() if el is not None and el.text else ""
 
 
+def _units(root, tags, point):
+    """The elements of `tags` (in file order) that hold at least one `point`, or [root] when none does (points
+    outside any of them)."""
+    units = [e for e in root.iter() if e.tag in tags and next(e.iter(point), None) is not None]
+    return units or [root]
+
+
 def parse_gpx(data: bytes):
-    """(points, first time, type, times, elevations, name). A file with no track points (a route planned in a trail
-    app) is read from its route points instead."""
+    """[(points, first time, type, times, elevations, name)], one per track (<trk>) of the file.
+
+    Each track is an activity of its own: an app's "export all tracks" writes many walks into one file, and the ends
+    of every one of them are private places to learn, as they are in a folder of files. The segments of a track (a
+    pause in the recording) stay together. A file with no track points (a route planned in a trail app) is read from
+    its routes (<rte>) instead. The file's own name (metadata) names a file of one track only."""
     root = _strip_ns(ET.fromstring(data))
-    pts, t0, kind = [], None, None
-    for trk in root.iter("trk"):
-        k = trk.find("type")
-        if k is not None and k.text:
-            kind = GPX_TYPES.get(k.text.strip().lower(), k.text.strip())
-    name = next((n for n in (_text(t.find("name")) for t in (*root.iter("trk"), *root.iter("rte"))) if n), "") \
-        or _text(root.find("metadata/name"))
-    ts, ele = [], []
-    tag = "trkpt" if next(root.iter("trkpt"), None) is not None else "rtept"
-    for p in root.iter(tag):
-        try:
-            pts.append((float(p.get("lon")), float(p.get("lat"))))
-        except (TypeError, ValueError):
-            continue
-        tt = p.find("time")
-        ts.append(_parse_time(tt.text if tt is not None else None))
-        ee = p.find("ele")
-        ele.append(_float(ee.text if ee is not None else None))
-        if t0 is None:
-            t0 = ts[-1]
-    return pts, t0, kind, ts, ele, name
+    tag, unit = ("trkpt", "trk") if next(root.iter("trkpt"), None) is not None else ("rtept", "rte")
+    units = _units(root, (unit,), tag)
+    out = []
+    for u in units:
+        pts, ts, ele = [], [], []
+        for p in u.iter(tag):
+            xy = _lonlat(p.get("lon"), p.get("lat"))
+            if xy is None:
+                continue
+            pts.append(xy)
+            tt = p.find("time")
+            ts.append(_parse_time(tt.text if tt is not None else None))
+            ee = p.find("ele")
+            ele.append(_float(ee.text if ee is not None else None))
+        k = _text(u.find("type")) if u is not root else ""
+        kind = GPX_TYPES.get(k.lower(), k) if k else None
+        name = _text(u.find("name")) if u is not root else ""
+        out.append((pts, ts[0] if ts else None, kind, ts, ele, name))
+    if len(out) == 1 and not out[0][5]:
+        out[0] = out[0][:5] + (_text(root.find("metadata/name")),)
+    return out
 
 
 def parse_tcx(data: bytes):
-    """(points, first time, type, times, elevations, name): the name of a course, if the file is one."""
+    """[(points, first time, type, times, elevations, name)], one per activity (<Activity>) or course (<Course>) of
+    the file, for the same reason as parse_gpx; a course carries its name. The laps of an activity stay together."""
     root = _strip_ns(ET.fromstring(data.strip()))
-    pts, t0, kind, ts, ele = [], None, None, [], []
-    act = root.find(".//Activity")
-    if act is not None and act.get("Sport"):
-        kind = {"Running": "Run", "Biking": "Ride"}.get(act.get("Sport"), act.get("Sport"))
-    name = _text(root.find(".//Course/Name"))
-    for tp in root.iter("Trackpoint"):
-        pos = tp.find("Position")
-        if pos is None:
-            continue
-        la, lo = pos.find("LatitudeDegrees"), pos.find("LongitudeDegrees")
-        try:
-            pts.append((float(lo.text), float(la.text)))
-        except (AttributeError, TypeError, ValueError):
-            continue
-        tt = tp.find("Time")
-        ts.append(_parse_time(tt.text if tt is not None else None))
-        aa = tp.find("AltitudeMeters")
-        ele.append(_float(aa.text if aa is not None else None))
-        if t0 is None:
-            t0 = ts[-1]
-    return pts, t0, kind, ts, ele, name
+    out = []
+    for u in _units(root, ("Activity", "Course"), "Trackpoint"):
+        pts, ts, ele = [], [], []
+        for tp in u.iter("Trackpoint"):
+            pos = tp.find("Position")
+            if pos is None:
+                continue
+            xy = _lonlat(_text(pos.find("LongitudeDegrees")), _text(pos.find("LatitudeDegrees")))
+            if xy is None:
+                continue
+            pts.append(xy)
+            tt = tp.find("Time")
+            ts.append(_parse_time(tt.text if tt is not None else None))
+            aa = tp.find("AltitudeMeters")
+            ele.append(_float(aa.text if aa is not None else None))
+        sport = u.get("Sport") if u.tag == "Activity" else None
+        kind = {"Running": "Run", "Biking": "Ride"}.get(sport, sport) if sport else None
+        out.append((pts, ts[0] if ts else None, kind, ts, ele, _text(u.find("Name")) if u.tag == "Course" else ""))
+    if len(out) == 1 and not out[0][5]:
+        out[0] = out[0][:5] + (_text(root.find(".//Course/Name")),)
+    return out
 
 
 FIT_SPORTS = {"running": "Run", "cycling": "Ride", "walking": "Walk", "hiking": "Hike"}
 
 
 def parse_fit(data: bytes):
-    """(points, first time, type, times, elevations, name); a FIT file carries no name."""
+    """[(points, first time, type, times, elevations, name)]: a FIT file is one activity and carries no name."""
     import fitdecode  # optional dependency
     pts, t0, kind, ts, ele = [], None, None, [], []
     with fitdecode.FitReader(io.BytesIO(data)) as fit:
@@ -216,13 +234,16 @@ def parse_fit(data: bytes):
                 la, lo = frame.get_value("position_lat"), frame.get_value("position_long")
                 if la is None or lo is None:
                     continue
-                pts.append((lo * 180.0 / 2**31, la * 180.0 / 2**31))
+                xy = _lonlat(lo * 180.0 / 2**31, la * 180.0 / 2**31)
+                if xy is None:
+                    continue
+                pts.append(xy)
                 ts.append(frame.get_value("timestamp") if frame.has_field("timestamp") else None)
                 alt = next((frame.get_value(f) for f in ("enhanced_altitude", "altitude") if frame.has_field(f)), None)
                 ele.append(_float(alt))
                 if t0 is None:
                     t0 = ts[-1]
-    return pts, t0, kind, ts, ele, ""
+    return [(pts, t0, kind, ts, ele, "")]
 
 
 def _decode(name: str, raw: bytes):
@@ -258,7 +279,9 @@ def is_activity_file(path: str) -> bool:
 
 def read_export(path: str):
     """Return (activities, report). `path` may be a Strava export zip, an extracted export folder, any GPX/TCX/FIT
-    folder, or a single GPX/TCX/FIT file (also .gz): an export of that one activity."""
+    folder, or a single GPX/TCX/FIT file (also .gz): an export of the activities it holds. Every track of a GPX file
+    and every activity or course of a TCX file is an activity of its own (id "file#n" when a file holds several), so
+    the ends of each are learned as private places, wherever the file came from."""
     rep = IngestReport()
     files = {}
     if is_activity_file(path):
@@ -290,27 +313,29 @@ def read_export(path: str):
             continue
         rep.files_seen += 1
         try:
-            pts, t0, kind, ts, ele, title = _decode(name, read())
+            tracks = [t for t in _decode(name, read()) if len(t[0]) >= 2]
         except ImportError:
             rep.skip("unsupported", name, "FIT file but fitdecode is not installed")
             continue
         except Exception:
             rep.skip("unreadable", name, "corrupt or unreadable file")
             continue
-        if len(pts) < 2:
+        if not tracks:
             rep.skip("no_gps", name, "file without GPS points")
             continue
         m = meta.get(name, {})
-        secs = None
-        if ts and all(t is not None for t in ts) and len(ts) == len(pts):
-            secs = [(t - ts[0]).total_seconds() for t in ts]
-        heights = ele if ele and len(ele) == len(pts) and all(e is not None for e in ele) else None
-        act = clean(Activity(id=str(m.get("id") or os.path.basename(name).split(".")[0]),
-                             type=(m.get("type") or kind or "Unknown"), start=t0, lonlat=pts, source=name, times=secs,
-                             ele=heights, name=m.get("name") or title))
-        if act is None:
-            rep.skip("no_gps", name, "only stray GPS fixes")
-            continue
-        acts.append(act)
-        rep.used += 1
+        base = str(m.get("id") or os.path.basename(name).split(".")[0])
+        for n, (pts, t0, kind, ts, ele, title) in enumerate(tracks, 1):  # a file of many tracks: one activity each
+            secs = None
+            if ts and all(t is not None for t in ts) and len(ts) == len(pts):
+                secs = [(t - ts[0]).total_seconds() for t in ts]
+            heights = ele if ele and len(ele) == len(pts) and all(e is not None for e in ele) else None
+            act = clean(Activity(id=base if len(tracks) == 1 else f"{base}#{n}",
+                                 type=(m.get("type") or kind or "Unknown"), start=t0, lonlat=pts, source=name,
+                                 times=secs, ele=heights, name=m.get("name") or title))
+            if act is None:
+                rep.skip("no_gps", name, "only stray GPS fixes")
+                continue
+            acts.append(act)
+            rep.used += 1
     return acts, rep
