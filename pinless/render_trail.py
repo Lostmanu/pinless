@@ -77,7 +77,9 @@ def route_type(xy, step=10.0):
     half = at[-1] / 2
     first, second = pts[at <= half], pts[at > half]
     if len(first) >= 2 and len(second):
-        near = shapely.distance(shapely.points(second), LineString(first)) <= RETRACE_M
+        line = LineString(first)
+        shapely.prepare(line)  # indexed: a long-distance trail of 800 km is 40,000 points against 40,000 more
+        near = shapely.dwithin(line, shapely.points(second), RETRACE_M)
         if near.mean() >= RETRACE_SHARE:
             return "out_and_back"
     if math.hypot(*(xy[0] - xy[-1])) <= LOOP_M:
@@ -164,6 +166,18 @@ def weighted_percentiles(values, weights, qs):
     order = np.argsort(v)
     cum = np.cumsum(w[order])
     return [float(v[order][min(int(np.searchsorted(cum, q / 100 * cum[-1])), len(v) - 1)]) for q in qs]
+
+
+KM_MARKS = 12  # at most this many kilometre steps under the profile
+
+
+def km_step(metres):
+    """The step of the kilometre marks under the profile: 1, 2, 5, 10, 20, 50... km, the first that leaves at most
+    KM_MARKS steps, so a long-distance trail of 800 km gets marks that do not run into each other."""
+    step = 1
+    while metres / 1000 / step > KM_MARKS:
+        step = step * 5 // 2 if str(step)[0] == "2" else step * 2
+    return step
 
 
 def high_point(xy, ele):
@@ -507,7 +521,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
         label = f"{he:.0f} m"
         _, _, lw_, lh_ = place_text(label, 0, 0, k, 5.6, TEXT)
         T(min(max(gx, LEFT + lw_ / 2), RIGHT - lw_ / 2), gy - 1.1 - lh_, label, pt=5.6, align="center")
-        step = 5 if d[-1] > 12000 else 1
+        step = km_step(d[-1])
         for km_mark in range(0, int(d[-1] // 1000) + 1, step):
             T(LEFT + km_mark * 1000 / d[-1] * (RIGHT - LEFT), PROFILE_TOP + PROFILE_H + 2, str(km_mark), pt=4.4,
               color=S["sub"], align="center")

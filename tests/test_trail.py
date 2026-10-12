@@ -275,6 +275,23 @@ def test_the_high_point_is_marked_on_the_profile(monkeypatch, tmp_path):
     assert any(b[0] == "TRAIL" for b in boxes) and any(b[0] == "PEÑALARA" for b in boxes)
 
 
+def test_the_kilometre_marks_never_run_into_each_other(monkeypatch, tmp_path):
+    assert [render_trail.km_step(km * 1000) for km in (5, 12, 13, 24, 25, 60, 61, 120, 240, 840)] == [
+        1, 1, 2, 2, 5, 5, 10, 10, 20, 100]
+    boxes = _texts(monkeypatch)
+    y = render_trail.PROFILE_TOP + render_trail.PROFILE_H + 2
+    for km in (13, 300, 840):
+        xy = _line((0, 0), (km * 1000, 0), step=km * 2.0)
+        act = _hike(xy, speed=1.0)
+        extent = race.frame_course([(0, LineString(xy))], render_trail.map_aspect(), pad_frac=0.1)
+        del boxes[:]
+        render_trail.render(act, xy, [(0, LineString(xy))], (EMPTY, EMPTY, EMPTY), extent, str(tmp_path / "k.png"),
+                            dpi=20)
+        marks = sorted((b for b in boxes if b[2] == y), key=lambda b: b[1])
+        assert 5 <= len(marks) <= render_trail.KM_MARKS + 1, km
+        assert all(a[3] + 1 < b[1] for a, b in zip(marks, marks[1:])), f"{km} km: marks overlap"
+
+
 def test_spanish_labels(monkeypatch, tmp_path):
     boxes = _texts(monkeypatch)
     _page(tmp_path, lang="es")
