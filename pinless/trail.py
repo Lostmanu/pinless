@@ -108,7 +108,11 @@ def run(sel, pool, a, log=print):
             "door), add --zone there.")
 
     extent = race.frame_course(pieces, render_trail.map_aspect(a.size, profile=bool(route.ele)), pad_frac=PAD)
-    big = race.osm_box(extent, crs)
+    try:
+        big = race.osm_box(extent, crs)
+    except race.AcrossDateline as ex:
+        log(f"[osm] STOP: {ex}. Nothing was sent or exported.")
+        return 2
     try:
         folder = area.fetch_basemap(big, log=log, extra=("peaks",))
         basemap = render.load_basemap(folder, big, crs)

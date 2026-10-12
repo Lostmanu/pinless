@@ -49,6 +49,10 @@ class PrivateEnds(Exception):
     """The run starts or ends at a private place and allow_private_ends was not given."""
 
 
+class AcrossDateline(ValueError):
+    """The map crosses the 180th meridian: one box for OpenStreetMap would wrap round the globe."""
+
+
 def _km(a):
     xy = np.asarray(a.lonlat, dtype=float)
     if len(xy) < 2:
@@ -191,6 +195,9 @@ def osm_box(extent, crs):
     streets reach its edges."""
     inv = Transformer.from_crs(crs, 4326, always_xy=True)
     lons, lats = inv.transform([extent[0], extent[1]], [extent[2], extent[3]])
+    if max(lons) - min(lons) > 180:
+        raise AcrossDateline("this map crosses the 180th meridian, which Pinless cannot map yet (one box for "
+                             "OpenStreetMap would wrap round the globe)")
     return (min(lats) - 0.002, min(lons) - 0.002, max(lats) + 0.002, max(lons) + 0.002)
 
 
@@ -245,7 +252,11 @@ def run(sel, pool, a, log=print):
 
     extent = frame_course(pieces, render_race.map_aspect(a.size))
     inv = Transformer.from_crs(crs, 4326, always_xy=True)
-    big = osm_box(extent, crs)
+    try:
+        big = osm_box(extent, crs)
+    except AcrossDateline as ex:
+        log(f"[osm] STOP: {ex}. Nothing was sent or exported.")
+        return 2
     try:
         basemap = render.load_basemap(area.fetch_basemap(big, log=log), big, crs)
     except RuntimeError as ex:

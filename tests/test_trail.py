@@ -692,6 +692,23 @@ def test_a_full_trail_run_writes_png_pdf_and_preview(monkeypatch, tmp_path, caps
     assert "1 summits named" in out and "Morning Hike" not in out
 
 
+def test_a_route_across_the_180th_meridian_is_refused_before_anything_is_sent(monkeypatch, tmp_path, capsys):
+    lons = np.linspace(179.98, 180.02, 400)  # a walk out and back across the meridian, on Taveuni (Fiji)
+    lonlat = [((lo + 180) % 360 - 180, -16.80) for lo in np.concatenate([lons, lons[::-1]])]
+    walk = Activity(id="d", type="Hike", start=START, lonlat=lonlat, source="x", times=list(np.arange(800) * 5.0),
+                    ele=[100.0] * 800)
+    captured = {}
+    _trail_world(monkeypatch, [walk], captured, tmp_path)
+    monkeypatch.setattr(race.area, "place_names", lambda *a, **k: pytest.fail("nothing may be looked up"))
+    for layout in ("trail", "race"):
+        assert cli.main(["x.gpx", "--layout", layout, "--type", "Hike", "--dpi", "20", "--out",
+                         str(tmp_path / "t.png")]) == 2, layout
+        assert "crosses the 180th meridian" in capsys.readouterr().out
+    assert "extra" not in captured and "info" not in captured, "no OpenStreetMap request, no print"
+    s, w, n, e = race.osm_box((497000.0, 503000.0, 4.47e6, 4.474e6), trail.render.utm_crs(-3.7, 40.4))
+    assert -3.1 < w < -3 < e < -2.9 and 40.3 < s < n < 40.5, "a map elsewhere: its own box"
+
+
 def test_trail_command_line_refusals(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(ingest, "read_export", lambda path: ([], ingest.IngestReport()))
     for bad in (["--bbox", "40,-4,41,-3"], ["--place", "Madrid"], ["--cache", "madrid"], ["--fit"],
