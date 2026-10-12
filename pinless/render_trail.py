@@ -312,9 +312,10 @@ def trail_relief(S, ground=None):
 GROUND_Z = 0.5  # the land cover: over the paper, under the water (2), the relief (3.5) and everything else
 SIGNIFICANT = 0.05  # a ground colour that covers this share of the map sets how strong paths and roads must be
 # a course whose accent lies closer than COURSE_DE (CIEDE2000) to the ground under SINK_SHARE or more of its length
-# takes a route ink instead. Among the built-in styles: the forest style's deep green on tree cover (24) and on
-# mangroves (19), and the sunset orange on the bare land of a dry land (25 at dryness 1, 29 at 0.5; 30 or more below
-# about 0.4) sink into it; every other accent lies 30 or more from every ground colour of its palette
+# takes a route ink instead. Among the built-in styles: the forest style's deep green on tree cover (24 in a green
+# land, 27 at dryness 0.5, 30 in a dry one) and on mangroves (19), and the sunset orange on the bare land of a dry
+# land (22 at dryness 1, 28 at 0.5; 30 or more below 0.3) sink into it; every other accent lies 30 or more from every
+# ground colour of its palette, on light and dark paper
 COURSE_DE = 30.0
 SINK_SHARE = 0.15
 UNDER_SHARE = 0.05  # a route ink keeps COURSE_DE from every ground colour under this share of the course or more
@@ -336,8 +337,9 @@ def draw_ground(ax, ground, extent, S, map_w_mm):
     ax.set_xlim(x0, x1)
     ax.set_ylim(y0, y1)
     shares = landcover.shares(ground.classes)
-    colours = landcover.palette(S, ground.dry)
-    return {"colours": {k: colours[k] for k in shares}, "shares": shares,
+    land = landcover.land_lstar(S, shares, ground.dry)
+    colours = landcover.palette(S, ground.dry, land)
+    return {"colours": {k: colours[k] for k in shares}, "shares": shares, "land": land,
             "mean": tuple(float(v) for v in rgb.reshape(-1, 3).mean(axis=0) / 255)}
 
 
@@ -348,7 +350,9 @@ def ground_style(TS, S, painted):
     against the paper."""
     out = dict(TS)
     out["relief"] = trail_relief(S, painted["mean"])
-    out["water"], out["water_line"] = to_hex(landcover.water(S)), to_hex(landcover.water(S, line=True))
+    land = painted.get("land")
+    out["water"], out["water_line"] = (to_hex(landcover.water(S, land=land)),
+                                       to_hex(landcover.water(S, line=True, land=land)))
     dark = _lstar(to_rgb(S["bg"])) < 50
     big = [c for k, c in painted["colours"].items() if painted["shares"][k] >= SIGNIFICANT] or [painted["mean"]]
     ref = (max if dark else min)(big, key=_lstar)

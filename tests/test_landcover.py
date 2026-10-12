@@ -457,8 +457,14 @@ def test_the_colours_of_the_classes_on_light_and_dark_paper():
         lb = landcover._lstar(to_rgb(S["bg"]))
         for line, key in ((False, "water"), (True, "water_line")):
             own, got = np.asarray(to_rgb(S[key])), np.asarray(landcover.water(S, line=line))
-            if lb < 50:
-                assert got == pytest.approx(own), f"{name}: dark paper keeps its own {key}"
+            if lb < 50:  # dark paper: a blue a step below the land, never the paper's own near black
+                step = landcover.WATER_STEP + (landcover.STREAM_STEP if line else 0.0)
+                grass = landcover._lstar(pal[landcover.GRASS])
+                assert landcover._lstar(got) == pytest.approx(grass - step, abs=0.3), f"{name} {key}"
+                lit = landcover.water(S, line=line, land=50.0)
+                assert landcover._lstar(lit) == pytest.approx(50.0 - step, abs=0.3), f"{name} {key}: from the land"
+                assert 200 <= _hue(lit) <= 290 and _chroma(lit) >= 8, f"{name} {key}: a blue"
+                assert line or landcover.delta_e(got, S["bg"]) >= 10, f"{name}: a lake, not a hole in the ground"
             else:  # pulled towards a lake (stream) blue: bluer than the style's own, and still from it
                 blue = np.asarray(to_rgb(landcover.STREAM_BLUE if line else landcover.WATER_BLUE))
                 assert got == pytest.approx(own + (blue - own) * landcover.WATER_MIX), f"{name} {key}"
@@ -472,6 +478,11 @@ def test_the_colours_of_the_classes_on_light_and_dark_paper():
             else:  # pulled towards the paper: darker than on light paper, and closer to the paper than to it
                 lk, ln = landcover._lstar(pal[k]), landcover._lstar(to_rgb(hex_))
                 assert lb < lk < ln and abs(lk - lb) < abs(ln - lk), f"{name} {landcover.NAMES[k]}"
+                assert lk == pytest.approx(lb + (ln - lb) * landcover.DARK_MIX, abs=0.3)
+                if _chroma(to_rgb(hex_)) > 10:  # its own hue, not the paper's
+                    turn = (_hue(pal[k]) - _hue(to_rgb(hex_)) + 180) % 360 - 180
+                    assert abs(turn) < 3, f"{name} {landcover.NAMES[k]}: its hue"
+                    assert _chroma(pal[k]) <= landcover.DARK_CHROMA * _chroma(to_rgb(hex_)) + 0.3
                 if _chroma(to_rgb(S["bg"])) < 20 and _chroma(to_rgb(hex_)) > 10:  # a near-grey paper (blueprint
                     # tints everything blue) and a colour that is not near white: quieter too
                     assert _chroma(pal[k]) < _chroma(to_rgb(hex_)), f"{name} {landcover.NAMES[k]}: quieter"
@@ -491,6 +502,52 @@ def test_the_colours_of_the_classes_on_light_and_dark_paper():
 def _chroma(rgb):
     _, a, b = landcover.lab(rgb)
     return math.hypot(a, b)
+
+
+def _map_mean(S, shares, dry):
+    """The mean colour of a map of these class shares (averaged in linear light, as the eye and a reduced image do)."""
+    pal = landcover.palette(S, dry)
+    lin = sum(np.where(np.asarray(pal[k]) <= 0.04045, np.asarray(pal[k]) / 12.92,
+                       ((np.asarray(pal[k]) + 0.055) / 1.055) ** 2.4) * v for k, v in shares.items())
+    lin = lin / sum(shares.values())
+    return np.where(lin <= 0.0031308, 12.92 * lin, 1.055 * lin ** (1 / 2.4) - 0.055)
+
+
+def test_a_forest_stays_green_and_a_desert_orange_on_every_paper():
+    for name, S in render_editorial.STYLES.items():
+        forest = _map_mean(S, SURVEY["Penalara"][1], 0.0)
+        desert = _map_mean(S, SURVEY["Tabernas"][1], 1.0)
+        assert _chroma(desert) >= 15 and 60 <= _hue(desert) <= 85, f"{name}: the desert orange"
+        assert _chroma(forest) >= 20 and 110 <= _hue(forest) <= 140, f"{name}: the forest green"
+        assert landcover.de2000(landcover.lab(forest), landcover.lab(desert)) >= 15, f"{name}: two lands apart"
+        if landcover.is_dark(S):
+            assert landcover._lstar(forest) < 50 and landcover._lstar(desert) < 50, f"{name}: a dark poster"
+
+
+def test_the_water_on_dark_paper_lies_a_step_below_the_land_around_it(tmp_path):
+    from matplotlib.colors import to_hex
+    for name, S in render_editorial.STYLES.items():
+        if not landcover.is_dark(S):
+            continue
+        for land in (landcover.TREE, landcover.GRASS, landcover.SNOW):
+            a = np.full((40, 60), land, np.uint8)
+            a[10:30, 20:40] = landcover.WATER  # a lake
+            L = landcover.land_lstar(S, landcover.shares(a))
+            assert L == pytest.approx(landcover._lstar(landcover.palette(S)[land]), abs=1e-6)
+            lake = landcover.ground_rgb(a, S)[20, 30] / 255
+            assert landcover._lstar(lake) == pytest.approx(L - landcover.WATER_STEP, abs=0.6), (name, land)
+            painted = {"colours": {land: landcover.palette(S)[land]}, "shares": landcover.shares(a), "land": L,
+                       "mean": tuple(landcover.ground_rgb(a, S).reshape(-1, 3).mean(0) / 255)}
+            TS = render_trail.ground_style(render_trail.trail_style(S), S, painted)
+            assert TS["water"] == to_hex(lake), f"{name}: OSM lakes as the land cover's water"
+            assert landcover._lstar(to_rgb_(TS["water_line"])) == pytest.approx(
+                L - landcover.WATER_STEP - landcover.STREAM_STEP, abs=0.6)
+    assert landcover.land_lstar(render_editorial.STYLES["midnight"], {landcover.WATER: 1.0}) is None
+
+
+def to_rgb_(c):
+    from matplotlib.colors import to_rgb
+    return to_rgb(c)
 
 
 def _hue(rgb):

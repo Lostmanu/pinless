@@ -461,9 +461,15 @@ DRY_BARE = (0.10, 0.25)
 DESERT_BARE = (0.50, 0.75)
 COLD = 0.03
 # Water on light paper: the style's water this share of the way to a lake blue, and its waterways to a stream blue
-# (a style's pale water reads as snow on a green ground); dark paper keeps the style's own water
+# (a style's pale water reads as snow on a green ground). On dark paper the style's water, near the paper's black,
+# would read as a hole punched through the ground: there the water takes the hue of that same mix, and its L* lies
+# WATER_STEP below the mean L* of the land around it (STREAM_STEP more for the waterways)
 WATER_BLUE, STREAM_BLUE, WATER_MIX = "#a9cfe0", "#6ea6c4", 0.65
-DARK_MIX = 0.35  # on dark paper each colour lies this share of the way from the paper to its light-paper colour
+WATER_STEP, STREAM_STEP = 9.0, 5.0
+# On dark paper each colour of the light palette keeps its hue and DARK_CHROMA of its chroma, and its L* lies DARK_MIX
+# of the way from the paper's to its own: darker and quieter, so a dark poster stays dark, yet a forest still green
+# and a desert still orange (a mix towards the paper in RGB turned both into the same grey brown)
+DARK_MIX, DARK_CHROMA = 0.35, 0.75
 SMOOTH_PX = 1.0  # the Gaussian over the coloured raster (pixels at 150 ppi, 0.17 mm): class edges read painted
 # The generalisation of the classes (general_sigma): half a data pixel, at least one raster pixel, in a dry land up to
 # GENERAL_DRY_MM on paper, and never more than GENERAL_MAX_MM on paper
@@ -493,28 +499,52 @@ def dryness(shares, lat):
     return dry * (1 - _ramp(shares.get(SNOW, 0.0) + shares.get(MOSS, 0.0), 0.0, COLD))
 
 
-def palette(S, dry=0.0):
-    """{class: (r, g, b)} of the ground in a style: NATURE on light paper, its grass, scrub and bare land dry of the
-    way to DRY; on dark paper the same colours pulled towards the paper (DARK_MIX of the way from it), darker and
-    quieter, so a dark poster stays dark. Water as water() says, land without data the paper."""
-    bg = np.asarray(to_rgb(S["bg"]))
-    mix = DARK_MIX if is_dark(S) else 1.0
-    land = {k: np.asarray(to_rgb(c)) for k, c in NATURE.items()}
+def palette(S, dry=0.0, land=None):
+    """{class: (r, g, b)} of the ground in a style: NATURE on light paper, its classes in DRY dry of the way to
+    DRY's colours; on dark paper the same colours darker and quieter (DARK_MIX, DARK_CHROMA), so a dark poster stays
+    dark. Water as water() says (land: the mean L* of the land around it, for dark paper), land without data the
+    paper."""
+    bg = to_rgb(S["bg"])
+    light = {k: np.asarray(to_rgb(c)) for k, c in NATURE.items()}
     for k, c in DRY.items():
-        land[k] = land[k] + (np.asarray(to_rgb(c)) - land[k]) * float(dry)
-    out = {k: tuple(float(v) for v in bg + (c - bg) * mix) for k, c in land.items()}
-    out[WATER] = water(S)
+        light[k] = light[k] + (np.asarray(to_rgb(c)) - light[k]) * float(dry)
+    if is_dark(S):
+        lb = _lstar(bg)
+        out = {}
+        for k, c in light.items():
+            L, C, h = lch(c)
+            out[k] = from_lch(lb + (L - lb) * DARK_MIX, C * DARK_CHROMA, h)
+    else:
+        out = {k: tuple(float(v) for v in c) for k, c in light.items()}
+    out[WATER] = water(S, land=land)
     out[NO_DATA] = tuple(float(v) for v in bg)
     return out
 
 
-def water(S, line=False):
-    """(r, g, b) of the water over the ground (line: of the waterways), as WATER_MIX says."""
+def water(S, line=False, land=None):
+    """(r, g, b) of the water over the ground (line: of the waterways): on light paper the style's water WATER_MIX of
+    the way to a lake (stream) blue; on dark paper that blue's hue at WATER_STEP (and STREAM_STEP) below land, the
+    mean L* of the land of the map (by default the grassland's)."""
     own = np.asarray(to_rgb(S["water_line" if line else "water"]))
-    if is_dark(S):
-        return tuple(float(v) for v in own)
     blue = np.asarray(to_rgb(STREAM_BLUE if line else WATER_BLUE))
-    return tuple(float(v) for v in own + (blue - own) * WATER_MIX)
+    mixed = own + (blue - own) * WATER_MIX
+    if not is_dark(S):
+        return tuple(float(v) for v in mixed)
+    if land is None:  # the grassland's L* on this paper (palette keeps the L* it sets)
+        lb = _lstar(to_rgb(S["bg"]))
+        land = lb + (_lstar(to_rgb(NATURE[GRASS])) - lb) * DARK_MIX
+    _, C, h = lch(mixed)
+    return from_lch(land - WATER_STEP - (STREAM_STEP if line else 0.0), C * DARK_CHROMA, h)
+
+
+def land_lstar(S, shares_, dry=0.0):
+    """The mean L* of the land classes of a map (shares_: {class: share of the map}) in the style's ground colours,
+    or None for a map of water alone."""
+    land = {k: v for k, v in shares_.items() if k not in (WATER, NO_DATA) and v > 0}
+    if not land:
+        return None
+    pal = palette(S, dry)
+    return sum(_lstar(pal[k]) * v for k, v in land.items()) / sum(land.values())
 
 
 def _gauss(img, sigma):
@@ -534,7 +564,7 @@ def _gauss(img, sigma):
 def ground_rgb(classes, S, dry=0.0):
     """uint8 (H, W, 3): the classes in the style's ground colours, smoothed by SMOOTH_PX after colouring."""
     lut = np.zeros((256, 3))
-    for k, c in palette(S, dry).items():
+    for k, c in palette(S, dry, land_lstar(S, shares(classes), dry)).items():
         lut[k] = c
     rgb = _gauss(lut[np.asarray(classes, dtype=np.uint8)], SMOOTH_PX)
     return np.clip(np.round(rgb * 255), 0, 255).astype(np.uint8)
@@ -552,10 +582,45 @@ def lab(rgb):
     """CIE L*a*b* (D65) of an sRGB colour (components in [0, 1])."""
     c = np.asarray(rgb, dtype=float)
     lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
-    xyz = np.array([[0.4124564, 0.3575761, 0.1804375], [0.2126729, 0.7151522, 0.0721750],
-                    [0.0193339, 0.1191920, 0.9503041]]) @ lin / np.array([0.95047, 1.0, 1.08883])
+    xyz = _XYZ @ lin / _WHITE
     f = np.where(xyz > (6 / 29) ** 3, np.cbrt(xyz), xyz / (3 * (6 / 29) ** 2) + 4 / 29)
     return np.array([116 * f[1] - 16, 500 * (f[0] - f[1]), 200 * (f[1] - f[2])])
+
+
+_XYZ = np.array([[0.4124564, 0.3575761, 0.1804375], [0.2126729, 0.7151522, 0.0721750],
+                 [0.0193339, 0.1191920, 0.9503041]])
+_WHITE = np.array([0.95047, 1.0, 1.08883])
+
+
+def lch(rgb):
+    """(L*, C*, h in degrees) of an sRGB colour."""
+    L, a, b = lab(rgb)
+    return float(L), float(math.hypot(a, b)), math.degrees(math.atan2(b, a)) % 360
+
+
+def _srgb(L, a, b):
+    """The sRGB components (not clipped) of an L*a*b* colour."""
+    fy = (L + 16) / 116
+    f = np.array([fy + a / 500, fy, fy - b / 200])
+    xyz = np.where(f > 6 / 29, f ** 3, 3 * (6 / 29) ** 2 * (f - 4 / 29)) * _WHITE
+    lin = np.linalg.solve(_XYZ, xyz)
+    return np.where(lin <= 0.0031308, 12.92 * lin, 1.055 * np.abs(lin) ** (1 / 2.4) * np.sign(lin) - 0.055)
+
+
+def from_lch(L, C, h):
+    """(r, g, b) of an L*C*h colour, its chroma reduced as far as sRGB needs (L* and hue kept)."""
+    def at(c):
+        return _srgb(L, c * math.cos(math.radians(h)), c * math.sin(math.radians(h)))
+
+    rgb = at(C)
+    if not ((rgb >= -1e-9) & (rgb <= 1 + 1e-9)).all():
+        lo, hi = 0.0, float(C)
+        for _ in range(30):
+            mid = (lo + hi) / 2
+            m = at(mid)
+            lo, hi = (mid, hi) if ((m >= -1e-9) & (m <= 1 + 1e-9)).all() else (lo, mid)
+        rgb = at(lo)
+    return tuple(float(v) for v in np.clip(rgb, 0, 1))
 
 
 def delta_e(c1, c2):
