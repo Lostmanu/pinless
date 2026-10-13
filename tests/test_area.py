@@ -1,5 +1,6 @@
 """The automatic area is where you run most, and the OSM download survives a busy server without caching a bad map."""
 import datetime as dt
+import json
 import os
 import socket
 
@@ -172,6 +173,9 @@ def test_an_older_cache_gets_its_coast_and_summits_for_its_own_whole_box(tmp_pat
     assert area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lambda *_: None,
                               extra=("peaks",)) == folder
     assert [t for _, t in asked] == [{"natural": "coastline"}, {"natural": "peak"}], "the trail print does, once"
+    assert area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lambda *_: None,
+                              extra=("peaks", "glacier")) == folder
+    assert [t for _, t in asked][2:] == [{"natural": "glacier"}], "and the glaciers, once"
     assert {a[0] for a in asked} == {(-3.8, 40.3, -3.6, 40.5)}, "the folder's own box (west, south, east, north)"
     assert len(gpd.read_file(os.path.join(folder, "coast.gpkg"))) == 0
     assert len(gpd.read_file(os.path.join(folder, "peaks.gpkg"))) == 0
@@ -203,7 +207,8 @@ def _empty_answer():
 
 
 @pytest.mark.parametrize("layer, tags, said", [("coast", {"natural": "coastline"}, "this map has no sea"),
-                                               ("peaks", {"natural": "peak"}, "this map names none")])
+                                               ("peaks", {"natural": "peak"}, "this map names none"),
+                                               ("glacier", {"natural": "glacier"}, "snow and ice is drawn as it is")])
 def test_a_missing_coast_or_summits_do_not_stop_the_map(tmp_path, monkeypatch, layer, tags, said):
     # the coast only paints the sea and the summits only name the hills: if no server answers, draw without them and
     # cache nothing (the next run retries)
@@ -217,7 +222,8 @@ def test_a_missing_coast_or_summits_do_not_stop_the_map(tmp_path, monkeypatch, l
     monkeypatch.setattr(socket, "gethostbyname_ex", lambda h: (h, [], ["192.0.2.1"]))
     monkeypatch.setattr(ox, "graph_from_bbox", lambda *a, **k: _tiny_graph())
     monkeypatch.setattr(ox, "features_from_bbox", lambda box_, tags: features(box_, tags))
-    folder = area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lines.append, extra=("peaks",))
+    folder = area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lines.append,
+                                extra=("peaks", "glacier"))
     assert os.path.exists(os.path.join(folder, "green.gpkg"))
     assert not os.path.exists(os.path.join(folder, f"{layer}.gpkg"))
     assert any(said in s for s in lines)
@@ -268,6 +274,27 @@ def test_the_city_lookup_sends_its_point_rounded_to_about_a_kilometre(monkeypatc
     assert area.city_name(40.41629, -3.69729) == "Madrid"
     assert len(sent) == 1 and "lat=40.42&lon=-3.70&" in sent[0], "rounded to 0.01 degrees"
     assert "4162" not in sent[0] and "6972" not in sent[0]
+
+
+def test_the_region_of_an_island_is_its_archipelago_where_there_is_no_state(monkeypatch):
+    import io
+    import urllib.request
+
+    class Answer(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    answers = {"32.74": {"town": "Caniçal", "city": "Machico", "archipelago": "Madeira", "country": "Portugal"},
+               "39.57": {"city": "Palma", "state": "Balearic Islands", "archipelago": "Balearic Islands",
+                         "country": "Spain"}}
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: Answer(json.dumps(
+        {"address": answers[req.full_url.split("lat=")[1][:5]]}).encode()))
+    monkeypatch.setattr(area, "_last_lookup", [-1e9])
+    assert area.place_region(32.74, -16.73) == ("Machico", "Madeira", "Portugal")
+    assert area.place_region(39.57, 2.65) == ("Palma", "Balearic Islands", "Spain")
 
 
 def test_the_area_for_two_keeps_the_partner_who_records_fewer_points():

@@ -613,6 +613,15 @@ def _ripples(lon, lat):
     return 600 + 30 * np.sin(2 * np.pi * x / 900) * np.sin(2 * np.pi * y / 900)
 
 
+def _peninsula(height):
+    """A strip of land 300 m wide running east to west between two seas, flat on top at height (in m), its sides
+    cliffs: the Ponta de Sao Lourenco on Madeira."""
+    def fn(lon, lat):
+        _, y = _metres(lon, lat)
+        return np.where(np.abs(y) < 150, height, 0.0)
+    return fn
+
+
 def _valley(lon, lat):
     """A flat valley floor the size of a 12 x 10 km map, its mountainsides rising 600 m beyond the map's edges."""
     x, y = _metres(lon, lat)
@@ -641,6 +650,11 @@ GATE_CASES = {  # terrain, map size (m), what the log says (None: the map gets r
     # of the map's own land, so mountainsides in the margin around a flat map do not count
     "short ripples": (_ripples, (12000, 10000), "flat here", 1),
     "flat valley floor among mountains": (_valley, (12000, 10000), "flat here", 1),
+    # a hike along a peninsula 300 m wide with cliffs 100 m high between two seas, on a map of 2 km (the probe on
+    # the full-resolution level of these small cells, 230 m): the probe's smoothing follows the paper (125 m here),
+    # and 250 m into the sea no longer flattens it; the same land, flat, stays without relief
+    "narrow peninsula with cliffs": (_peninsula(100.0), (2000, 1900), None, 1),
+    "narrow flat peninsula": (_peninsula(3.0), (2000, 1900), "flat here", 1),
 }
 
 
@@ -699,20 +713,23 @@ def test_the_smoothing_is_a_gaussian_of_sigma_map_units():
 
 
 def test_the_probe_grid_and_the_detail_smoothing_follow_the_map():
-    """The probe works on cells of 125 m, or 1/400 of a larger map; the level rule's sigma is 0.40 mm of paper, never
-    less than 45 m; the shade is smoothed by 0.25 mm of paper, never less than 8 m; the sky view reaches 14 mm of
-    paper, between 250 and 600 m; the contours' heights are smoothed by 0.20 mm of paper, never less than 20 m."""
-    for w_m, map_w, sigma, cell, tex, radius, contour in (
-            (12000, A4_MAP, 45.0, 125.0, 0.25 * 12000 / A4_MAP, 600.0, 20.0),
-            (100000, 60.0, 0.40 * 100000 / 60.0, 250.0, 0.25 * 100000 / 60.0, 600.0, 0.20 * 100000 / 60.0),
-            (2000, A4_MAP, 45.0, 125.0, 8.0, 250.0, 20.0)):
+    """The probe works on cells of 125 m, or 1/400 of a larger map, and smooths by 6 mm of paper, between 125 and
+    250 m; the level rule's sigma is 0.40 mm of paper, never less than 45 m; the shade is smoothed by 0.25 mm of paper,
+    never less than 8 m; the sky view reaches 14 mm of paper, between 250 and 600 m; the contours' heights are
+    smoothed by 0.20 mm of paper, never less than 20 m."""
+    for w_m, map_w, sigma, cell, tex, radius, contour, gate in (
+            (12000, A4_MAP, 45.0, 125.0, 0.25 * 12000 / A4_MAP, 600.0, 20.0, 250.0),
+            (100000, 60.0, 0.40 * 100000 / 60.0, 250.0, 0.25 * 100000 / 60.0, 600.0, 0.20 * 100000 / 60.0, 250.0),
+            (6000, A4_MAP, 45.0, 125.0, 0.25 * 6000 / A4_MAP, 14 * 6000 / A4_MAP, 20.0, 6 * 6000 / A4_MAP),
+            (2000, A4_MAP, 45.0, 125.0, 8.0, 250.0, 20.0, 125.0)):
         extent, crs = _utm_extent(40.5, -3.5, w_m, 0.8 * w_m)
         job = relief._Map(0, extent, crs, map_w)
         assert job.sigma == pytest.approx(sigma), w_m
         assert (job.tex_sigma, job.tex_radius, job.contour_sigma) == pytest.approx((tex, radius, contour)), w_m
         g = job.probe_grid
         assert (g.cx, g.cy) == pytest.approx((w_m / math.ceil(w_m / cell), 0.8 * w_m / math.ceil(0.8 * w_m / cell))), w_m
-        assert g.m == math.ceil(4 * 250 / min(g.cx, g.cy)) + 1, "a margin of four times the probe's 250 m smoothing"
+        assert job.gate_sigma == pytest.approx(gate), w_m
+        assert g.m == math.ceil(4 * gate / min(g.cx, g.cy)) + 1, "a margin of four times the probe's smoothing"
 
 
 def test_the_ground_filter_removes_buildings_and_keeps_the_ground():

@@ -46,7 +46,10 @@ SIGMA_MIN_M = 45.0
 SIGMA_PAPER_MM = 0.40
 OPEN_M = 150.0  # city ground filter: a grey opening this wide finds the ground between buildings
 OPEN_MAX_SPACING_M = 60.0  # ... only on grids at least this fine (in practice GLO-30 full resolution)
-GATE_SIGMA_M = 250.0  # the probe: smoothing,
+# The probe: smoothing of GATE_SIGMA_MM of paper, between GATE_SIGMA_MIN_M and GATE_SIGMA_M (a landform at the
+# map's scale: 250 m on every map of 11 km or more on A3, a city's; 125 m on a hike of a few km, where 250 m into the
+# sea flattened the cliffs of a peninsula 300 m wide),
+GATE_SIGMA_M, GATE_SIGMA_MIN_M, GATE_SIGMA_MM = 250.0, 125.0, 6.0
 GATE_S = 0.15  # the shade that counts as a slope,
 GATE_SHARE = 0.02  # and the share of the land that must be sloped for a map to get relief
 LAND_EPS_M = 0.5  # a sample farther than this from 0 m is land
@@ -802,7 +805,8 @@ class _Map:
         self.tex_sigma = max(CRISP_SIGMA_M, CRISP_SIGMA_MM * (x1 - x0) / self.map_w)  # the shade's smoothing
         self.tex_radius = min(SVF_MAX_M, max(SVF_MIN_M, SVF_MM * (x1 - x0) / self.map_w))  # the sky view's reach
         self.contour_sigma = max(CONTOUR_SIGMA_M, CONTOUR_SIGMA_MM * (x1 - x0) / self.map_w)
-        self.probe_grid = _grid(self.extent, max(125.0, max(x1 - x0, y1 - y0) / 400), GATE_SIGMA_M)
+        self.gate_sigma = min(GATE_SIGMA_M, max(GATE_SIGMA_MIN_M, GATE_SIGMA_MM * (x1 - x0) / self.map_w))
+        self.probe_grid = _grid(self.extent, max(125.0, max(x1 - x0, y1 - y0) / 400), self.gate_sigma)
         # every cell the map could need, whatever the dataset and level: fixed before any request is made
         spacings = [_spacing(ds, L) for ds in HEIGHT0 for L in range(NOMINAL_LEVELS[ds])]
         lat_a, lat_b, lon_a, lon_b = _lonlat_box(self.extent, crs, max(max(self.probe_pad(s), self.detail_pad(s))
@@ -856,7 +860,7 @@ def _gate(job, dataset, headers, L, root):
     box, cells = job.box(job.probe_pad(_spacing(dataset, L)))
     mos = _mosaic(dataset, headers, cells, L, box, root)
     raw = _sample(mos, *_nodes(job.extent, job.crs, g))
-    s = _shade(_gauss(raw, GATE_SIGMA_M, g), g.cx, g.cy)
+    s = _shade(_gauss(raw, job.gate_sigma, g), g.cx, g.cy)
     inner = (slice(g.m, g.m + g.ny), slice(g.m, g.m + g.nx))
     land = np.abs(raw[inner]) > LAND_EPS_M  # unsmoothed, so the sea does not bleed into the land
     if land.mean() < LAND_MIN_FRAC:

@@ -743,17 +743,30 @@ EDGE_MM, GAP_MM, ROUTE_GAP_MM = 1.2, 0.8, 0.5
 ROUTE_CLEAR_MM = CASING_PT * PT_MM / 2 + ROUTE_GAP_MM  # a summit label keeps this far from the course's centre line
 
 
+SAME_PEAK_M = 300.0  # two summits that share a base name this close are one mountain: only the higher is named
+_SUBNAME = re.compile(r"\s+[-\u2013\u2014/]\s+")  # "Aiguilles Crochues - Sommet S", "Cima Grande - Grosse Zinne"
+
+
 def peak_label(name, ele):
     return f"{name.strip().upper()} {ele:.0f} m" if ele is not None else name.strip().upper()
+
+
+def base_name(name):
+    """The part of a summit's name before a spaced dash or slash: the mountain of a named sub-summit (Aiguilles
+    Crochues - Sommet S), or the first language of a name in two (Cima Grande - Grosse Zinne)."""
+    return _SUBNAME.split(name.strip(), maxsplit=1)[0].strip()
 
 
 def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS, map_h=MAP_H):
     """The summits to draw: [(gx, gy, text, (x0, y0, x1, y1) label box, (x, y) label top-left)] in the layout grid.
 
     peaks: (x, y, name, ele) in map units. Only named summits inside the map, highest first (unknown heights last),
-    at most max_n. Each label goes right of its triangle, else left, above, below or at a corner; a summit whose
-    label would leave the map, touch the course's casing or another summit's label or triangle wherever it goes is
-    skipped, so nothing outside the visible map is drawn. course: the drawn course lines in map units."""
+    at most max_n. A summit within SAME_PEAK_M of a higher one of the same base name (base_name) is that mountain's
+    other top: it is not named, and the higher one is named by the base name alone. Each label goes right of its
+    triangle, else left, above, below or at a corner, at the first of those places that hides no summit still to come
+    (else the one whose first hidden summit comes latest: the lowest); a summit whose label would leave the map,
+    touch the course's casing or another summit's label or triangle wherever it goes is skipped, so nothing outside
+    the visible map is drawn. course: the drawn course lines in map units."""
     cand = []
     for x, y, name, ele in peaks:
         if not isinstance(name, str) or not name.strip():
@@ -762,10 +775,20 @@ def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS, map_h=MAP_H):
         if not (LEFT + EDGE_MM + TRI_W <= gx <= RIGHT - EDGE_MM - TRI_W
                 and MAP_TOP + EDGE_MM + TRI_UP <= gy <= MAP_TOP + map_h - EDGE_MM - TRI_DOWN):
             continue
-        cand.append((ele is None, -(ele or 0.0), name.strip(), gx, gy, ele))
+        cand.append((ele is None, -(ele or 0.0), name.strip(), gx, gy, ele, float(x), float(y)))
     if not cand:
         return []
     cand.sort(key=lambda c: c[:3])
+    names, kept = [c[2] for c in cand], []
+    for i, c in enumerate(cand):  # the other tops of a mountain go; its highest top takes the mountain's name
+        base = base_name(c[2]).casefold()
+        twin = next((j for j in kept if base_name(cand[j][2]).casefold() == base
+                     and math.hypot(cand[j][6] - c[6], cand[j][7] - c[7]) <= SAME_PEAK_M), None)
+        if twin is None:
+            kept.append(i)
+        else:
+            names[twin] = base_name(cand[twin][2])
+    cand = [cand[i][:2] + (names[i],) + cand[i][3:6] for i in kept]
     frame = _box(LEFT + EDGE_MM, MAP_TOP + EDGE_MM, RIGHT - EDGE_MM, MAP_TOP + map_h - EDGE_MM)
     lines = [np.column_stack(_grid_xy(extent, *np.asarray(c, dtype=float).T, map_h)) for c in course if len(c) > 1]
     # a label keeps clear of the course by distance, not by a buffer of it: a stop where the fix wandered for twenty
@@ -773,13 +796,15 @@ def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS, map_h=MAP_H):
     route = shapely.MultiLineString(lines) if lines else None
     if route is not None:
         shapely.prepare(route)
+    tris = [_box(gx - TRI_W / 2, gy - TRI_UP, gx + TRI_W / 2, gy + TRI_DOWN) for *_, gx, gy, _ in cand]
+    others = shapely.STRtree(tris)
     marks, placed = [], []  # the labels and triangles drawn so far, padded
-    for _, _, name, gx, gy, ele in cand:
+    for i, (_, _, name, gx, gy, ele) in enumerate(cand):
         if len(placed) >= max_n:
             break
         text = peak_label(name, ele)
         _, _, w, h = place_text(text, 0, 0, k, PEAK_PT, TEXT)
-        tri = _box(gx - TRI_W / 2, gy - TRI_UP, gx + TRI_W / 2, gy + TRI_DOWN)
+        tri = tris[i]
         if any(tri.intersects(b) for b in marks):  # under another summit's label or triangle (the course may run
             continue                              # over a summit: its triangle is drawn on top)
         cy = gy - (TRI_UP - TRI_DOWN) / 2
@@ -787,21 +812,31 @@ def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS, map_h=MAP_H):
         up, down = gy - TRI_UP - 0.7 - h, gy + TRI_DOWN + 0.7
         options = ((right, cy - h / 2), (left, cy - h / 2), (gx - w / 2, up), (gx - w / 2, down),  # beside, then
                    (right, up), (right, down), (left, up), (left, down))  # diagonal: a summit on the course
+        best = None  # (the first summit still to come that the label hides, or len(cand) for none; x; y; label)
         for lx, ly in options:
             label = _box(lx, ly, lx + w, ly + h)
-            if (frame.contains(label) and (route is None or not shapely.dwithin(route, label, ROUTE_CLEAR_MM))
+            if not (frame.contains(label) and (route is None or not shapely.dwithin(route, label, ROUTE_CLEAR_MM))
                     and not any(label.intersects(b) for b in marks)):
-                placed.append((gx, gy, text, label.bounds, (lx, ly)))
-                marks += [label.buffer(GAP_MM, join_style="mitre"), tri.buffer(GAP_MM / 2, join_style="mitre")]
+                continue
+            padded = label.buffer(GAP_MM, join_style="mitre")
+            hides = min((int(j) for j in others.query(padded, predicate="intersects") if j > i), default=len(cand))
+            if best is None or hides > best[0]:
+                best = (hides, lx, ly, label)
+            if hides == len(cand):
                 break
+        if best is not None:
+            _, lx, ly, label = best
+            placed.append((gx, gy, text, label.bounds, (lx, ly)))
+            marks += [label.buffer(GAP_MM, join_style="mitre"), tri.buffer(GAP_MM / 2, join_style="mitre")]
     return placed
 
 
 def draw_summits(ax, summits, S, k):
     """The placed summits (place_peaks) on the page axes (millimetres, y down): a triangle and the label in the ink,
     both with a halo in the paper colour, so a path, a contour or a shadow that runs under a name does not run
-    through its letters, as on a topographic map."""
-    halo = [patheffects.withStroke(linewidth=HALO_PT * k, foreground=S["bg"])]
+    through its letters, as on a topographic map. The halo's corners are round: a mitred stroke sends spikes out of
+    the sharp corners of letters (the M, the V)."""
+    halo = [patheffects.withStroke(linewidth=HALO_PT * k, foreground=S["bg"], joinstyle="round")]
     for gx, gy, text, _, (lx, ly) in summits:
         tri = [((gx - TRI_W / 2) * k, (gy + TRI_DOWN) * k), ((gx + TRI_W / 2) * k, (gy + TRI_DOWN) * k),
                (gx * k, (gy - TRI_UP) * k)]

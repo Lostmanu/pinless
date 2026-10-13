@@ -1,6 +1,9 @@
 """The trail print (one route on a topographic map): its numbers, its summits, its privacy and its command line."""
 import datetime as dt
+import glob
 import itertools
+import os
+from xml.etree import ElementTree
 
 import geopandas as gpd
 import numpy as np
@@ -191,6 +194,42 @@ def test_a_label_moves_to_stay_clear_of_the_edge_the_course_and_other_labels():
     assert not box(*a[3]).intersects(box(*b[3]))
 
 
+def test_a_label_goes_where_it_hides_no_lower_summit():
+    """Three summits in a row, like the Tre Cime: the highest in the middle with a long name in two languages. Its
+    label on the right would hide the third summit's triangle, on the left the second's, and above or below one of
+    them, so it goes to a corner, and all three are named (the first place free of the map's edge, the course and
+    the labels drawn before would leave the third summit unnamed)."""
+    mm = (EXTENT[1] - EXTENT[0]) / (render_trail.RIGHT - render_trail.LEFT)
+    row = [(5000.0, 4000.0, "Cima Grande - Grosse Zinne", 2999.0),
+           (5000.0 - 12 * mm, 4000.0 - 1 * mm, "Cima Ovest - Westliche Zinne", 2973.0),
+           (5000.0 + 12 * mm, 4000.0 + 1 * mm, "Cima Piccola - Kleine Zinne", 2857.0)]
+    placed = render_trail.place_peaks(row, EXTENT, 1.0, [])
+    assert [p[2] for p in placed] == ["CIMA GRANDE - GROSSE ZINNE 2999 m", "CIMA OVEST - WESTLICHE ZINNE 2973 m",
+                                      "CIMA PICCOLA - KLEINE ZINNE 2857 m"]
+    gx, gy, _, (x0, y0, x1, y1), _ = placed[0]
+    assert x0 > gx and y0 > gy, "right and below: the first corner that hides neither"
+    boxes = [box(*p[3]) for p in placed]
+    for a, b in itertools.combinations(boxes, 2):
+        assert not a.intersects(b)
+
+
+def test_the_other_tops_of_a_mountain_are_not_named():
+    """Two summits that share a base name within SAME_PEAK_M are one mountain: the higher is named by the base name
+    alone. Farther apart, or with another base name, both are named."""
+    m = render_trail.SAME_PEAK_M
+    top = (5000.0, 4000.0, "Aiguilles Crochues - Sommet S", 2840.0)
+    near = (5000.0 + 0.5 * m, 4000.0 + 0.2 * m, "Aiguilles Crochues", 2837.0)
+    assert [p[2] for p in render_trail.place_peaks([near, top], EXTENT, 1.0, [])] == ["AIGUILLES CROCHUES 2840 m"]
+    far = (5000.0 + 1.3 * m, 4000.0 + 2.5 * m, "Aiguilles Crochues", 2837.0)
+    assert [p[2] for p in render_trail.place_peaks([far, top], EXTENT, 1.0, [])] == [
+        "AIGUILLES CROCHUES - SOMMET S 2840 m", "AIGUILLES CROCHUES 2837 m"]
+    other = (5000.0 + 0.5 * m, 4000.0 + 0.2 * m, "Aiguille de la Persévérance", 2837.0)
+    assert len(render_trail.place_peaks([other, top], EXTENT, 1.0, [])) == 2
+    assert render_trail.base_name("Cima Grande - Große Zinne") == "Cima Grande"
+    assert render_trail.base_name("Yr Wyddfa / Snowdon") == "Yr Wyddfa"
+    assert render_trail.base_name("Tête-à-Tête") == "Tête-à-Tête", "a hyphen inside a name is not a separator"
+
+
 def test_a_label_keeps_its_gap_from_the_course_and_a_wandering_stop_does_not_stall_it():
     import time
 
@@ -227,8 +266,33 @@ def test_summit_labels_and_triangles_have_a_halo_in_the_paper_colour():
     for patch in ax.patches:
         (halo,) = patch.get_path_effects()
         assert to_rgba(halo._gc["foreground"]) == to_rgba(S["bg"]) and halo._gc["linewidth"] == render_trail.HALO_PT
+        assert halo._gc["joinstyle"] == "round", "a mitred halo sends spikes out of the corners of an M"
         assert to_rgba(patch.get_facecolor()) == to_rgba(S["ink"]), "in the ink: they read over the relief"
     plt.close(fig)
+
+
+def test_a_round_halo_sends_no_spike_out_of_a_sharp_corner():
+    """A label in a black ink with its white halo, on a black page: the white reaches no farther above the top of
+    the letters (place_text sets their capital height at the label's top) than half the halo's width. A mitred halo
+    sends spikes far above an M, out of the sharp corners where its strokes meet."""
+    import matplotlib.pyplot as plt
+
+    k, mm_px = 2.0, 600 / 25.4  # the scale of the label, and pixels per millimetre of the page at 600 dpi
+    S = {"ink": "#000000", "bg": "#ffffff"}
+    fig = plt.figure(figsize=(2, 1), dpi=600, facecolor="#000000")
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, 50.8)
+    ax.set_ylim(25.4, 0)  # page millimetres, y down
+    ax.axis("off")
+    label_x, label_y = 7.0, 8.0  # A3-grid mm: the label's top at 16 mm of this page
+    render_trail.draw_summits(ax, [(-20.0, 0.0, "MWMWM", None, (label_x, label_y))], S, k)  # its triangle off the page
+    fig.canvas.draw()
+    white = np.asarray(fig.canvas.buffer_rgba())[..., 0] > 128
+    plt.close(fig)
+    assert white.any(), "the halo is drawn"
+    top_mm = np.flatnonzero(white.any(axis=1))[0] / mm_px
+    half = render_trail.HALO_PT * k * render_trail.PT_MM / 2
+    assert top_mm >= label_y * k - half - 2 / mm_px, (top_mm, label_y * k - half)
 
 
 def test_summits_load_from_the_cache_with_their_heights(tmp_path):
@@ -583,6 +647,57 @@ def test_the_place_is_looked_up_from_the_middle_of_the_drawn_stretch(monkeypatch
     assert round(lat_w, 2) != round(lat, 2), "not the middle of the whole walk, which reaches towards home"
 
 
+def test_a_middle_in_the_sea_is_looked_up_again_at_the_nearest_drawn_point(monkeypatch, tmp_path):
+    """A walk round a bay: the middle of the drawn stretch lies in the sea, where the answer is the country alone. The
+    drawn point nearest to it that rounds to another point is asked next, rounded the same way, and its place names
+    the print; when that names no place either, the first answer stays."""
+    t = np.linspace(0.1 * np.pi, 0.9 * np.pi, 600)
+    walk = _hike(np.column_stack([4000 * np.cos(t), 4000 * np.sin(t)]), "bay")  # an arc round a bay 8 km wide
+    places = {}
+    asked = []
+
+    def lookup(lat, lon, lang="en"):
+        asked.append((lat, lon))
+        return ("Portugal", "", "Portugal") if len(asked) == 1 else places.get("second", ("Machico", "Madeira",
+                                                                                           "Portugal"))
+
+    for second, title, place in ((None, "Machico", "Madeira, Portugal"),
+                                 (("", "", "Portugal"), "Portugal", "Portugal")):
+        if second:
+            places["second"] = second
+        captured = {}
+        asked.clear()
+        _trail_world(monkeypatch, [walk], captured, tmp_path)
+        monkeypatch.setattr(trail.area, "place_region", lookup)
+        assert cli.main(["x.gpx", "--layout", "trail", "--dpi", "20", "--out", str(tmp_path / "t.png")]) == 0
+        pieces = captured["pieces"]
+        crs = trail.render.utm_crs(*np.median(np.asarray(walk.lonlat), axis=0))
+        inv = trail.Transformer.from_crs(crs, 4326, always_xy=True)
+        mid = np.median(np.asarray(pieces[0][1].coords), axis=0)
+        drawn = np.concatenate([np.asarray(p.coords) for _, p in pieces])
+        lon_m, lat_m = inv.transform(*mid)
+        first = (round(lat_m, 2), round(lon_m, 2))
+        keys = [(round(la, 2), round(lo, 2)) for lo, la in (inv.transform(*p) for p in drawn)]
+        near = min((i for i, k in enumerate(keys) if k != first), key=lambda i: np.hypot(*(drawn[i] - mid)))
+        assert np.hypot(*(drawn[near] - mid)) > 500, "the middle lies in the bay, away from the walk"
+        assert asked == [first, keys[near]]
+        assert (captured["title"], captured["place"]) == (title, place)
+    # a cove: the drawn point nearest to the middle rounds to the middle's own point, so the next one is asked
+    asked.clear()
+    places.pop("second")
+    cove = _hike(np.column_stack([900 * np.cos(t), 900 * np.sin(t)]), "cove")
+    captured = {}
+    _trail_world(monkeypatch, [cove], captured, tmp_path)
+    monkeypatch.setattr(trail.area, "place_region", lookup)
+    assert cli.main(["x.gpx", "--layout", "trail", "--dpi", "20", "--out", str(tmp_path / "t.png")]) == 0
+    pieces = captured["pieces"]
+    mid = np.median(np.asarray(pieces[0][1].coords), axis=0)
+    drawn = np.concatenate([np.asarray(p.coords) for _, p in pieces])
+    lon_n, lat_n = inv.transform(*drawn[np.argmin(np.hypot(*(drawn - mid).T))])
+    assert (round(lat_n, 2), round(lon_n, 2)) == asked[0], "the nearest drawn point rounds to the middle's point"
+    assert len(asked) == 2 and asked[0] != asked[1] and captured["title"] == "Machico"
+
+
 def test_a_free_text_type_is_logged_as_other(monkeypatch, tmp_path, capsys):
     walk = _hike(_loop(0, 0, 2500, n=500), kind="Evening walk from Calle Mayor 5")
     _trail_world(monkeypatch, [walk], {}, tmp_path)
@@ -685,7 +800,7 @@ def test_a_full_trail_run_writes_png_pdf_and_preview(monkeypatch, tmp_path, caps
                      "--preview", str(folder / "t.jpg"), "--color-by", "elevation"]) == 0
     assert sorted(p.name for p in folder.iterdir()) == ["t.jpg", "t.pdf", "t.png"]
     assert all((folder / f).stat().st_size > 0 for f in ("t.jpg", "t.pdf", "t.png"))
-    assert [s[2] for s in captured["info"]["summits"]] == ["PEÑALARA 2428 m"] and captured["extra"] == ("peaks",)
+    assert [s[2] for s in captured["info"]["summits"]] == ["PEÑALARA 2428 m"] and captured["extra"] == ("peaks", "glacier")
     assert captured["info"]["legend"]["mode"] == "elevation" and captured["date"] == START
     pdf = (folder / "t.pdf").read_bytes()
     assert b"CreationDate" not in pdf and b"hike.gpx" not in pdf
@@ -735,35 +850,58 @@ def test_a_style_file_draws_the_trail(monkeypatch, tmp_path):
     assert (tmp_path / "t.png").stat().st_size > 0
 
 
-def test_the_demo_hike_reads_as_one_synthetic_loop():
-    import os
+# Every demo hike of tools/simulate_hike.py: the box its middle lies in (south, west, north, east), its route type,
+# its length (km) and high point (m), and the minutes it stands still
+DEMO_HIKES = {
+    "hike_demo.gpx": ((40.79, -4.02, 40.88, -3.90), "loop", (12.5, 13.5), (2400, 2440), 35,
+                      "round Penalara (2428 m), with stops of 20 and 15 minutes"),
+    "hike_desert_demo.gpx": ((36.98, -2.56, 37.10, -2.36), "out_and_back", (14.5, 15.5), (670, 690), 20,
+                             "up the badlands of the Desierto de Tabernas below El Puntal, 20 minutes at the top"),
+    "hike_dolomites_demo.gpx": ((46.60, 12.28, 46.64, 12.32), "loop", (9.5, 10.5), (2440, 2465), 40,
+                                "round the Tre Cime di Lavaredo over the Forcella Lavaredo (2454 m), with stops of "
+                                "10 and 30 minutes"),
+    "hike_alps_demo.gpx": ((45.95, 6.86, 46.00, 6.93), "point_to_point", (8.6, 9.4), (2350, 2375), 30,
+                           "above Chamonix up to Lac Blanc (2352 m), 30 minutes by the lake, and down past the Lacs "
+                           "des Cheserys to the Col des Montets"),
+    "hike_coast_demo.gpx": ((32.73, -16.71, 32.76, -16.68), "out_and_back", (6.0, 6.8), (100, 115), 25,
+                            "on the Ponta de Sao Lourenco (Madeira) over the cliffs by the Pedra Furada, 25 minutes "
+                            "at the Casa do Sardinha"),
+}
 
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "demo", "hike_demo.gpx")
-    (act,), rep = ingest.read_export(path)
-    assert rep.used == 1 and act.type == "Hike" and act.ele and act.times
-    crs = trail.render.utm_crs(*np.median(np.asarray(act.lonlat), axis=0))
-    tr = trail.Transformer.from_crs(4326, crs, always_xy=True)
-    xy = np.column_stack(tr.transform(*np.asarray(act.lonlat).T))
-    assert render_trail.route_type(xy) == "loop" and 12.5 < render_trail.along(xy)[-1] / 1000 < 13.5
-    assert 2400 < render_trail.high_point(xy, act.ele)[1] < 2440, "over Penalara (2428 m)"
-    secs, paused = render_trail.moving_time(xy, act.times, act.ele)
-    assert paused and act.times[-1] - secs == pytest.approx(35 * 60, abs=120), "the two stops, 20 and 15 minutes"
+
+def _demo(name):
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "demo", name)
 
 
-def test_the_desert_demo_hike_reads_as_one_synthetic_out_and_back():
-    import os
-
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "demo", "hike_desert_demo.gpx")
-    (act,), rep = ingest.read_export(path)
+@pytest.mark.parametrize("name", sorted(DEMO_HIKES))
+def test_each_demo_hike_reads_as_one_synthetic_walk_of_its_route(name):
+    (s, w, n, e), kind, (km_lo, km_hi), (top_lo, top_hi), stopped, what = DEMO_HIKES[name]
+    (act,), rep = ingest.read_export(_demo(name))
     assert rep.used == 1 and act.type == "Hike" and act.ele and act.times
     lon, lat = np.median(np.asarray(act.lonlat), axis=0)
-    assert 36.98 < lat < 37.10 and -2.56 < lon < -2.36, "in the Desierto de Tabernas"
+    assert s < lat < n and w < lon < e, what
     crs = trail.render.utm_crs(lon, lat)
     xy = np.column_stack(trail.Transformer.from_crs(4326, crs, always_xy=True).transform(*np.asarray(act.lonlat).T))
-    assert render_trail.route_type(xy) == "out_and_back" and 14.5 < render_trail.along(xy)[-1] / 1000 < 15.5
-    assert 670 < render_trail.high_point(xy, act.ele)[1] < 690, "up the badlands below El Puntal"
+    assert render_trail.route_type(xy) == kind and km_lo < render_trail.along(xy)[-1] / 1000 < km_hi, what
+    assert top_lo < render_trail.high_point(xy, act.ele)[1] < top_hi, what
+    assert min(act.ele) > 0, "never below the sea: a neck the elevation model masks as sea is crossed above it"
     secs, paused = render_trail.moving_time(xy, act.times, act.ele)
-    assert paused and act.times[-1] - secs == pytest.approx(20 * 60, abs=120), "the stop at the top, 20 minutes"
+    assert paused and act.times[-1] - secs == pytest.approx(stopped * 60, abs=120), what
+
+
+def test_every_demo_hike_is_checked_and_says_it_is_synthetic_with_its_sources():
+    names = {os.path.basename(p) for p in glob.glob(_demo("hike_*.gpx"))}
+    assert names == set(DEMO_HIKES), "a demo hike without its check above, or a check without its file"
+    ns = {"g": "http://www.topografix.com/GPX/1/1"}
+    for name in sorted(names):
+        root = ElementTree.parse(_demo(name)).getroot()
+        assert "synthetic" in root.get("creator") and len(root.findall("g:trk", ns)) == 1, name
+        desc = root.find("g:metadata/g:desc", ns).text
+        assert "Synthetic hike" in desc and "nobody's real data" in desc, name
+        assert "© OpenStreetMap contributors, ODbL" in desc and "Copernicus WorldDEM-30" in desc, name
+        rights = root.find("g:metadata/g:copyright", ns)
+        assert rights.get("author") == "OpenStreetMap contributors", name
+        assert rights.find("g:license", ns).text == "https://opendatacommons.org/licenses/odbl/1-0/", name
 
 
 def test_a_planned_route_without_clock_or_heights_still_draws(monkeypatch, tmp_path):
