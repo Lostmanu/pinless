@@ -104,13 +104,30 @@ A run that starts or ends at one of your private places (a long run from home) i
 ## Trail: one route as a print
 
 <p align="center">
-  <img src="docs/trail.jpg" width="49%" alt="Trail print of a loop over Penalara in the Sierra de Guadarrama: green pine woods and meadows, the granite ridge in stone grey, terrain relief baked into the colours, contour lines, paths, named summits, the elevation profile and the route numbers">
-  <img src="docs/trail-desert.jpg" width="49%" alt="Trail print of a walk in the Desierto de Tabernas: the badlands etched in desert orange with burnt brown shadows, the steppe in straw, contour lines, paths, the elevation profile and the route numbers">
+  <img src="docs/trail.jpg" width="32%" alt="Trail print of a loop over Penalara in the Sierra de Guadarrama: green pine woods and meadows, the granite ridge in stone grey, terrain relief baked into the colours, contour lines, paths, named summits, the elevation profile and the route numbers">
+  <img src="docs/trail-desert.jpg" width="32%" alt="Trail print of a walk in the Desierto de Tabernas: the badlands etched in desert orange with burnt brown shadows, the steppe in straw, contour lines, paths, the elevation profile and the route numbers">
+  <img src="docs/trail-dolomites.jpg" width="32%" alt="Trail print of the loop round the Tre Cime di Lavaredo in the Dolomites: green meadows, pale dolomite rock and scree, small lakes, the route in deep red on cream paper, the six named summits, the elevation profile and the route numbers">
+</p>
+<p align="center">
+  <img src="docs/trail-alps.jpg" width="32%" alt="Trail print in the ocean style of the walk from La Flegere up to Lac Blanc above Chamonix: meadows, grey rock and white snow patches under the Aiguilles Crochues, the lakes in pale blue, the route in deep blue, the elevation profile and the route numbers">
+  <img src="docs/trail-coast.jpg" width="32%" alt="Trail print in the ocean style of the Ponta de Sao Lourenco on Madeira: the long green peninsula between two seas, the route in deep blue out to the Casa do Sardinha and back, the elevation profile and the route numbers">
 </p>
 <p align="center">
   <img src="docs/wall-trail.jpg" width="80%" alt="The Penalara trail print in an oak frame hung above a sideboard">
 </p>
-<p align="center"><sub>Demo routes: synthetic hikes on real OpenStreetMap paths, with heights from the Copernicus elevation model (<code>tools/simulate_hike.py</code>), not a real person's walks. Try them with <code>pinless demo/hike_demo.gpx --layout trail --title "Peñalara"</code> and <code>pinless demo/hike_desert_demo.gpx --layout trail --title "Tabernas"</code>.</sub></p>
+<p align="center"><sub>Demo routes: synthetic hikes on real OpenStreetMap paths, with heights from the Copernicus elevation model (<code>tools/simulate_hike.py</code>), not a real person's walks. Peñalara and Tabernas in Spain and the Tre Cime di Lavaredo in the Dolomites in the default style; Lac Blanc above Chamonix and the Ponta de São Lourenço on Madeira in the ocean style.</sub></p>
+
+Try the demo routes:
+
+```bash
+pinless demo/hike_demo.gpx --layout trail --title "Peñalara"
+pinless demo/hike_desert_demo.gpx --layout trail --title "Tabernas"
+pinless demo/hike_dolomites_demo.gpx --layout trail --title "Tre Cime di Lavaredo"
+pinless demo/hike_alps_demo.gpx --layout trail --title "Lac Blanc" --style ocean
+pinless demo/hike_coast_demo.gpx --layout trail --title "Ponta de São Lourenço" --style ocean
+```
+
+Or your own hike, as a single file or from an export:
 
 ```bash
 pinless my-hike.gpx --layout trail --title "Peñalara" --name "Lucia"
@@ -264,13 +281,23 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The demo export in `demo/` is a synthetic runner generated on real OpenStreetMap streets of Madrid by `tools/simulate_runner.py`. Its true home and work points are stored apart in `demo/truth.json`, only so the tests can check that no published line comes near them. The partner demo (`demo/strava_export_madrid_partner_demo.zip`) is a second synthetic runner with their own home and workplace, who runs some weekend runs side by side with the first one, from the first one's door; its places and the number of runs together are in `demo/truth_partner.json`. The demo hike (`demo/hike_demo.gpx`) is a synthetic loop over Peñalara built by `tools/simulate_hike.py` on OpenStreetMap paths, with heights sampled from the Copernicus elevation model; the print itself never samples heights, it only shades the relief. The desert demo (`demo/hike_desert_demo.gpx`, `--route tabernas`) is a synthetic walk up the badlands of the Desierto de Tabernas to below El Puntal and back, built the same way. The same tool walks two short loops to look at before a change to the colours of the ground: rice fields and marsh in the Ebro delta (`--route ebro`) and rock, snow and ice above Zermatt (`--route zermatt`), written under `out/`.
+The demo export in `demo/` is a synthetic runner generated on real OpenStreetMap streets of Madrid by `tools/simulate_runner.py`. Its true home and work points are stored apart in `demo/truth.json`, only so the tests can check that no published line comes near them. The partner demo (`demo/strava_export_madrid_partner_demo.zip`) is a second synthetic runner with their own home and workplace, who runs some weekend runs side by side with the first one, from the first one's door; its places and the number of runs together are in `demo/truth_partner.json`.
+
+The demo hikes (`demo/hike_*.gpx`) are synthetic too: nobody walked them. `tools/simulate_hike.py` routes each one through public landmarks (car parks, huts, saddles, viewpoints) on the OpenStreetMap paths, samples its heights from the Copernicus elevation model, runs its clock on Tobler's hiking function with a stop or two, and adds a few metres of GPS noise; every file says so in its metadata, with the OpenStreetMap (ODbL) and Copernicus notices. The print itself never samples heights, it only shades the relief. `--route` picks the walk:
+
+- `penalara` (`demo/hike_demo.gpx`): a loop over Peñalara in the Sierra de Guadarrama.
+- `tabernas` (`demo/hike_desert_demo.gpx`): up the badlands of the Desierto de Tabernas to below El Puntal and back.
+- `trecime` (`demo/hike_dolomites_demo.gpx`): the loop round the Tre Cime di Lavaredo from the Rifugio Auronzo, kept to the marked trails (CAI 101 and 105) of OpenStreetMap's hiking relations.
+- `lacblanc` (`demo/hike_alps_demo.gpx`): from the top of the La Flégère cable car above Chamonix up to Lac Blanc and back.
+- `saolourenco` (`demo/hike_coast_demo.gpx`): the PR 8 out along the Ponta de São Lourenço on Madeira to the Casa do Sardinha and back; over the narrow neck that the elevation model's sea mask covers, the heights of the path on either side are joined.
+
+The tool never routes over a via ferrata. Writing a route again needs the network once (Overpass and the elevation model; `PINLESS_OVERPASS` picks another Overpass server); from the same cache and `--seed` the file comes out byte for byte the same. The same tool walks two short loops to look at before a change to the colours of the ground: rice fields and marsh in the Ebro delta (`--route ebro`) and rock, snow and ice above Zermatt (`--route zermatt`), written under `out/`.
 
 The tests run offline. The street statistics use `tests/data/madrid_streets.json.gz`, a small extract of the named OpenStreetMap streets around the demo runs (ODbL). `tools/make_street_fixture.py` rebuilds it from the full Madrid graph, and its `--check` option confirms that it gives the same street counts as the full graph.
 
 ## Credits and license
 
-Map data © OpenStreetMap contributors, available under the ODbL; every poster carries the attribution. Fonts: Barlow Condensed and Manrope, SIL Open Font License 1.1 (`pinless/fonts`). Code: MIT.
+Map data © OpenStreetMap contributors, available under the ODbL; every poster carries the attribution, and so does every demo hike in `demo/`, whose line follows OpenStreetMap paths. Fonts: Barlow Condensed and Manrope, SIL Open Font License 1.1 (`pinless/fonts`). Code: MIT.
 
 Terrain relief (`--relief shade`) comes from the Copernicus DEM, GLO-30, or GLO-90 for a print where GLO-30 lacks a land cell, under the [Copernicus DEM licence](https://dataspace.copernicus.eu/sites/default/files/media/files/2025-06/copernicus_contributing_mission_data_access_v2_cop_dem_licenses.pdf) (also [License-COPDEM-30](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/DEM/resources/license/License-COPDEM-30.pdf)). A poster with relief carries the notice of the dataset it used:
 
