@@ -995,3 +995,88 @@ def test_contours_only_on_a_trail_map_with_heights(monkeypatch, tmp_path):
     re_.render([(0, LineString(xy))], (EMPTY, EMPTY, EMPTY), extent, {"km": 1.0, "n": 1, "hours": 1.0,
                "longest_km": 1.0}, str(tmp_path / "e.png"), dpi=20, relief=with_z)
     assert not calls, "never on the city poster"
+
+
+def test_on_the_plain_paper_the_contours_stay_fainter_than_the_paths():
+    """Without the land cover the lines are in the colour the paths are inked towards: an index line over the paper
+    stays well closer to the paper than a path, so the paths read as paths and the lines as terrain."""
+    from matplotlib.colors import to_rgb
+
+    def lstar(rgb):
+        return render_editorial._lstar(np.asarray(rgb, dtype=float))
+
+    for name, S in render_editorial.STYLES.items():
+        bg, sub = np.asarray(to_rgb(S["bg"])), np.asarray(to_rgb(S["sub"]))
+        dark = lstar(bg) < 50
+        minor_a, index_a = render_trail.CONTOUR_ALPHA_PLAIN[dark]
+        trail_gap = abs(lstar(to_rgb(render_trail.trail_style(S)["trail"])) - lstar(bg))
+        for a in (minor_a, index_a):
+            gap = abs(lstar((1 - a) * bg + a * sub) - lstar(bg))
+            assert gap <= 0.6 * trail_gap, f"{name}: a contour line at {a} reads fainter than a path"
+
+
+def test_without_the_land_cover_the_paths_are_inked_for_the_shadow_of_the_relief(monkeypatch, tmp_path):
+    """--ground style: the relief is an overlay that darkens the paper (lightens it on dark paper) under the paths;
+    they are re-inked so that, against its shadow at the REF_PCT percentile, they keep their contrast."""
+    from matplotlib.colors import to_rgb
+
+    def lstar(c):
+        return render_editorial._lstar(np.asarray(to_rgb(c), dtype=float))
+
+    seen = []
+    real = render_trail.trail_network
+    monkeypatch.setattr(render_trail, "trail_network", lambda ax, trails, extent, S, *a: seen.append(S) or real(
+        ax, trails, extent, S, *a))
+    xy = _loop(0, 0, 2000, n=600)
+    extent = race.frame_course([(0, LineString(xy))], render_trail.map_aspect(), pad_frac=0.1)
+    shape = relief.raster_shape(render_trail.RIGHT - render_trail.LEFT, extent)
+    slope = np.tile(np.linspace(-1, 1, shape[1], dtype=np.float32), (shape[0], 1))
+    for style in ("huella", "ink", "carbon"):
+        S = render_editorial.STYLES[style]
+        TS = render_trail.trail_style(S)
+        seen.clear()
+        _page(tmp_path, style=style, relief=relief.Relief(slope, "glo30", 0, 0.5))
+        _page(tmp_path, style=style)
+        shaded, plain = seen
+        assert plain["trail"] == TS["trail"], f"{style}: no relief, the paths as they were"
+        ref = render_trail.overlay_ref_l(S, TS["relief"], slope)
+        lb = lstar(S["bg"])
+        assert (ref > lb) if lb < 50 else (ref < lb - 5), f"{style}: the overlay's deep side"
+        for key in render_trail.INK_KEYS:
+            want = abs(lstar(TS[key]) - lb)
+            assert abs(lstar(shaded[key]) - ref) >= want - 0.6, f"{style} {key}: against the shadow as the paper"
+
+
+def test_inks_for_a_deep_shadow_stop_at_the_page_ink_in_their_order():
+    """Paths, minor and major roads against a ground so deep that they cannot all keep their contrast: none goes past
+    the page's own ink (a deep shadow pushed the roads to pure black), the paths keep theirs first, and the roads
+    keep their order between the paths and the ink."""
+    from matplotlib.colors import to_rgb
+
+    def gap(c, S):
+        return abs(render_editorial._lstar(np.asarray(to_rgb(c), dtype=float))
+                   - render_editorial._lstar(np.asarray(to_rgb(S["bg"]), dtype=float)))
+
+    for name, S in render_editorial.STYLES.items():
+        TS = render_trail.trail_style(S)
+        lb = render_editorial._lstar(np.asarray(to_rgb(S["bg"]), dtype=float))
+        dark = lb < 50
+        cap = gap(S["ink"], S)
+        before = [gap(TS[key], S) for key in render_trail.INK_KEYS]
+        # the paths still fit under the ink, the major roads would not: halfway between the two
+        shift = cap - (before[0] + before[2]) / 2
+        for depth, ref in (("halfway", (lb + shift) if dark else (lb - shift)), ("full", 100.0 if dark else 0.0)):
+            deep = render_trail.shadow_inks(TS, S, ref, streets=True)
+            g = [gap(deep[key], S) for key in render_trail.INK_KEYS]
+            assert g[0] <= g[1] + 0.3 and g[1] <= g[2] + 0.3, f"{name}: paths, minor roads, major roads in order"
+            assert abs(g[2] - max(cap, before[2])) <= 0.6, f"{name}: the strongest as far as the page ink, not past"
+            assert g[0] >= min(cap, before[0] + abs(ref - lb)) - 0.6, f"{name}: the paths first"
+            for key, b in zip(render_trail.INK_KEYS, before):
+                assert gap(deep[key], S) >= b - 0.3, f"{name} {key}: never fainter than before"
+            for cls, (colour, width) in TS["street"].items():
+                assert deep["street"][cls][1] == width and gap(deep["street"][cls][0], S) <= max(cap, before[2]) + 0.6
+            if depth == "halfway" and shift > 1 and before[2] > before[0] + 1:
+                assert g[0] < g[2] - 0.5, f"{name}: where the ink leaves room, the roads still lead the paths"
+        same = render_trail.shadow_inks(TS, S, 0.0 if dark else 100.0)
+        assert all(same[key] == render_trail._ink_at(S["bg"], (S["sub"], S["ink"]), gap(TS[key], S))
+                   for key in render_trail.INK_KEYS), f"{name}: a ground beyond the paper changes nothing"

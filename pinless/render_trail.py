@@ -32,7 +32,8 @@ from .colouring import fmt_pace
 from .relief import raster_shape as relief_raster_shape
 from .render import MAJOR, MINOR, MM, SIZES, _hw
 from .render_editorial import DISPLAY, PRINT_TOL_MM, REGULAR, STYLES, TEXT, _clip_simplify, _keep_alpha, _line_path
-from .render_editorial import _lstar, _parts, _poly_path, _relief_alpha, draw_basemap, draw_relief, draw_routes
+from .render_editorial import RAMP_FULL, RAMP_GAMMA, _lstar, _parts, _poly_path, _relief_alpha, draw_basemap
+from .render_editorial import draw_relief, draw_routes
 from .render_editorial import baseline_of, footer_credits, land_clip_path
 from .render_editorial import place_text, svg_rc
 from .render_race import MONTHS, along, climb, pace_along, profile, restrict, vertex_positions
@@ -418,13 +419,56 @@ def frame_map(ax, S, k):
                            linewidth=FRAME_PT * k, joinstyle="miter", zorder=FRAME_Z, clip_on=False))
 
 
+INK_KEYS = ("trail", "road_minor", "road_major")  # the inks drawn over the relief: paths and tracks, then the roads
+
+
+def shadow_inks(TS, S, ref_l, streets=False):
+    """The paths and the roads of the trail style (with streets, a town's footways and steps too: the city poster's
+    street colours, which draw_basemap uses) re-inked for a ground that darkens to the L* ref_l (lightens to it, on dark
+    paper): each moves along the way from the paper to the style's inks until its L* contrast against the paper is
+    the one it had plus the ground's shift, so against that ground it keeps the contrast it has against the paper.
+    None goes past the page's own ink (S["ink"]), where a deep shadow would push the roads to pure black: the paths
+    come first and go as far as they need, up to the ink; what is stronger than them (the roads) keeps its order
+    between them and the ink, its distances compressed by one factor, so a minor road is never fainter than a path nor
+    a major road than a minor one. None ends fainter than it was. A ground lighter than the paper (darker, on dark
+    paper) changes nothing."""
+    out = dict(TS)
+    l_bg = _lstar(to_rgb(S["bg"]))
+    dark = l_bg < 50
+    shift = max(0.0, (ref_l - l_bg) if dark else (l_bg - ref_l))
+
+    def gap(colour):
+        return abs(_lstar(to_rgb(colour)) - l_bg)
+
+    keys = [(key, TS[key]) for key in INK_KEYS]
+    if streets:
+        keys += [(("street", cls), colour) for cls, (colour, _) in TS["street"].items()]
+    want = {key: shift + gap(colour) for key, colour in keys}
+    cap = gap(S["ink"])
+    paths, top = want["trail"], max(want.values())
+    first = min(paths, cap)  # where the paths go
+    squeeze = min(1.0, (cap - first) / (top - paths)) if top > paths else 1.0
+
+    def target(key):
+        w = want[key]
+        return min(w, cap) if w <= paths else first + (w - paths) * squeeze
+
+    def ink(key, colour):
+        return _ink_at(S["bg"], (S["sub"], S["ink"]), max(gap(colour), target(key)))
+
+    for key in INK_KEYS:
+        out[key] = ink(key, TS[key])
+    if streets:
+        out["street"] = {cls: (ink(("street", cls), colour), width) for cls, (colour, width) in TS["street"].items()}
+    return out
+
+
 def ground_style(TS, S, painted):
     """The trail style over the land cover: its water (landcover.water), the relief measured on the ground's mean
-    colour, and the paths, the roads and a town's footways and steps (the city poster's street colours, which
-    draw_basemap still uses) re-inked along the way from the paper to the style's inks so they keep, against the
-    darkest ground colour that covers SIGNIFICANT of the map (the lightest on dark paper), the contrast they have
-    against the paper. With the relief baked into the ground, the reference is also the deep shadow (the light faces on
-    dark paper): painted["ref_l"], when it is darker (lighter)."""
+    colour, and the paths, the roads and a town's footways and steps re-inked (shadow_inks) for the darkest ground
+    colour that covers SIGNIFICANT of the map (the lightest on dark paper). With the relief baked into the ground,
+    the reference is also the deep shadow (the light faces on dark paper): painted["ref_l"], when it is darker
+    (lighter)."""
     out = dict(TS)
     out["relief"] = trail_relief(S, painted["mean"])
     land = painted.get("land")
@@ -435,15 +479,21 @@ def ground_style(TS, S, painted):
     ref_l = (max if dark else min)(_lstar(c) for c in big)
     if painted.get("ref_l") is not None:
         ref_l = (max if dark else min)(ref_l, painted["ref_l"])
-    l_bg = _lstar(to_rgb(S["bg"]))
-    shift = abs(l_bg - ref_l)
-    def ink(colour):
-        return _ink_at(S["bg"], (S["sub"], S["ink"]), shift + abs(_lstar(to_rgb(colour)) - l_bg))
+    return shadow_inks(out, S, ref_l, streets=True)
 
-    for key in ("trail", "road_minor", "road_major"):
-        out[key] = ink(TS[key])
-    out["street"] = {cls: (ink(colour), width) for cls, (colour, width) in TS["street"].items()}
-    return out
+
+def overlay_ref_l(S, colours, shade):
+    """The L* that paths over the drawn relief (the trail map without the land cover) must keep their contrast
+    against: the paper under the overlay's shadow (colours, as relief_colours) at the REF_PCT[0] percentile of the
+    shade, the deep shadow; on dark paper under its light at the REF_PCT[1] percentile, the bright faces. The paper's
+    own L* when the map has no such side."""
+    bg = np.asarray(to_rgb(S["bg"]))
+    dark = _lstar(bg) < 50
+    s = float(np.percentile(shade, REF_PCT[dark]))
+    s = max(s, 0.0) if dark else min(s, 0.0)
+    (colour, alpha) = colours[1] if dark else colours[0]
+    a = alpha * min(1.0, abs(s) / RAMP_FULL) ** RAMP_GAMMA
+    return _lstar((1 - a) * bg + a * np.asarray(colour, dtype=float))
 
 
 def ground_under(classes, extent, segments):
@@ -561,6 +611,9 @@ CONTOUR_MIN_LOOP_MM = 2.0
 CONTOUR_PT = (0.20, 0.42)  # minor and index lines (pt x k)
 CONTOUR_INK = {False: "#7a4a22", True: "#f0d7b4"}  # over the land cover, light and dark paper; without it S["sub"]
 CONTOUR_ALPHA = {False: (0.30, 0.55), True: (0.16, 0.32)}  # minor and index lines, light and dark paper
+# without the land cover the lines are in S["sub"], the colour the paths are inked towards (TRAIL_INK of the way): an
+# index line stays at about half the paths' way from the paper, so the lines read as terrain and the paths as paths
+CONTOUR_ALPHA_PLAIN = {False: (0.15, 0.28), True: (0.12, 0.24)}
 CONTOUR_Z = 3.55  # over the ground (0.5) and the water (2), under the paths (3.6)
 
 
@@ -622,8 +675,8 @@ def _grow(mask):
 def draw_contours(ax, z, extent, S, k, map_w_mm, water, classes=None):
     """Contour lines of the heights z (the map raster), as two compound paths (minor and index lines) under the paths
     and over the ground, clipped to the map minus the drawn water and, with the land cover (classes), kept a pixel
-    off its water. In a brown ink over the land cover, else the style's sub colour. Returns {"step", "lines",
-    "vertices"}, or None when nothing of the map is land."""
+    off its water. In a brown ink over the land cover, else the style's sub colour, fainter than the paths
+    (CONTOUR_ALPHA_PLAIN). Returns {"step", "lines", "vertices"}, or None when nothing of the map is land."""
     clip = land_clip_path(extent, water, map_w_mm)
     if clip is None:
         return None
@@ -631,13 +684,14 @@ def draw_contours(ax, z, extent, S, k, map_w_mm, water, classes=None):
     step = contour_step(z, extent, map_w_mm, None if water_px is None else ~water_px)
     lines = contour_lines(z, extent, step, map_w_mm, None if water_px is None else _grow(water_px))
     dark = _lstar(to_rgb(S["bg"])) < 50
-    ink = CONTOUR_INK[dark] if classes is not None else S["sub"]
+    ink, alphas = (CONTOUR_INK[dark], CONTOUR_ALPHA[dark]) if classes is not None else (S["sub"],
+                                                                                        CONTOUR_ALPHA_PLAIN[dark])
     for index in (False, True):
         runs = [c for level, c in lines if (round(level / step) % CONTOUR_INDEX == 0) == index]
         path = _line_path(runs)
         if path is None:
             continue
-        patch = PathPatch(path, fill=False, edgecolor=ink, alpha=CONTOUR_ALPHA[dark][index],
+        patch = PathPatch(path, fill=False, edgecolor=ink, alpha=alphas[index],
                           linewidth=CONTOUR_PT[index] * k, capstyle="round", joinstyle="round", zorder=CONTOUR_Z)
         ax.add_patch(patch)
         patch.set_clip_path(PathPatch(clip, transform=ax.transData))
@@ -821,6 +875,8 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
         frame_map(ax, S, k)
         TS = ground_style(TS, S, painted)
         streets = (streets[0], streets[1].iloc[:0], streets[2])
+    elif shade is not None:  # the relief drawn over the paper: the paths and roads over it keep their contrast in its
+        TS = shadow_inks(TS, S, overlay_ref_l(S, TS["relief"], shade))  # shadow (the town's footways lie under it)
     draw_basemap(ax, streets, extent, TS, k, map_w)
     if painted is not None and painted["baked"]:
         drawn = True  # the relief is in the ground's colours
