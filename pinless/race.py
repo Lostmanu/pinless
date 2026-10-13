@@ -6,8 +6,9 @@ climb, splits) describes that stretch, or, for a public course nothing was cut f
 - Private places: the start/end clusters learned from every other activity of the same type (all years); the start
   and end points of other activities near this run's own start (end) when two or more activities put them there (a
   new home, a holiday flat: too few runs to be learned from years of history); and every --zone.
-- A run STARTS (ENDS) at a private place when a point of its first (last) trim metres, the part never drawn, comes
-  within 1.5 zone radii of one. It is refused by default: one course drawn from there points at it. With
+- A run STARTS (ENDS) at a private place when a point of its first (last) trim metres of movement (privacy.trim_span,
+  and two thirds of them in a straight line from the start), the part never drawn, comes within 1.5 zone radii of one.
+  It is refused by default: one course drawn from there points at it. With
   allow_private_ends the print keeps the longest stretch that stays farther than a random 1.6-2.6 radii from those
   places (always beyond the reach of any zone, wherever the run comes back to them), shortened by a random 200-800 m
   at each end that a place lies beyond, and numbers only that stretch.
@@ -78,15 +79,18 @@ def pick(activities, how="longest"):
     return next((a for a in acts if a.id == how), None)
 
 
-def _windows(dd, trim_m):
-    return dd <= trim_m, dd >= dd[-1] - trim_m
+def _windows(dd, span):
+    """(first, last): the points of the dense track before and after the stretch left by the trim (span:
+    privacy.trim_span, in metres along the track), the parts never drawn."""
+    lo, hi = span
+    return dd <= lo, dd >= hi
 
 
-def _places(dense, dd, others, trim_m, zone_r, user):
+def _places(dense, dd, others, span, zone_r, user):
     """(private places (x, y, r) that matter to this run, how many were learned from the others).
 
     Learned: the start/end clusters of all the other activities. Local: when the start or end points of two or more
-    other activities lie within 1.5 r of this run's first (last) trim_m metres, every one of those points is a place
+    other activities lie within 1.5 r of this run's untrimmed start (end), every one of those points is a place
     (a new home or a holiday flat, too new to be learned from years of history). Then every --zone."""
     learned = [(float(c[0]), float(c[1]), float(zone_r)) for c, _ in privacy.find_places(others)]
     places = learned + list(user)
@@ -95,7 +99,7 @@ def _places(dense, dd, others, trim_m, zone_r, user):
         ends = np.array([p for t in tracks for p in (t[0], t[-1])])
         owner = np.repeat(np.arange(len(tracks)), 2)
         pts = shapely.points(ends)
-        for window in _windows(dd, trim_m):
+        for window in _windows(dd, span):
             w = dense[window]
             near = shapely.distance(pts, LineString(w) if len(w) > 1 else Point(w[0])) <= 1.5 * zone_r
             if len(set(owner[near].tolist())) >= 2:
@@ -103,12 +107,12 @@ def _places(dense, dd, others, trim_m, zone_r, user):
     return places, len(learned)
 
 
-def _private_ends(dense, dd, places, trim_m):
-    """(head, tail): the private places where the track starts and ends: a point of its first (last) trim_m metres,
-    the part never drawn, within 1.5 r of one. Not only the first fix: a watch that finds the satellites a little
+def _private_ends(dense, dd, places, span):
+    """(head, tail): the private places where the track starts and ends: a point of what the trim cuts from its start
+    (end), the part never drawn, within 1.5 r of one. Not only the first fix: a watch that finds the satellites a little
     down the street, or a loop round the block, still starts at home. dense: the track every 10 m."""
     head, tail = [], []
-    first, last = _windows(dd, trim_m)
+    first, last = _windows(dd, span)
     for x, y, r in places:
         near = np.hypot(dense[:, 0] - x, dense[:, 1] - y) <= 1.5 * r
         if near[first].any():
@@ -134,8 +138,11 @@ def cut(track, others, trim_m, zone_r, user_zones=(), allow_private_ends=False, 
     dense = np.asarray(shapely.segmentize(LineString(xy), DENSE_M).coords)
     dd = along(dense)
     user = [tuple(map(float, z)) for z in user_zones]
-    places, learned = _places(dense, dd, others, trim_m, zone_r, user)
-    head, tail = _private_ends(dense, dd, places, trim_m)
+    # the trim in metres of movement (privacy.trim_span): a watch left running at the door does not use it up; when
+    # nothing is left, the whole track counts as its two ends and nothing is drawn
+    span = privacy.trim_span(xy, trim_m) or (float(dd[-1]) / 2, float(dd[-1]) / 2)
+    places, learned = _places(dense, dd, others, span, zone_r, user)
+    head, tail = _private_ends(dense, dd, places, span)
     if (head or tail) and not allow_private_ends:
         raise PrivateEnds("this run starts or ends at a private place (where your other runs start or end: home, "
                           "work, a regular meeting point) or at a --zone")
@@ -146,11 +153,11 @@ def cut(track, others, trim_m, zone_r, user_zones=(), allow_private_ends=False, 
     for x, y, r in keep_off:
         far &= np.hypot(dense[:, 0] - x, dense[:, 1] - y) > r * keep
     if far.all():  # a public course: drawn whole (trimmed at both ends) and numbered whole
-        lo, hi, numbers = trim_m, float(dd[-1]) - trim_m, (0.0, float(d[-1]))
+        lo, hi, numbers = span[0], span[1], (0.0, float(d[-1]))
         if hi - lo < MIN_M:
             return [], privacy.PrivacyReport(activities_in=1), learned, (0.0, 0.0)
     else:
-        ok = far & (dd >= trim_m) & (dd <= dd[-1] - trim_m)
+        ok = far & (dd >= span[0]) & (dd <= span[1])
         best = None
         for i, j in _runs(ok):
             a, b = float(dd[i]), float(dd[j])

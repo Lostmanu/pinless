@@ -39,15 +39,64 @@ class PrivacyReport:
     centres: list = field(default_factory=list, repr=False)  # in memory only: never printed or written
 
 
+STEADY_M = 25.0  # a fix is movement once this far from the last fix that was: a standing watch's wander is not
+# and the drawn line begins this share of the trim in a straight line from where the track starts (ends): a watch
+# whose wander jumps 25 m and more, drifts or is walked up and down the street can still add up movement at the door
+STRAIGHT = 2 / 3
+
+
+def _reach(pts, trim_m, step_m):
+    """(index, movement there) of the first fix of pts (a list of (x, y)) with trim_m metres of movement behind it,
+    or None. Movement: a fix adds its distance from the last fix that counted once that is step_m or more, and
+    nothing before. A watch left running at the door wanders a few metres a second (at one fix a second, 40 s of
+    waiting added 344 m along the track): little of it counts here. It stops at trim_m, so a long track costs
+    nothing."""
+    ax, ay = pts[0]
+    total = 0.0
+    for i in range(1, len(pts)):
+        x, y = pts[i]
+        step = math.hypot(x - ax, y - ay)
+        if step >= step_m:
+            total += step
+            ax, ay = x, y
+            if total >= trim_m:
+                return i, total
+    return None
+
+
+def trim_span(xy, trim_m, step_m=STEADY_M):
+    """(lo, hi): the stretch of a track left once trim_m metres of movement (_reach) are cut from each end, and no
+    less than STRAIGHT of trim_m in a straight line from its first (last) fix, as metres along the track as recorded;
+    None when nothing is left. A track with no standing still is cut at about trim_m and its length less trim_m, as
+    before (never less: movement is never more than the track); a wait at either end pushes the cut further along."""
+    xy = np.asarray(xy, dtype=float)
+    if len(xy) < 2:
+        return None
+    d = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))])
+    if trim_m <= 0:
+        return (0.0, float(d[-1]))
+    pts = xy.tolist()
+    ahead, behind = _reach(pts, trim_m, step_m), _reach(pts[::-1], trim_m, step_m)
+    away_start = np.flatnonzero(np.hypot(*(xy - xy[0]).T) >= STRAIGHT * trim_m)
+    away_end = np.flatnonzero(np.hypot(*(xy - xy[-1]).T) >= STRAIGHT * trim_m)
+    if ahead is None or behind is None or not len(away_start) or not len(away_end):
+        return None
+    j, mj = ahead
+    k, mk = len(xy) - 1 - behind[0], behind[1]
+    lo = max(float(d[j] - (mj - trim_m)), float(d[away_start[0]]))  # back along the last step by what it overshot
+    hi = min(float(d[k] + (mk - trim_m)), float(d[away_end[-1]]))
+    return (lo, hi) if hi > lo else None
+
+
 def trim_ends(xy: np.ndarray, trim_m: float) -> np.ndarray:
+    """The points of a track left once its ends are trimmed (trim_span)."""
     if len(xy) < 2:
         return xy
-    seg = np.hypot(np.diff(xy[:, 0]), np.diff(xy[:, 1]))
-    s = np.concatenate([[0.0], np.cumsum(seg)])
-    total = s[-1]
-    if total <= 2 * trim_m:
+    span = trim_span(xy, trim_m)
+    if span is None:
         return xy[:0]
-    keep = (s >= trim_m) & (s <= total - trim_m)
+    s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(xy[:, 0]), np.diff(xy[:, 1])))])
+    keep = (s >= span[0]) & (s <= span[1])
     return xy[keep]
 
 

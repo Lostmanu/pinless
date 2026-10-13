@@ -95,12 +95,29 @@ def test_restrict_and_vertex_positions_follow_the_track():
     assert render_race.vertex_positions(made_by_a_cut, out_back, d, pairs)[0] == pytest.approx(2995)
 
 
+@pytest.mark.parametrize("seed", range(6))
+def test_a_wait_at_the_door_does_not_spend_the_race_and_trail_trim(seed):
+    """An out and back after a minute at the door, a fix a second wandering 4 m round it: measured along the track
+    the wait used up the 300 m trim and the drawn line came within 1 to 42 m of the door (an adversarial review on
+    13-10-2026). The trim is metres of movement now: the line keeps 300 m of walking away from the door."""
+    rng = np.random.default_rng(100 + seed)
+    o = np.array([20000.0, 20000.0])  # a public course: no place anywhere near
+    stick = np.column_stack([np.linspace(0, 3000, 900), np.zeros(900)])
+    xy = o + np.vstack([rng.normal(0, 4, (60, 2)), stick + rng.normal(0, 1.0, (900, 2)),
+                        stick[::-1][1:] + rng.normal(0, 1.0, (899, 2))])
+    pieces, rep, _, stretch = race.cut(xy, [], 300.0, 500.0)
+    door = Point(o)
+    assert len(pieces) == 1 and pieces[0][1].distance(door) > 280, "300 m of walking away from the door"
+    assert stretch == (0.0, pytest.approx(render_race.along(xy)[-1])), "numbered whole, as a public course"
+
+
 def test_a_course_passing_home_is_drawn_whole_and_numbered_whole():
     near_start = np.column_stack([np.linspace(-1500, 6000, 751), np.full(751, 400.0)])  # passes home after 1.5 km
     pieces, rep, _, stretch = race.cut(near_start, POOL, 300.0, 500.0)
     assert rep.zones_user == 0 and stretch[0] == 0.0, "a race passing home in its first km is a passing course"
     passing = np.column_stack([np.linspace(-6000, 6000, 601), np.full(601, 60.0)])  # a race 60 m from home
-    head, tail = race._private_ends(passing, render_race.along(passing), [(0.0, 0.0, 500.0)], 300.0)
+    head, tail = race._private_ends(passing, render_race.along(passing), [(0.0, 0.0, 500.0)],
+                                    privacy.trim_span(passing, 300.0))
     assert head == [] and tail == [], "it starts and ends 6 km away: home is not one of its ends"
     pieces, rep, learned, stretch = race.cut(passing, POOL, 300.0, 500.0)
     assert learned >= 1 and rep.zones_user == 0, "home is known but not cut out of this course"
@@ -231,8 +248,11 @@ def test_stray_fixes_at_the_ends_are_dropped_however_often_they_repeat():
     assert len(ingest.clean(_act("w", None, _lonlat(twice))).lonlat) == len(from_home)
     gappy = _act("g", None, _lonlat(np.vstack([[[2600.0, -1800.0]], from_home])), times=[None] * (len(from_home) + 1))
     assert len(ingest.clean(gappy).lonlat) == len(from_home), "a clock with holes is no clock, not a crash"
-    head, _ = race._private_ends(glitch, render_race.along(glitch), [(0.0, 0.0, 500.0)], 300.0)
-    assert head == [], "without cleaning, the first 300 m are all 3 km from home and the start would be missed"
+    head, _ = race._private_ends(glitch, render_race.along(glitch), [(0.0, 0.0, 500.0)],
+                                 privacy.trim_span(glitch, 300.0))
+    # without cleaning, the first 300 m along the track all lie on the jump 3 km from home; the trim's 200 m in a
+    # straight line from the first fix (the stale one) now reaches past the jump, so even then home is caught
+    assert head == [(0.0, 0.0, 500.0)], "the start at home, caught even without cleaning"
     # a fix that drifts in by 200 m steps is not one big jump, but the clock shows it moving at 200 m/s
     drift = np.vstack([[[800.0, 0.0], [600.0, 0.0], [400.0, 0.0], [200.0, 0.0]], from_home])
     clock = [0.0, 1.0, 2.0, 3.0] + list(4 + render_race.along(from_home) * 0.3)

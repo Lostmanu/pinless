@@ -10,7 +10,7 @@ import pytest
 from pyproj import Transformer
 from shapely.geometry import MultiLineString, Point
 
-from pinless import ingest, privacy, render
+from pinless import ingest, privacy, race, render
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXPORT = os.path.join(ROOT, "demo", "strava_export_madrid_demo.zip")
@@ -43,6 +43,66 @@ def test_trim_removes_both_ends():
     xy = np.column_stack([np.linspace(0, 2000, 201), np.zeros(201)])
     out = privacy.trim_ends(xy, 300)
     assert out[0, 0] >= 300 and out[-1, 0] <= 1700
+    assert privacy.trim_span(xy, 300) == (pytest.approx(300), pytest.approx(1700)), "no waiting: as before"
+
+
+def _waits(rng, seconds, at, sigma=4.0):
+    """A watch left running at one place, a fix a second wandering sigma metres round it."""
+    return np.asarray(at, dtype=float) + rng.normal(0, sigma, (seconds, 2))
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_waiting_at_the_door_does_not_use_up_the_trim(seed):
+    """Measured along the track, a minute at the door with a fix a second wandering 4 m is hundreds of metres: the
+    300 m trim was spent standing still, and the drawn line began 1 to 42 m from the door (an adversarial review on
+    13-10-2026). The trim is now metres of movement: the line begins 300 m of walking away, at either end."""
+    rng = np.random.default_rng(seed)
+    walk = np.column_stack([np.linspace(0, 3000, 2500), np.zeros(2500)]) + rng.normal(0, 1.0, (2500, 2))
+    xy = np.vstack([_waits(rng, 60, (0, 0)), walk, _waits(rng, 60, (3000, 0))])
+    jitter = float(np.hypot(*np.diff(xy[:61], axis=0).T).sum())
+    assert jitter > 300, "the wait alone is more than the trim, measured along the track"
+    out = privacy.trim_ends(xy, 300)
+    assert np.hypot(*out[0]) > 280 and np.hypot(*(out[-1] - (3000, 0))) > 280, "300 m of walking off at each end"
+    assert out[0, 0] < 330 and out[-1, 0] > 2670, "and not much more"
+    pieces, *_ = privacy.apply([xy], trim_m=300)
+    assert min(p.distance(Point(0, 0)) for _, p in pieces) > 280, "every print that trims"
+
+
+def _door(kind, rng, seconds):
+    """What a watch records at the door: iid wander, 25-40 m spikes on 3 % of fixes, a walk up and down 20 m of
+    street, or a slow drift (15 m, correlated over two minutes)."""
+    if kind == "iid":
+        return rng.normal(0, 5, (seconds, 2))
+    if kind == "spikes":
+        out = rng.normal(0, 3, (seconds, 2))
+        hit = rng.random(seconds) < 0.03
+        ang = rng.uniform(0, 2 * np.pi, hit.sum())
+        out[hit] = np.column_stack([np.cos(ang), np.sin(ang)]) * rng.uniform(25, 40, (hit.sum(), 1))
+        return out
+    if kind == "pacing":
+        t = np.arange(seconds)
+        return np.column_stack([10 * np.sin(2 * np.pi * t / 30), np.zeros(seconds)]) + rng.normal(0, 3, (seconds, 2))
+    a = np.exp(-1 / 120)  # drift: an AR(1) wander of 15 m, correlated over 120 s, plus 3 m of fix noise
+    out = np.zeros((seconds, 2))
+    for i in range(1, seconds):
+        out[i] = a * out[i - 1] + rng.normal(0, 15 * np.sqrt(1 - a * a), 2)
+    return out + rng.normal(0, 3, (seconds, 2))
+
+
+@pytest.mark.parametrize("kind", ["iid", "spikes", "pacing", "drift"])
+def test_a_wandering_wait_still_leaves_the_line_well_away_from_the_door(kind):
+    """Movement alone was beaten by an adversarial review (13-10-2026): ten minutes of 5 m wander added up 310 m of
+    movement in 11 jumps and the line began at the door; 25-40 m spikes, a walk up and down the street and a slow
+    drift did the same. The line also begins two thirds of the trim (200 m) in a straight line from the first fix."""
+    worst = np.inf
+    for seed in range(12):
+        rng = np.random.default_rng(seed)
+        walk = np.column_stack([np.linspace(0, 3000, 2500), np.zeros(2500)]) + rng.normal(0, 1.0, (2500, 2))
+        xy = np.vstack([_door(kind, rng, 600 if kind in ("iid", "drift") else 300), walk])
+        out = privacy.trim_ends(xy, 300)
+        pieces, *_ = race.cut(xy + 20000.0, [], 300.0, 500.0)
+        worst = min(worst, np.hypot(*out[0]), pieces[0][1].distance(Point(20000.0, 20000.0)))
+    assert worst > 180, f"{kind}: the line began {worst:.0f} m from the door"
 
 
 def test_fail_closed_when_zone_is_touched(monkeypatch):
