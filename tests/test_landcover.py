@@ -861,9 +861,9 @@ def test_the_ground_is_one_image_of_the_map_box_and_nothing_spills(tmp_path):
     import base64
     from matplotlib.colors import to_rgb
     pdf, svg = tmp_path / "g.pdf", tmp_path / "g.svg"
-    # the ground and the profile's gradient (256 x 1)
-    info = _trail_page(tmp_path, pdf_path=str(pdf), svg_path=str(svg), name="g.png", dpi=40)
-    assert info["ground"] is True
+    # the relief baked into the ground: still one image of the map, and the profile's gradient (256 x 1)
+    info = _trail_page(tmp_path, pdf_path=str(pdf), svg_path=str(svg), name="g.png", dpi=40, rel=0.8)
+    assert info["ground"] is True and info["relief"] is True
     shape = relief.raster_shape(render_trail.RIGHT - render_trail.LEFT,
                                 race.frame_course([(0, LineString(_loop(0, 0, 2000, n=600)))],
                                                   render_trail.map_aspect(), pad_frac=0.1))
@@ -1011,6 +1011,110 @@ def test_a_failing_server_draws_the_style_ground_and_exits_0(monkeypatch, tmp_pa
     out = capsys.readouterr().out
     assert "[ground] skipped (URLError): drawn with the style's ground" in out
     assert (tmp_path / "t.png").stat().st_size > 0
+
+
+# --- the relief baked into the ground, calmer classes -----------------------------------------------------------------
+
+def _lch_image(rgb8):
+    """(L*, hue in degrees) of every pixel of a uint8 sRGB image, written again here (D65)."""
+    c = np.asarray(rgb8, np.float64) / 255
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    m = np.array([[0.4124564, 0.3575761, 0.1804375], [0.2126729, 0.7151522, 0.0721750],
+                  [0.0193339, 0.1191920, 0.9503041]])
+    xyz = lin @ m.T / np.array([0.95047, 1.0, 1.08883])
+    f = np.where(xyz > (6 / 29) ** 3, np.cbrt(xyz), xyz / (3 * (6 / 29) ** 2) + 4 / 29)
+    L, a, b = 116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])
+    return L, np.degrees(np.arctan2(b, a))
+
+
+def _bands(shape):
+    """Woods, grass, bare land and a lake side by side, under a shade that runs from -1 (west) to 1 (east)."""
+    H, W = shape
+    classes = np.full(shape, landcover.TREE, np.uint8)
+    classes[H // 4:H // 2] = landcover.GRASS
+    classes[H // 2:3 * H // 4] = landcover.BARE
+    classes[3 * H // 4:] = landcover.WATER
+    shade = np.tile(np.linspace(-1, 1, W, dtype=np.float32), (H, 1))
+    return classes, shade
+
+
+LANDS = {"Penalara": (0.0, {landcover.TREE: .776, landcover.SHRUB: .078, landcover.GRASS: .134,
+                                landcover.BARE: .012}),
+         "Tabernas": (1.0, {landcover.GRASS: .49, landcover.SHRUB: .24, landcover.BARE: .27, landcover.TREE: .01})}
+
+
+@pytest.mark.parametrize("land", sorted(LANDS))
+@pytest.mark.parametrize("style", ["huella", "carbon", "midnight", "ink"])
+def test_the_relief_baked_into_the_ground_keeps_its_hue(land, style):
+    """In shadow (s from -1 to -0.5) woods, grass and bare land keep their hue (median shift at most 15 degrees in
+    LCh; the texture prototype's indigo veil turned pale rock lavender, 142 degrees off) and darken by at least 20 L*
+    at full shadow on light paper, 11 on dark paper."""
+    from matplotlib.colors import to_rgb
+    S = render_editorial.STYLES[style]
+    dark = landcover._lstar(to_rgb(S["bg"])) < 50
+    dry, shares = LANDS[land]
+    pal = landcover.calm(landcover.palette(S, dry), shares, dry)
+    s = np.linspace(-1, -0.5, 51)[None]
+    for cls in (landcover.TREE, landcover.GRASS, landcover.BARE):
+        rgb = np.tile(np.asarray(pal[cls]), (1, 51, 1))
+        L0, h0 = _lch_image(np.round(rgb * 255))
+        L1, h1 = _lch_image(render_trail.bake(rgb, s, dry, dark))
+        dh = np.abs((h1 - h0 + 180) % 360 - 180)
+        name = f"{land} {style} {landcover.NAMES[cls]}"
+        assert np.median(dh) <= 15 and dh.max() <= 40, f"{name}: the shadow keeps the hue of the ground"
+        assert (L0 - L1)[0, 0] >= (11 if dark else 20), f"{name}: deep at full shadow"
+
+
+@pytest.mark.parametrize("style", ["huella", "midnight"])
+def test_the_bake_leaves_flat_ground_and_water_as_they_are(style):
+    from matplotlib.colors import to_rgb
+    S = render_editorial.STYLES[style]
+    classes, shade = _bands((80, 201))
+    calm = landcover.ground_rgb(classes, S, 0.0)
+    baked = render_trail.bake(calm / 255, shade, 0.0, landcover._lstar(to_rgb(S["bg"])) < 50,
+                              keep=classes == landcover.WATER)
+    assert baked.dtype == np.uint8 and baked.shape == calm.shape
+    flat = shade == 0
+    assert flat.any() and np.array_equal(baked[flat], calm[flat]), "flat ground: the calmed ground itself"
+    water = classes == landcover.WATER
+    assert np.array_equal(baked[water], calm[water]), "the water is left as it is"
+
+
+def test_a_dark_ground_stays_dark_with_its_relief_baked_in():
+    """The shade of a hilly land from the relief itself (darker on average than lighter: shadows, gullies and the sky
+    view's occlusion), baked into a dark paper's ground: its mean L* stays within -4 and +1 of the unbaked ground."""
+    import math
+    from pyproj import Transformer
+    from pinless import render
+    lat_c, lon_c, w = 40.5, -3.5, 4000.0
+    crs = render.utm_crs(lon_c, lat_c)
+    x0, y0 = Transformer.from_crs(4326, crs, always_xy=True).transform(lon_c, lat_c)
+    extent = (x0 - w / 2, x0 + w / 2, y0 - 0.47 * w, y0 + 0.47 * w)
+    job = relief._Map(0, extent, crs, 261.0)
+    spacing = relief.M_PER_DEG_LAT / 3600
+    g = job.detail_grid(spacing)
+    lat_a, lat_b, lon_a, lon_b = relief._lonlat_box(extent, crs, job.detail_pad(spacing))
+    d = 1 / 3600
+    lons, lats = np.arange(lon_a - 2 * d, lon_b + 2 * d, d), lat_b + 2 * d - np.arange(0, lat_b - lat_a + 4 * d, d)
+    lon, lat = np.meshgrid(lons, lats)
+    X = (lon - lon_c) * relief.M_PER_DEG_LON * math.cos(math.radians(lat_c))
+    Y = (lat - lat_c) * relief.M_PER_DEG_LAT
+    hills = np.random.default_rng(5).uniform([50, -2500, -2500, 80], [300, 2500, 2500, 400], (40, 4))
+    z = 1200 + sum(a * np.exp(-((X - cx) ** 2 + (Y - cy) ** 2) / (2 * s ** 2)) for a, cx, cy, s in hills)
+    shade = relief._rasters(job, relief.Mosaic(z, float(lons[0]), d, float(lats[0]), d), g)[0]
+    H, W = shade.shape
+    classes = np.full((H, W), landcover.TREE, np.uint8)
+    classes[:, W // 3:2 * W // 3] = landcover.GRASS
+    classes[:, 2 * W // 3:] = landcover.BARE
+    for style in ("carbon", "midnight"):
+        for dry in (0.0, 1.0):
+            S = render_editorial.STYLES[style]
+            calm = landcover.ground_rgb(classes, S, dry)
+            baked = render_trail.bake(calm / 255, shade, dry, True)
+            change = _lch_image(baked)[0].mean() - _lch_image(calm)[0].mean()
+            assert -4 <= change <= 1, f"{style} dry {dry}: {change:+.1f} L*"
+
+
 def test_the_land_classes_are_calmed_towards_the_maps_own_land():
     S = render_editorial.STYLES["huella"]
     classes = np.full((40, 50), landcover.TREE, np.uint8)
@@ -1049,3 +1153,36 @@ def test_the_course_ink_and_the_inks_see_the_calmed_ground(monkeypatch, tmp_path
     assert seen and all(seen[k] == calm[k] for k in seen), "the printed class colours"
 
 
+def test_paths_keep_their_contrast_in_the_deepest_baked_shadow():
+    from matplotlib.colors import to_rgb
+    for name in ("huella", "midnight"):
+        S = render_editorial.STYLES[name]
+        TS = render_trail.trail_style(S)
+        classes = _patchwork((60, 120))
+        pal = landcover.ground_palette(classes, S)
+        painted = {"colours": {k: pal[k] for k in landcover.shares(classes)}, "shares": landcover.shares(classes),
+                   "mean": tuple(landcover.ground_rgb(classes, S).reshape(-1, 3).mean(0) / 255)}
+        plain = render_trail.ground_style(TS, S, painted)  # no ref_l: the dict of before still works
+        dark = landcover._lstar(to_rgb(S["bg"])) < 50
+        ref = 85.0 if dark else 25.0  # the 15 % deepest shadow (the 15 % lightest light on dark paper)
+        deep = render_trail.ground_style(TS, S, dict(painted, ref_l=ref))
+        lb = landcover._lstar(to_rgb(S["bg"]))
+        for key in ("trail", "road_minor", "road_major"):
+            assert abs(landcover._lstar(to_rgb(deep[key])) - lb) > abs(landcover._lstar(to_rgb(plain[key])) - lb), key
+        far = render_trail.ground_style(TS, S, dict(painted, ref_l=50.0))
+        assert far["trail"] == plain["trail"] or abs(landcover._lstar(to_rgb(far["trail"])) - lb) >= abs(
+            landcover._lstar(to_rgb(plain["trail"])) - lb), "a reference on the paper's side changes nothing"
+
+
+def test_the_trail_print_bakes_its_relief_and_reports_where_its_paths_must_read(monkeypatch, tmp_path):
+    painted = []
+    real = render_trail.draw_ground
+    monkeypatch.setattr(render_trail, "draw_ground", lambda *a, **k: painted.append(real(*a, **k)) or painted[-1])
+    for rel in (0.8, None):
+        painted.clear()
+        info = _trail_page(tmp_path, rel=rel)
+        (p,) = painted
+        assert p["baked"] is (rel is not None) and info["relief"] is (rel is not None), "the relief credit stays"
+        assert (p["ref_l"] is not None) is (rel is not None)
+        if rel is not None:
+            assert p["ref_l"] < min(landcover._lstar(c) for c in p["colours"].values()), "the shadow is deeper"

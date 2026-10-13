@@ -14,6 +14,7 @@ import re
 import matplotlib
 
 matplotlib.use("Agg")
+import contourpy
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -32,7 +33,7 @@ from .relief import raster_shape as relief_raster_shape
 from .render import MAJOR, MINOR, MM, SIZES, _hw
 from .render_editorial import DISPLAY, PRINT_TOL_MM, REGULAR, STYLES, TEXT, _clip_simplify, _keep_alpha, _line_path
 from .render_editorial import _lstar, _parts, _poly_path, _relief_alpha, draw_basemap, draw_relief, draw_routes
-from .render_editorial import baseline_of, footer_credits
+from .render_editorial import baseline_of, footer_credits, land_clip_path
 from .render_editorial import place_text, svg_rc
 from .render_race import MONTHS, along, climb, pace_along, profile, restrict, vertex_positions
 from .render_sport import _num
@@ -329,15 +330,76 @@ ROUTE_INKS = {False: (("deep red", "#a8231c"), ("deep blue", "#1f4f96"), ("black
               True: (("red", "#ff6b57"), ("blue", "#7cc3ff"), ("white", "#ffffff"))}  # dark paper
 
 
-def draw_ground(ax, ground, extent, S, map_w_mm):
+# The relief baked into the land cover (bake): at full shadow a colour keeps 1 - ks * k of each channel, where k
+# runs from K_COOL in a green land (red falls fastest: a cool shadow) to K_WARM in a dry one (blue falls fastest: a
+# burnt, warm shadow); at full light it moves kl of the way to BAKE_LIGHT, a warm white. (ks, kl) on light and dark
+# paper. A multiply keeps the hue of the ground: a forest in shadow is a deep green, never slate, pale rock grey green
+BAKE = {False: (0.58, 0.32), True: (0.62, 0.24)}
+K_COOL, K_WARM, BAKE_LIGHT = (1.0, 0.96, 0.86), (0.86, 1.0, 1.06), (1.0, 0.97, 0.88)
+BUILT_FEATHER_MM = 1.2  # the smooth shade fades in over built-up land over this much paper
+REF_PCT = (15, 85)  # paths keep their contrast on the darkest 15 % of the baked ground (lightest on dark paper)
+
+
+def built_weight(classes, map_w_mm):
+    """float32 (H, W) in [0, 1]: where the land cover's built-up land lies, grown by a pixel and feathered over
+    BUILT_FEATHER_MM of paper, the weight of the smooth shade (the city ground filter) against the crisp one, so a
+    town's roofs do not print as speckle; None when the map has no built-up land."""
+    mask = np.asarray(classes) == landcover.BUILT
+    if not mask.any():
+        return None
+    px = mask.shape[1] / map_w_mm  # raster pixels per mm of paper
+    im = Image.fromarray(mask.astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(3))
+    w = np.asarray(im.filter(ImageFilter.GaussianBlur(BUILT_FEATHER_MM * px)), np.float32) / 255
+    return np.clip(w * 1.5, 0, 1).astype(np.float32)
+
+
+def bake(rgb, s, dry, dark, keep=None):
+    """The relief baked into the ground colours (rgb, float in [0, 1], (H, W, 3)) by the shade s ((H, W) in [-1,
+    1]): shadows multiply each channel by 1 - ks * |s| * k (k from K_COOL to K_WARM with the dryness), light moves
+    kl * s of the way to BAKE_LIGHT (BAKE[dark] = (ks, kl)). keep: a mask of pixels left exactly as they were (the
+    water). Returns uint8 (H, W, 3)."""
+    rgb = np.asarray(rgb, dtype=np.float64)
+    s = np.asarray(s, dtype=np.float64)[..., None]
+    k = np.asarray(K_COOL) + (np.asarray(K_WARM) - np.asarray(K_COOL)) * float(dry)
+    ks, kl = BAKE[bool(dark)]
+    out = rgb * (1 - ks * np.maximum(-s, 0) * k)
+    out = out + (np.asarray(BAKE_LIGHT) - out) * kl * np.maximum(s, 0)
+    out = np.clip(np.round(out * 255), 0, 255).astype(np.uint8)
+    if keep is not None:
+        out[keep] = np.clip(np.round(rgb[keep] * 255), 0, 255).astype(np.uint8)
+    return out
+
+
+def lstar_image(rgb8):
+    """CIE L* of every pixel of a uint8 (..., 3) sRGB image."""
+    c = np.asarray(rgb8, dtype=np.float64) / 255
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    y = lin @ np.array([0.2126, 0.7152, 0.0722])
+    return np.where(y > (6 / 29) ** 3, 116 * np.cbrt(y) - 16, y * (29 / 3) ** 3)
+
+
+def draw_ground(ax, ground, extent, S, map_w_mm, shade=None):
     """The land cover as ONE image of exactly the map box (interpolation 'none': a PDF or SVG embeds that array as
-    it is), clipped to the box, at the bottom of the map. Returns its colours: {class: rgb} of the classes drawn,
-    their shares of the map and the mean colour."""
+    it is), clipped to the box, at the bottom of the map, its classes calmed (landcover.ground_palette) and, with a
+    shade, the relief baked into it (bake; the water untouched). Returns its colours: {class: rgb} of the classes
+    drawn, their shares of the map, the mean colour of the unbaked ground, whether the relief was baked in, and then
+    ref_l, the L* that paths must keep their contrast against: the REF_PCT percentile of the printed land (None
+    when nothing was baked)."""
     if ground.classes.shape != relief_raster_shape(map_w_mm, extent):
         raise ValueError("the land cover raster does not match the map")
     rgb = landcover.ground_rgb(ground.classes, S, ground.dry)
+    dark = _lstar(to_rgb(S["bg"])) < 50
+    water = np.asarray(ground.classes) == landcover.WATER
+    printed, ref_l = rgb, None
+    if shade is not None:
+        if np.shape(shade) != ground.classes.shape:
+            raise ValueError("the relief raster does not match the map")
+        printed = bake(rgb.astype(np.float64) / 255, shade, ground.dry, dark, keep=water)
+        land = ~water
+        if land.any():
+            ref_l = float(np.percentile(lstar_image(printed[land]), REF_PCT[dark]))
     x0, x1, y0, y1 = extent
-    im = ax.imshow(rgb, extent=extent, origin="upper", interpolation="none", zorder=GROUND_Z)
+    im = ax.imshow(printed, extent=extent, origin="upper", interpolation="none", zorder=GROUND_Z)
     im.set_clip_path(PathPatch(_poly_path([_box(x0, y0, x1, y1)]), transform=ax.transData))
     ax.set_xlim(x0, x1)
     ax.set_ylim(y0, y1)
@@ -345,7 +407,8 @@ def draw_ground(ax, ground, extent, S, map_w_mm):
     land = landcover.land_lstar(S, shares, ground.dry)
     colours = landcover.ground_palette(ground.classes, S, ground.dry)
     return {"colours": {k: colours[k] for k in shares}, "shares": shares, "land": land,
-            "mean": tuple(float(v) for v in rgb.reshape(-1, 3).mean(axis=0) / 255)}
+            "mean": tuple(float(v) for v in rgb.reshape(-1, 3).mean(axis=0) / 255), "baked": shade is not None,
+            "ref_l": ref_l}
 
 
 def frame_map(ax, S, k):
@@ -360,7 +423,8 @@ def ground_style(TS, S, painted):
     colour, and the paths, the roads and a town's footways and steps (the city poster's street colours, which
     draw_basemap still uses) re-inked along the way from the paper to the style's inks so they keep, against the
     darkest ground colour that covers SIGNIFICANT of the map (the lightest on dark paper), the contrast they have
-    against the paper."""
+    against the paper. With the relief baked into the ground, the reference is also the deep shadow (the light faces on
+    dark paper): painted["ref_l"], when it is darker (lighter)."""
     out = dict(TS)
     out["relief"] = trail_relief(S, painted["mean"])
     land = painted.get("land")
@@ -368,9 +432,11 @@ def ground_style(TS, S, painted):
                                        to_hex(landcover.water(S, line=True, land=land)))
     dark = _lstar(to_rgb(S["bg"])) < 50
     big = [c for k, c in painted["colours"].items() if painted["shares"][k] >= SIGNIFICANT] or [painted["mean"]]
-    ref = (max if dark else min)(big, key=_lstar)
+    ref_l = (max if dark else min)(_lstar(c) for c in big)
+    if painted.get("ref_l") is not None:
+        ref_l = (max if dark else min)(ref_l, painted["ref_l"])
     l_bg = _lstar(to_rgb(S["bg"]))
-    shift = abs(l_bg - _lstar(ref))
+    shift = abs(l_bg - ref_l)
     def ink(colour):
         return _ink_at(S["bg"], (S["sub"], S["ink"]), shift + abs(_lstar(to_rgb(colour)) - l_bg))
 
@@ -480,6 +546,104 @@ def trail_roads(ax, roads, extent, S, k, map_w_mm):
                                    joinstyle="round", zorder=z))
 
 
+# --- contour lines ----------------------------------------------------------------------------------------------------
+
+# The interval: the national maps' rule (at least the scale's denominator over CONTOUR_SCALE: 10 m at 1:25,000, 20 m
+# at 1:50,000), coarser where the steep ground (the 90th percentile of the slope) would set the lines closer than
+# CONTOUR_MIN_GAP_MM on paper. Every CONTOUR_INDEX-th line is an index line. Closed loops shorter than
+# CONTOUR_MIN_LOOP_MM of paper are bumps of the data and go; lines are simplified to CONTOUR_SIMPLIFY_MM of paper.
+CONTOUR_STEPS = (10, 20, 50, 100, 200, 500, 1000, 2000)
+CONTOUR_SCALE = 3500
+CONTOUR_MIN_GAP_MM = 0.42
+CONTOUR_INDEX = 5
+CONTOUR_SIMPLIFY_MM = 0.05
+CONTOUR_MIN_LOOP_MM = 2.0
+CONTOUR_PT = (0.20, 0.42)  # minor and index lines (pt x k)
+CONTOUR_INK = {False: "#7a4a22", True: "#f0d7b4"}  # over the land cover, light and dark paper; without it S["sub"]
+CONTOUR_ALPHA = {False: (0.30, 0.55), True: (0.16, 0.32)}  # minor and index lines, light and dark paper
+CONTOUR_Z = 3.55  # over the ground (0.5) and the water (2), under the paths (3.6)
+
+
+def contour_step(z, extent, map_w_mm, land=None):
+    """The contour interval (m) of a map: the first of CONTOUR_STEPS at or above the scale's rule whose lines on the
+    steep ground stay CONTOUR_MIN_GAP_MM apart on paper, else the last. land: a mask of the pixels to measure the
+    slope on (all of them when None or empty)."""
+    x0, x1, y0, y1 = extent
+    H, W = np.shape(z)
+    m_mm = (x1 - x0) / map_w_mm  # metres of the map per mm of paper
+    gy, gx = np.gradient(np.asarray(z, dtype=np.float64), (y1 - y0) / H, (x1 - x0) / W)
+    g = np.hypot(gx, gy)
+    g = g[land] if land is not None and np.any(land) else g.ravel()
+    p90 = float(np.percentile(g, 90))
+    floor = m_mm * 1000 / CONTOUR_SCALE
+    for step in CONTOUR_STEPS:
+        if step >= 0.98 * floor and step / max(p90, 1e-6) / m_mm >= CONTOUR_MIN_GAP_MM:
+            return step
+    return CONTOUR_STEPS[-1]
+
+
+def contour_lines(z, extent, step, map_w_mm, mask=None):
+    """[(level, (n, 2) array in map units)]: the contour lines of the raster z (row 0 north) at every positive
+    multiple of step, traced between the pixel centres (so every vertex lies inside the map), never through a pixel
+    of mask (True where no line may run), without the short closed loops, simplified to what paper shows."""
+    x0, x1, y0, y1 = extent
+    H, W = np.shape(z)
+    xs = x0 + (np.arange(W) + 0.5) * (x1 - x0) / W
+    ys = y0 + (np.arange(H) + 0.5) * (y1 - y0) / H
+    zz = np.asarray(z, dtype=np.float64)[::-1]  # south up, as ys
+    if mask is not None and np.any(mask):
+        zz = np.ma.masked_array(zz, mask=np.asarray(mask)[::-1])
+    gen = contourpy.contour_generator(xs, ys, zz, line_type=contourpy.LineType.Separate)
+    m_mm = (x1 - x0) / map_w_mm
+    lo, hi = float(np.nanmin(z)), float(np.nanmax(z))
+    out = []
+    for level in np.arange(math.ceil(lo / step) * step, hi + step, step):
+        if level <= 0 or level > hi:
+            continue
+        for line in gen.lines(float(level)):
+            if len(line) < 3:
+                continue
+            ls = LineString(line)
+            if np.allclose(line[0], line[-1]) and ls.length < CONTOUR_MIN_LOOP_MM * m_mm:
+                continue
+            c = np.asarray(shapely.simplify(ls, CONTOUR_SIMPLIFY_MM * m_mm).coords)
+            if len(c) >= 2:
+                out.append((float(level), c))
+    return out
+
+
+def _grow(mask):
+    """The mask grown by one pixel (3 x 3)."""
+    p = np.pad(np.asarray(mask, dtype=bool), 1)
+    H, W = np.shape(mask)
+    return np.any([p[i:i + H, j:j + W] for i in range(3) for j in range(3)], axis=0)
+
+
+def draw_contours(ax, z, extent, S, k, map_w_mm, water, classes=None):
+    """Contour lines of the heights z (the map raster), as two compound paths (minor and index lines) under the paths
+    and over the ground, clipped to the map minus the drawn water and, with the land cover (classes), kept a pixel
+    off its water. In a brown ink over the land cover, else the style's sub colour. Returns {"step", "lines",
+    "vertices"}, or None when nothing of the map is land."""
+    clip = land_clip_path(extent, water, map_w_mm)
+    if clip is None:
+        return None
+    water_px = None if classes is None else np.asarray(classes) == landcover.WATER
+    step = contour_step(z, extent, map_w_mm, None if water_px is None else ~water_px)
+    lines = contour_lines(z, extent, step, map_w_mm, None if water_px is None else _grow(water_px))
+    dark = _lstar(to_rgb(S["bg"])) < 50
+    ink = CONTOUR_INK[dark] if classes is not None else S["sub"]
+    for index in (False, True):
+        runs = [c for level, c in lines if (round(level / step) % CONTOUR_INDEX == 0) == index]
+        path = _line_path(runs)
+        if path is None:
+            continue
+        patch = PathPatch(path, fill=False, edgecolor=ink, alpha=CONTOUR_ALPHA[dark][index],
+                          linewidth=CONTOUR_PT[index] * k, capstyle="round", joinstyle="round", zorder=CONTOUR_Z)
+        ax.add_patch(patch)
+        patch.set_clip_path(PathPatch(clip, transform=ax.transData))
+    return {"step": step, "lines": len(lines), "vertices": int(sum(len(c) for _, c in lines))}
+
+
 def _grid_xy(extent, x, y, map_h=MAP_H):
     """Map coordinates to the A3 layout grid (mm, y down)."""
     x0, x1, y0, y1 = extent
@@ -565,6 +729,24 @@ def draw_summits(ax, summits, S, k):
 UNIT_PT, UNIT_GAP_MM = 11, 1.2  # the units beside the numbers (pt x k, A3-grid mm), on the numbers' baseline
 
 
+def trail_surface(relief, ground, map_w_mm):
+    """(shade, heights) of the trail map, or (None, None) without relief: the crisp shade and heights of the surface,
+    and where the land cover has built-up land (built_weight), those of the city ground filter fading in, so a town's
+    roofs print neither as speckle nor as contour rings. Without the land cover (--ground style) or without the smooth
+    surface: relief.shade and relief.z."""
+    if relief is None:
+        return None, None
+    shade, z = relief.shade, getattr(relief, "z", None)
+    smooth = getattr(relief, "smooth", None)
+    w = built_weight(ground.classes, map_w_mm) if ground is not None and smooth is not None else None
+    if w is None or w.shape != shade.shape:
+        return shade, z
+    shade = (shade * (1 - w) + smooth * w).astype(np.float32)
+    if z is not None and getattr(relief, "z_smooth", None) is not None:
+        z = (z * (1 - w) + relief.z_smooth * w).astype(np.float32)
+    return shade, z
+
+
 def draw_profile_fill(pax, x, e, base, line, paper):
     """The area under the profile as ONE opaque image of 256 x 1 pixels, a gradient pre-composited on the paper from
     PROFILE_FILL[0] of the way to the line colour at the profile's top to PROFILE_FILL[1] at its foot, clipped to the
@@ -631,13 +813,23 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     ax.set_aspect("equal")
     ax.axis("off")
     streets, roads, trails = split_network(basemap)
-    painted = draw_ground(ax, ground, extent, S, map_w) if ground is not None else None
+    # the crisp shade and heights of the surface, and over a town (the land cover's built-up land, feathered) those
+    # of the city ground filter, where the roofs would print as speckle
+    shade, z = trail_surface(relief, ground, map_w)
+    painted = draw_ground(ax, ground, extent, S, map_w, shade=shade) if ground is not None else None
     if painted is not None:  # the land cover already says where the woods and meadows are
         frame_map(ax, S, k)
         TS = ground_style(TS, S, painted)
         streets = (streets[0], streets[1].iloc[:0], streets[2])
     draw_basemap(ax, streets, extent, TS, k, map_w)
-    drawn = draw_relief(ax, relief, extent, TS, basemap[2], k, map_w) if relief is not None else False
+    if painted is not None and painted["baked"]:
+        drawn = True  # the relief is in the ground's colours
+    else:
+        drawn = draw_relief(ax, relief, extent, TS, basemap[2], k, map_w, shade=shade) if relief is not None else False
+    contours = None
+    if z is not None:
+        contours = draw_contours(ax, z, extent, TS, k, map_w, basemap[2],
+                                 classes=ground.classes if painted is not None else None)
     trail_network(ax, trails, extent, TS, k, map_w)
     trail_roads(ax, roads, extent, TS, k, map_w)
     cut = privacy.clip_to_extent(pieces, extent)
@@ -769,4 +961,5 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     plt.close(fig)
     return {"km": km, "secs": secs, "paused": paused, "legend": legend, "route_type": kind, "high": hi_point,
             "summits": summits, "relief": drawn, "ground": painted is not None,
-            "course_ink": ink if legend["mode"] == "single" else None}
+            "course_ink": ink if legend["mode"] == "single" else None,
+            "contours": contours["step"] if contours else None}

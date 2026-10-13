@@ -832,6 +832,8 @@ def test_a_single_file_is_warned_about_and_drawn_whatever_its_type_on_every_layo
     assert "this export has: other 1, Hike 1" in out and "Calle Mayor" not in out, "a file's own type is never logged"
 
 
+# --- the spectacular relief: summits, units, profile, contours ---------------------------------------------------------
+
 def _rows(monkeypatch):
     """Every text the page sets through its page axes: (value, x, y, the place_text keywords)."""
     seen = []
@@ -907,3 +909,89 @@ def test_summits_are_set_in_the_ink_and_keep_clear_of_the_bolder_course():
     assert render_trail.ROUTE_CLEAR_MM > render_trail.CASING_PT * render_trail.PT_MM / 2, "clear of the casing"
 
 
+def _hill_z(shape, extent, height=900.0, base=1400.0):
+    H, W = shape
+    x0, x1, y0, y1 = extent
+    X, Y = np.meshgrid(x0 + (np.arange(W) + 0.5) * (x1 - x0) / W, y1 - (np.arange(H) + 0.5) * (y1 - y0) / H)
+    cx, cy, r = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 4
+    return (base + height * np.exp(-((X - cx) ** 2 + (Y - cy) ** 2) / (2 * r ** 2))).astype(np.float32)
+
+
+@pytest.mark.parametrize("scale,step", [(21500, 10), (60000, 20), (150000, 50)])
+def test_the_contour_interval_follows_the_scale(scale, step):
+    w = 261 * scale / 1000  # metres of a 261 mm map at this scale
+    extent = (0.0, w, 0.0, w * 0.94)
+    z = _hill_z((120, 128), extent, height=0.25 * w * 0.3)  # gentle: the steep ground does not squeeze the lines
+    assert render_trail.contour_step(z, extent, 261.0) == step
+
+
+def test_steep_ground_takes_a_coarser_interval():
+    extent = (0.0, 5611.5, 0.0, 5000.0)  # 1:21,500 on 261 mm
+    yy, xx = np.mgrid[0:100, 0:110]
+    z = 1000 + 2.0 * xx * 5611.5 / 110  # a slope of 2 m/m: 10 m lines would be 0.23 mm apart on paper
+    assert render_trail.contour_step(z, extent, 261.0) == 20
+    land = np.zeros(z.shape, bool)
+    land[:, :5] = True
+    assert render_trail.contour_step(np.where(land, z, 1000.0), extent, 261.0, land=~land) == 10, "only land counts"
+
+
+def test_contours_stay_inside_the_map_and_off_the_water():
+    extent = (1000.0, 6611.5, 2000.0, 7000.0)
+    z = _hill_z((140, 150), extent)
+    water = np.zeros(z.shape, bool)
+    water[60:80, 20:60] = True  # a lake on the flank
+    lines = render_trail.contour_lines(z, extent, 50, 261.0, render_trail._grow(water))
+    assert lines and all(level > 0 and level % 50 == 0 for level, _ in lines)
+    pts = np.concatenate([c for _, c in lines])
+    x0, x1, y0, y1 = extent
+    assert ((pts[:, 0] >= x0) & (pts[:, 0] <= x1) & (pts[:, 1] >= y0) & (pts[:, 1] <= y1)).all()
+    H, W = z.shape
+    col = np.clip(((pts[:, 0] - x0) / (x1 - x0) * W).astype(int), 0, W - 1)
+    row = np.clip(((y1 - pts[:, 1]) / (y1 - y0) * H).astype(int), 0, H - 1)
+    assert not water[row, col].any(), "no vertex over a pixel of water"
+    assert len(render_trail.contour_lines(z, extent, 50, 261.0)) >= len(lines), "setup: the lake cuts some"
+    bumps = z + np.where(np.hypot(*np.mgrid[0:140, 0:150] - np.array([20, 20])[:, None, None]) < 1.5, 60, 0)
+    short = [c for _, c in render_trail.contour_lines(bumps, extent, 50, 261.0) if np.allclose(c[0], c[-1])]
+    mm = (x1 - x0) / 261.0
+    assert all(LineString(c).length >= render_trail.CONTOUR_MIN_LOOP_MM * mm for c in short), "no tiny rings"
+
+
+def test_contours_are_two_paths_between_the_ground_and_the_paths(tmp_path):
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import to_rgb
+    extent = (0.0, 5611.5, 0.0, 5000.0)
+    z = _hill_z((140, 150), extent)
+    fig, ax = plt.subplots()
+    S = render_editorial.STYLES["huella"]
+    info = render_trail.draw_contours(ax, z, extent, S, 1.0, 261.0, EMPTY, classes=np.full(z.shape, 10, np.uint8))
+    minor, index = ax.patches
+    assert minor.zorder == index.zorder == render_trail.CONTOUR_Z == 3.55, "over the ground (0.5), under paths (3.6)"
+    assert (minor.get_linewidth(), index.get_linewidth()) == render_trail.CONTOUR_PT
+    assert (minor.get_alpha(), index.get_alpha()) == render_trail.CONTOUR_ALPHA[False]
+    assert to_rgb(minor.get_edgecolor()[:3]) == to_rgb(render_trail.CONTOUR_INK[False])
+    assert minor.get_clip_path() is not None and index.get_clip_path() is not None, "clipped to the land"
+    assert info["step"] == 10 and info["lines"] > 0 and info["vertices"] >= 2 * info["lines"]
+    fig2, ax2 = plt.subplots()
+    render_trail.draw_contours(ax2, z, extent, S, 1.0, 261.0, EMPTY)
+    assert to_rgb(ax2.patches[0].get_edgecolor()[:3]) == to_rgb(S["sub"]), "without the land cover: sub colour"
+    plt.close(fig)
+    plt.close(fig2)
+
+
+def test_contours_only_on_a_trail_map_with_heights(monkeypatch, tmp_path):
+    xy = _loop(0, 0, 2000, n=600)
+    extent = race.frame_course([(0, LineString(xy))], render_trail.map_aspect(), pad_frac=0.1)
+    shape = relief.raster_shape(render_trail.RIGHT - render_trail.LEFT, extent)
+    z = _hill_z(shape, extent)
+    shade = np.zeros(shape, np.float32)
+    with_z = relief.Relief(shade, "glo30", 0, 0.5, smooth=shade, z=z, z_smooth=z)
+    step = render_trail.contour_step(z, extent, render_trail.RIGHT - render_trail.LEFT)
+    for rel, want in ((None, None), (relief.Relief(shade, "glo30", 0, 0.5), None), (with_z, step)):
+        info, _, _ = _page(tmp_path, relief=rel)
+        assert info["contours"] == want
+    calls = []
+    monkeypatch.setattr(render_trail, "draw_contours", lambda *a, **k: calls.append(a) or None)
+    from pinless import render_editorial as re_
+    re_.render([(0, LineString(xy))], (EMPTY, EMPTY, EMPTY), extent, {"km": 1.0, "n": 1, "hours": 1.0,
+               "longest_km": 1.0}, str(tmp_path / "e.png"), dpi=20, relief=with_z)
+    assert not calls, "never on the city poster"
