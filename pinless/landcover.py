@@ -471,6 +471,11 @@ WATER_STEP, STREAM_STEP = 9.0, 5.0
 # and a desert still orange (a mix towards the paper in RGB turned both into the same grey brown)
 DARK_MIX, DARK_CHROMA = 0.35, 0.75
 SMOOTH_PX = 1.0  # the Gaussian over the coloured raster (pixels at 150 ppi, 0.17 mm): class edges read painted
+# The land classes of a map are pulled this share of the way to the map's mean land colour, in a green land and in a
+# dry one (calm): with the relief baked into the ground, the patches of the classes must not shout over the ridges.
+# Water, towns, snow and land without data keep their colours: they say where things are, not what grows there
+CALM = (0.30, 0.50)
+CALM_KEEP = (WATER, BUILT, SNOW, NO_DATA)
 # The generalisation of the classes (general_sigma): half a data pixel, at least one raster pixel, in a dry land up to
 # GENERAL_DRY_MM on paper, and never more than GENERAL_MAX_MM on paper
 GENERAL_DATA, GENERAL_MIN, GENERAL_DRY_MM, GENERAL_MAX_MM = 0.5, 1.0, 0.6, 1.0
@@ -561,10 +566,34 @@ def _gauss(img, sigma):
     return img
 
 
+def calm(pal, shares_, dry=0.0):
+    """The palette with its land classes pulled towards the map's own mean land colour, CALM[0] of the way in a green
+    land up to CALM[1] in a dry one: the relief carries the shape of the land, the hue what covers it, and no class
+    patch shouts over a ridge. The mean is the share-weighted mean colour of the classes present outside CALM_KEEP;
+    water, towns, snow and land without data (CALM_KEEP) keep their colours. pal: {class: rgb}; shares_: {class:
+    share of the map}. The palette as it is when no such land is present."""
+    land = [(k, v) for k, v in shares_.items() if k not in CALM_KEEP and k in pal and v > 0]
+    if not land:
+        return dict(pal)
+    total = sum(v for _, v in land)
+    mean = sum(np.asarray(pal[k], dtype=float) * v for k, v in land) / total
+    f = CALM[0] + (CALM[1] - CALM[0]) * float(dry)
+    return {k: c if k in CALM_KEEP else tuple(float(x) for x in np.asarray(c, dtype=float)
+                                              + (mean - np.asarray(c, dtype=float)) * f)
+            for k, c in pal.items()}
+
+
+def ground_palette(classes, S, dry=0.0):
+    """{class: rgb} of the ground as it is printed: the style's palette, calmed (calm) for the classes of this map."""
+    sh = shares(classes)
+    return calm(palette(S, dry, land_lstar(S, sh, dry)), sh, dry)
+
+
 def ground_rgb(classes, S, dry=0.0):
-    """uint8 (H, W, 3): the classes in the style's ground colours, smoothed by SMOOTH_PX after colouring."""
+    """uint8 (H, W, 3): the classes in the style's ground colours (ground_palette), smoothed by SMOOTH_PX after
+    colouring."""
     lut = np.zeros((256, 3))
-    for k, c in palette(S, dry, land_lstar(S, shares(classes), dry)).items():
+    for k, c in ground_palette(classes, S, dry).items():
         lut[k] = c
     rgb = _gauss(lut[np.asarray(classes, dtype=np.uint8)], SMOOTH_PX)
     return np.clip(np.round(rgb * 255), 0, 255).astype(np.uint8)

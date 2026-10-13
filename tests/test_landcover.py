@@ -792,14 +792,15 @@ def test_the_ground_is_drawn_north_up_under_the_course_with_its_own_inks(monkeyp
         png = np.asarray(Image.open(tmp_path / "ns.png").convert("RGB")).astype(int)
         k = png.shape[1] / 297
         left, top, bottom = render_trail.LEFT * k, render_trail.MAP_TOP * k, (render_trail.MAP_TOP + render_trail.MAP_H) * k
-        pal = {c: np.round(np.asarray(landcover.palette(S)[c]) * 255) for c in (landcover.TREE, landcover.BARE)}
+        calm = landcover.ground_palette(classes, S, 0.0)  # the printed colours: the classes calmed
+        pal = {c: np.round(np.asarray(calm[c]) * 255) for c in (landcover.TREE, landcover.BARE)}
         assert np.abs(png[int(top + 6 * k), int(left + 10 * k)] - pal[landcover.TREE]).max() <= 2, "woods north"
         assert np.abs(png[int(bottom - 6 * k), int(left + 10 * k)] - pal[landcover.BARE]).max() <= 2, "rock south"
         row = int(round(top + (1 - frac) * (bottom - top)))
         ink = np.round(np.asarray(to_rgb(want)) * 255)
         on = min((png[r, png.shape[1] // 2] for r in (row - 1, row, row + 1)), key=lambda c: np.abs(c - ink).max())
         assert np.abs(on - ink).max() <= 3, "the course over the ground (its middle row of pixels)"
-    painted = {"colours": {c: landcover.palette(S)[c] for c in (landcover.TREE, landcover.BARE)},
+    painted = {"colours": {c: landcover.ground_palette(classes, S)[c] for c in (landcover.TREE, landcover.BARE)},
                "shares": landcover.shares(classes),
                "mean": tuple(landcover.ground_rgb(classes, S).reshape(-1, 3).mean(0) / 255)}
     want = render_trail.ground_style(render_trail.trail_style(S), S, painted)
@@ -1010,3 +1011,41 @@ def test_a_failing_server_draws_the_style_ground_and_exits_0(monkeypatch, tmp_pa
     out = capsys.readouterr().out
     assert "[ground] skipped (URLError): drawn with the style's ground" in out
     assert (tmp_path / "t.png").stat().st_size > 0
+def test_the_land_classes_are_calmed_towards_the_maps_own_land():
+    S = render_editorial.STYLES["huella"]
+    classes = np.full((40, 50), landcover.TREE, np.uint8)
+    classes[:, 20:35] = landcover.GRASS
+    classes[:, 35:42] = landcover.BUILT
+    classes[:, 42:46] = landcover.WATER
+    classes[:, 46:] = landcover.SNOW
+    for dry in (0.0, 0.5, 1.0):
+        shares = landcover.shares(classes)
+        pal = landcover.palette(S, dry, landcover.land_lstar(S, shares, dry))
+        calm = landcover.ground_palette(classes, S, dry)
+        for k in landcover.CALM_KEEP:
+            assert calm[k] == pal[k], f"{landcover.NAMES[k]} keeps its colour"
+        land = (np.asarray(pal[landcover.TREE]) * shares[landcover.TREE]
+                + np.asarray(pal[landcover.GRASS]) * shares[landcover.GRASS]) \
+            / (shares[landcover.TREE] + shares[landcover.GRASS])
+        f = landcover.CALM[0] + (landcover.CALM[1] - landcover.CALM[0]) * dry
+        for k in (landcover.TREE, landcover.GRASS, landcover.BARE, landcover.CROP):
+            want = np.asarray(pal[k]) + (land - np.asarray(pal[k])) * f
+            assert calm[k] == pytest.approx(tuple(want)), f"{landcover.NAMES[k]} moves {f} of the way"
+    assert landcover.calm(dict(pal), {landcover.WATER: 1.0}) == pal, "no land: the palette as it is"
+    rgb = landcover.ground_rgb(np.full((10, 10), landcover.GRASS, np.uint8), S)
+    own = landcover.palette(S)[landcover.GRASS]
+    assert np.abs(rgb[5, 5] - np.round(np.asarray(own) * 255)).max() <= 1, "alone: its own colour"
+
+
+def test_the_course_ink_and_the_inks_see_the_calmed_ground(monkeypatch, tmp_path):
+    seen = {}
+    real = render_trail.course_ink
+    monkeypatch.setattr(render_trail, "course_ink", lambda S, colours, under: seen.update(colours) or real(
+        S, colours, under))
+    classes = _patchwork(relief.raster_shape(render_trail.RIGHT - render_trail.LEFT, race.frame_course(
+        [(0, LineString(_loop(0, 0, 2000, n=600)))], render_trail.map_aspect(), pad_frac=0.1)))
+    _trail_page(tmp_path, classes=classes)
+    calm = landcover.ground_palette(classes, render_editorial.STYLES["huella"], 0.0)
+    assert seen and all(seen[k] == calm[k] for k in seen), "the printed class colours"
+
+

@@ -343,7 +343,7 @@ def draw_ground(ax, ground, extent, S, map_w_mm):
     ax.set_ylim(y0, y1)
     shares = landcover.shares(ground.classes)
     land = landcover.land_lstar(S, shares, ground.dry)
-    colours = landcover.palette(S, ground.dry, land)
+    colours = landcover.ground_palette(ground.classes, S, ground.dry)
     return {"colours": {k: colours[k] for k in shares}, "shares": shares, "land": land,
             "mean": tuple(float(v) for v in rgb.reshape(-1, 3).mean(axis=0) / 255)}
 
