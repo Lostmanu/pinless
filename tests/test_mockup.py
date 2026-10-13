@@ -2,6 +2,7 @@
 import importlib.util
 import os
 
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -61,6 +62,27 @@ def test_every_room_photo_hangs_its_posters_in_every_frame(tmp_path, scene):
         for cx, top, hpx in mockup_photo.SCENES[scene]["frames"]:
             r, g, b = rgb.getpixel((int((cx - x0) * s), int((top + hpx * 0.45 - y0) * s)))
             assert r > g + 25 and r > b + 25, "the (red) poster shows in the middle of each frame, in the room's light"
+
+
+def test_a_picture_on_the_wall_is_painted_out_from_the_bare_wall_round_it():
+    """The new rooms have pictures of their own where the posters hang. erase fills their box from the wall round it:
+    the wall's gradient runs on through the box, a sofa of another colour just under it stays out of the fill, and
+    nothing outside the box changes."""
+    H, W = 300, 400
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    lit = np.dstack([200 + 0.10 * xx - 0.05 * yy, 196 + 0.10 * xx - 0.05 * yy, 188 + 0.08 * xx - 0.05 * yy])
+    spot = np.dstack([215 - 0.0006 * ((xx - 180) ** 2 + (yy - 40) ** 2)] * 3)  # a downlight's pool on the wall
+    hole = (slice(54, 181), slice(134, 266))
+    for name, wall in (("a light from one side", lit), ("a downlight", spot)):
+        photo = wall.copy()
+        photo[60:180, 140:260] = (40, 38, 35)  # a dark picture
+        photo[182:300, 60:340] = (90, 70, 60)  # a sofa just under it
+        out = mockup_photo.erase(photo, [(134, 54, 266, 181)], noise=0.0, rng=np.random.default_rng(1))
+        # measured: 0.0 on both; filled by spreading the wall in from its edges alone, 4.5 next to the sofa
+        assert np.abs(out[hole] - wall[hole]).max() < 1.0, f"{name}: the wall's own light, through the box"
+        outside = np.ones((H, W), bool)
+        outside[hole] = False
+        assert (out[outside] == photo[outside]).all(), "nothing outside the box is touched"
 
 
 def test_the_room_photos_are_credited():

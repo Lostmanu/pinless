@@ -3,8 +3,8 @@
 **Your year of running as a print-ready poster of your city. From your Strava export, on your own computer, without showing where you live.**
 
 <p align="center">
-  <img src="docs/wall-huella.jpg" width="49%" alt="The warm paper poster of a year of runs in Madrid, framed in oak above a cream sofa in a bright room">
-  <img src="docs/wall-carbon.jpg" width="49%" alt="The same poster in the dark carbon style, in a brass frame above a corduroy sofa in warm evening light">
+  <img src="docs/wall-huella.jpg" width="49%" alt="The warm paper poster of a year of runs in Madrid, in a thin oak frame on a pale panelled wall above a white sectional sofa">
+  <img src="docs/wall-carbon.jpg" width="49%" alt="The same poster in the dark carbon style, in a black frame on a white wall above a black sofa, between a potted tree and a vase of dried grass">
 </p>
 <p align="center"><sub>A3 prints in 40x50 cm frames hung in real room photos (<code>tools/mockup_photo.py</code>; photos from Unsplash, credited in <a href="tools/rooms/CREDITS.md">tools/rooms/CREDITS.md</a>). Demo posters made from a synthetic runner (<code>tools/simulate_runner.py</code>), not from a real person.</sub></p>
 
@@ -113,10 +113,10 @@ A run that starts or ends at one of your private places (a long run from home) i
   <img src="docs/trail-coast.jpg" width="32%" alt="Trail print in the ocean style of the Ponta de Sao Lourenco on Madeira: the long green peninsula between two seas with its cliffs in relief and contour lines, the route in deep blue out to the Casa do Sardinha and back, the elevation profile and the route numbers">
 </p>
 <p align="center">
-  <img src="docs/wall-trail.jpg" width="49%" alt="The Tre Cime di Lavaredo print in a natural wood frame and the Ponta de Sao Lourenco print in a white frame, side by side above a sunny sofa">
-  <img src="docs/wall-trail-white.jpg" width="49%" alt="The Lac Blanc trail print in the dark midnight style, in a white frame above a cream sofa">
+  <img src="docs/wall-trail.jpg" width="49%" alt="The Tre Cime di Lavaredo print in a natural wood frame and the Ponta de Sao Lourenco print in a white frame, side by side above a cream boucle sofa and a travertine table">
+  <img src="docs/wall-trail-white.jpg" width="49%" alt="The Lac Blanc trail print in the dark midnight style, in a brass frame on a pale plaster wall above a cream sofa">
 </p>
-<p align="center"><sub>Demo routes: synthetic hikes on real OpenStreetMap paths, with heights from the Copernicus elevation model (<code>tools/simulate_hike.py</code>), not a real person's walks. Peñalara and Tabernas in Spain and the Tre Cime di Lavaredo in the Dolomites in the default style, Lac Blanc above Chamonix in the midnight style and the Ponta de São Lourenço on Madeira in the ocean style. Tre Cime in natural wood, Madeira and Lac Blanc in white, hung in real room photos (<code>tools/mockup_photo.py</code>).</sub></p>
+<p align="center"><sub>Demo routes: synthetic hikes on real OpenStreetMap paths, with heights from the Copernicus elevation model (<code>tools/simulate_hike.py</code>), not a real person's walks. Peñalara and Tabernas in Spain and the Tre Cime di Lavaredo in the Dolomites in the default style, Lac Blanc above Chamonix in the midnight style and the Ponta de São Lourenço on Madeira in the ocean style. Tre Cime in natural wood, Madeira in white and Lac Blanc in brass, hung in real room photos (<code>tools/mockup_photo.py</code>).</sub></p>
 
 Try the demo routes:
 
@@ -147,7 +147,7 @@ The privacy rules are the race print's, with your private places learned from ev
 
 <p align="center">
   <img src="docs/couple-huella.jpg" width="40%" alt="Poster of two runners' year in Madrid: Lucia's streets in red, Marcos's in blue, the streets they share in black">
-  <img src="docs/wall-couple.jpg" width="58%" alt="The poster for two in an oak frame above a corduroy sofa in warm evening light">
+  <img src="docs/wall-couple.jpg" width="58%" alt="The poster for two in a black frame above a linen sofa, by a window onto the hills">
 </p>
 <p align="center"><sub>Demo poster from two synthetic runners (<code>tools/simulate_runner.py</code>); try it with <code>pinless demo/strava_export_madrid_demo.zip --with demo/strava_export_madrid_partner_demo.zip --name Lucia --with-name Marcos</code>.</sub></p>
 

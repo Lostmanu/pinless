@@ -1,11 +1,12 @@
 """A poster framed and hung in a real room photo: the frame in a real material, a bevelled mat, glass, the room's own
 light and colour on the print, the shadow the frame casts on the wall and the photo's grain.
 
-    python tools/mockup_photo.py docs/poster-huella.jpg docs/wall-huella.jpg --scene sofa --frame walnut
-    python tools/mockup_photo.py a.jpg b.jpg docs/wall-pair.jpg --scene sunny --frame oak --frame black
+    python tools/mockup_photo.py docs/poster-huella.jpg docs/wall-huella.jpg --scene panels --frame oak
+    python tools/mockup_photo.py a.jpg b.jpg docs/wall-pair.jpg --scene travertine --frame natural --frame white
 
 The room photos are in tools/rooms/ (free Unsplash photos; their authors are in tools/rooms/CREDITS.md). A scene says
-where each frame hangs, in photo pixels, how big a 40x50 cm frame is there, and where the light comes from.
+where each frame hangs, in photo pixels, how big a 40x50 cm frame is there, and where the light comes from. Where a
+room photo has pictures of its own on the wall, the scene paints them out first (erase), from the bare wall round them.
 """
 from __future__ import annotations
 
@@ -32,18 +33,25 @@ MOULDING_CM = 2.1
 WINDOW_CM = (28.7, 41.0)  # the mat's window: an A3 print with 5 mm under the mat
 
 # the scenes: frames as (centre x, top y, frame height in px), light direction (towards the shadow), shadow strength,
-# glass glare, a final crop (x0, y0, x1, y1)
+# glass glare, a final crop (x0, y0, x1, y1); optionally the boxes of the photo's own pictures (and their shadows) to
+# paint out before anything is hung (erase), and the moulding's width in cm (a thin modern frame in a modern room)
 SCENES = {
-    "sofa": {"photo": "sofa.jpg", "frames": [(1225, 70, 520)], "light": (0.35, 0.55), "shadow": 0.42,
-             "glare": 0.05, "crop": (560, 0, 1900, 1080)},
-    "dusk": {"photo": "dusk.jpg", "frames": [(1180, 38, 600)], "light": (-0.75, 0.45), "shadow": 0.55,
-             "glare": 0.035, "crop": (520, 0, 1860, 1060)},
     "nordic": {"photo": "nordic.jpg", "frames": [(1318, 92, 520)], "light": (0.45, 0.6), "shadow": 0.30,
                "glare": 0.04, "crop": (560, 0, 2090, 1240)},
-    "sunny": {"photo": "sunny.jpg", "frames": [(1150, 520, 400), (1530, 520, 400)], "light": (-0.65, 0.4),
-              "shadow": 0.38, "glare": 0.06, "crop": (640, 330, 2140, 1430)},
     "sunny_one": {"photo": "sunny.jpg", "frames": [(1350, 470, 480)], "light": (-0.65, 0.4), "shadow": 0.38,
                   "glare": 0.06, "crop": (700, 330, 2000, 1290)},
+    "panels": {"photo": "panels.jpg", "frames": [(869, 456, 444)], "erase": [(700, 458, 1040, 898)],
+               "light": (0.15, 0.6), "shadow": 0.30, "glare": 0.03, "crop": (200, 150, 2100, 1670), "moulding": 1.3},
+    "whitewall": {"photo": "whitewall.jpg", "frames": [(1020, 480, 500)], "light": (0.5, 0.4), "shadow": 0.32,
+                  "glare": 0.04, "crop": (300, 82, 2150, 1562), "moulding": 1.3},
+    "travertine": {"photo": "travertine.jpg", "frames": [(931, 22, 620), (1471, 22, 620)],
+                   "erase": [(721, 20, 1144, 648), (1259, 18, 1685, 646)], "light": (0.4, 0.5), "shadow": 0.30,
+                   "glare": 0.04, "crop": (300, 0, 2200, 1520), "moulding": 1.3},
+    "arch": {"photo": "arch.jpg", "frames": [(1192, 330, 320)], "light": (0.1, 0.7), "shadow": 0.30,
+             "glare": 0.03, "crop": (360, 0, 2026, 1333), "moulding": 1.3},
+    "linen": {"photo": "linen.jpg", "frames": [(972, 330, 470)],
+              "erase": [(540, 292, 978, 836), (1028, 306, 1402, 836)], "light": (-0.5, 0.4), "shadow": 0.32,
+              "glare": 0.04, "crop": (250, 80, 2400, 1600), "moulding": 1.3},
 }
 
 
@@ -67,14 +75,15 @@ def _grain(h, w, along, rng):
     return 0.7 * g + 0.3 * _noise((h, w), 6, rng)
 
 
-def framed(poster, frame, height_px, light, seed=7):
-    """RGBA image of the framed print, height_px tall (outer frame), lit from the side opposite to `light`."""
+def framed(poster, frame, height_px, light, seed=7, moulding_cm=MOULDING_CM):
+    """RGBA image of the framed print, height_px tall (outer frame), lit from the side opposite to `light`, its
+    moulding moulding_cm wide."""
     face, side, grain, metal = FRAMES[frame]
     rng = np.random.default_rng(seed)
     H = int(round(height_px * SS))
     k = H / FRAME_CM[1]  # px per cm
     W = int(round(FRAME_CM[0] * k))
-    m = int(round(MOULDING_CM * k))
+    m = int(round(moulding_cm * k))
     img = np.zeros((H, W, 3), np.float32)
     # the mat, with paper texture
     img[:] = np.array([244, 241, 234], np.float32) * (1 + 0.012 * _noise((H, W), 3, rng)[..., None])
@@ -183,15 +192,81 @@ def _photo_noise(photo):
     return max(0.6, best or 1.0)
 
 
-def compose(posters, out, scene="sofa", frames=None, width=2000, seed=7):
+def _box(a, r, axis):
+    """Mean over 2r + 1 pixels along an axis, edges repeated (a running sum)."""
+    pad = [(0, 0)] * a.ndim
+    pad[axis] = (r + 1, r)
+    c = np.cumsum(np.pad(a, pad, mode="edge"), axis=axis, dtype=np.float64)
+    n = a.shape[axis]
+    hi = np.take(c, np.arange(2 * r + 1, 2 * r + 1 + n), axis=axis)
+    lo = np.take(c, np.arange(0, n), axis=axis)
+    return ((hi - lo) / (2 * r + 1)).astype(np.float32)
+
+
+def _blur(a, sigma):
+    """A Gaussian of about sigma pixels over the first two axes of a float array: three box means in each."""
+    r = max(1, int(round(np.sqrt(sigma * sigma + 1) - 0.5)))  # three boxes of 2r + 1: variance ((2r + 1)^2 - 1) / 4
+    for axis in (0, 1):
+        for _ in range(3):
+            a = _box(a, r, axis)
+    return a
+
+
+def erase(photo, boxes, noise, rng):
+    """The photo with what hangs in each box (a picture and the shadow round it) painted out: the box is filled from
+    the bare wall around it, by a normalised convolution at scales from coarse to fine, so the wall's own gradient
+    runs on through it, and the grain of the wall round it is laid back over it. Only pixels of the colour of the wall next to the
+    box feed the fill: a lamp, a sofa or a branch beside it stays out of the wall."""
+    out = photo.copy()
+    H, W = out.shape[:2]
+    for x0, y0, x1, y1 in boxes:
+        pad = max(x1 - x0, y1 - y0) // 2
+        X0, Y0, X1, Y1 = max(0, x0 - pad), max(0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad)
+        reg = out[Y0:Y1, X0:X1].astype(np.float32)
+        hole = np.zeros(reg.shape[:2], bool)
+        hole[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0] = True
+        ring = np.zeros_like(hole)
+        r0 = 24
+        ring[max(0, y0 - Y0 - r0):y1 - Y0 + r0, max(0, x0 - X0 - r0):x1 - X0 + r0] = True
+        ring &= ~hole
+        wall = np.median(reg[ring], axis=0)
+        wallish = (~hole) & (np.abs(reg - wall).max(axis=2) < 22)
+        known = wallish.astype(np.float32)
+        # the wall's light as a smooth surface (quadratic in x and y), fitted to the bare wall: unbiased where the
+        # bare wall lies on one side only (a sofa under the picture); then what it leaves, spread in from the edges
+        yy, xx = np.mgrid[0:reg.shape[0], 0:reg.shape[1]].astype(np.float32)
+        u, v = xx / reg.shape[1] - 0.5, yy / reg.shape[0] - 0.5
+        terms = np.stack([np.ones_like(u), u, v, u * u, u * v, v * v], axis=-1)
+        coef = np.linalg.lstsq(terms[wallish], reg[wallish], rcond=None)[0]
+        fit = terms @ coef
+        res = reg - fit
+        fill = np.zeros((hole.sum(), 3), np.float32)
+        for r in (192, 96, 48, 24, 12, 6):  # coarse to fine: each scale takes over where it has enough wall
+            den = _blur(known, r)
+            est = _blur(res * known[..., None], r) / np.maximum(den, 1e-6)[..., None]
+            w = np.clip((den[hole] - 0.05) / 0.35, 0, 1)[:, None]
+            fill = fill * (1 - w) + est[hole] * w
+        # the grain of this wall, from the bare wall round the box (a plaster has more than the flattest patch), away
+        # from the edges of anything else, which are no grain
+        solid = ring & (_blur(known, 3) > 0.999)
+        grain = (reg - _blur(reg, 2))[solid].std(axis=0) if solid.sum() > 100 else np.zeros(3, np.float32)
+        reg[hole] = fit[hole] + fill + rng.normal(0, 1, (hole.sum(), 3)) * np.maximum(grain, noise)
+        out[Y0:Y1, X0:X1] = np.clip(reg, 0, 255)
+    return out
+
+
+def compose(posters, out, scene="panels", frames=None, width=2000, seed=7):
     S = SCENES[scene]
     photo = np.asarray(Image.open(os.path.join(ROOMS, S["photo"])).convert("RGB"), np.float32)
     frames = frames or ["oak"] * len(S["frames"])
     lx, ly = S["light"]
     rng = np.random.default_rng(seed)
     noise = _photo_noise(photo)
+    if S.get("erase"):
+        photo = erase(photo, S["erase"], noise, rng)
     for poster, frame, (cx, top, hpx) in zip(posters, frames, S["frames"]):
-        art = framed(Image.open(poster), frame, hpx, (lx, ly), seed=seed)
+        art = framed(Image.open(poster), frame, hpx, (lx, ly), seed=seed,
+                     moulding_cm=S.get("moulding", MOULDING_CM))
         aw, ah = art.size
         x0, y0 = int(round(cx - aw / 2)), int(round(top))
         box = (x0, y0, x0 + aw, y0 + ah)
@@ -226,7 +301,7 @@ def compose(posters, out, scene="sofa", frames=None, width=2000, seed=7):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("files", nargs="+", help="poster images, then the output .jpg")
-    ap.add_argument("--scene", default="sofa", choices=sorted(SCENES))
+    ap.add_argument("--scene", default="panels", choices=sorted(SCENES))
     ap.add_argument("--frame", action="append", choices=sorted(FRAMES), help="one per poster (default oak)")
     ap.add_argument("--width", type=int, default=2000)
     a = ap.parse_args()
