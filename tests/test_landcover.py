@@ -1219,3 +1219,29 @@ def test_the_trail_print_bakes_its_relief_and_reports_where_its_paths_must_read(
         assert (p["ref_l"] is not None) is (rel is not None)
         if rel is not None:
             assert p["ref_l"] < min(landcover._lstar(c) for c in p["colours"].values()), "the shadow is deeper"
+
+
+def test_a_town_on_the_trail_map_is_baked_with_the_smooth_shade_and_its_contours(monkeypatch, tmp_path):
+    """Over the land cover's built-up land the trail print bakes the smooth shade (the city ground filter) and draws
+    the contours of its heights, so roofs print neither as speckle nor as rings; far from it, the crisp surface."""
+    shape = relief.raster_shape(render_trail.RIGHT - render_trail.LEFT, race.frame_course(
+        [(0, LineString(_loop(0, 0, 2000, n=600)))], render_trail.map_aspect(), pad_frac=0.1))
+    H, W = shape
+    classes = np.full(shape, landcover.GRASS, np.uint8)
+    classes[H // 4:3 * H // 4, W // 8:W // 2] = landcover.BUILT
+    yy, xx = np.mgrid[0:H, 0:W]
+    z = (1200 + 0.8 * xx + 0.3 * yy).astype(np.float32)
+    rel = relief.Relief(np.full(shape, 0.6, np.float32), "glo30", 0, 0.5, smooth=np.full(shape, -0.6, np.float32),
+                        z=z, z_smooth=z - 40)
+    seen = {}
+    real_ground, real_contours = render_trail.draw_ground, render_trail.draw_contours
+    monkeypatch.setattr(render_trail, "draw_ground", lambda *a, shade=None, **k: seen.update(shade=shade) or
+                        real_ground(*a, shade=shade, **k))
+    monkeypatch.setattr(render_trail, "draw_contours", lambda ax, heights, *a, **k: seen.update(z=heights) or
+                        real_contours(ax, heights, *a, **k))
+    info = _trail_page(tmp_path, classes=classes, relief=rel)
+    assert info["relief"] is True and info["contours"] is not None
+    town = (slice(3 * H // 8, 5 * H // 8), slice(W // 4, 3 * W // 8))
+    far = (slice(None), slice(3 * W // 4, None))
+    assert (seen["shade"][town] == -0.6).all() and (seen["shade"][far] == 0.6).all(), "baked: smooth over the town"
+    assert np.allclose(seen["z"][town], z[town] - 40) and np.array_equal(seen["z"][far], z[far]), "the same heights"

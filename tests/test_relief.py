@@ -1764,9 +1764,9 @@ def test_footer_credits_fit_and_appear_only_with_relief(monkeypatch, tmp_path, l
     _check_footer(boxes, 404, 412, dataset, lang, more_note=True)
 
 
-def _race_page(tmp_path, basemap, dataset="glo30", **kw):
-    """render_race.render of a 5 km course on A4 with this basemap and a synthetic relief (none if dataset is None):
-    its info."""
+def _race_page(tmp_path, basemap, dataset="glo30", make=None, **kw):
+    """render_race.render of a 5 km course on A4 with this basemap and a synthetic relief (none if dataset is None;
+    make(shape, dataset) builds another): its info."""
     import datetime as dt
     from shapely.geometry import LineString
     from pinless import render_race
@@ -1776,7 +1776,8 @@ def _race_page(tmp_path, basemap, dataset="glo30", **kw):
                    lonlat=[(-3.70, 40.41)] * 501, source="x", times=list(np.linspace(0, 1500, 501)),
                    ele=list(600 + 40 * np.sin(np.linspace(0, 6, 501))))
     ext = _race_extent()
-    rel = _synthetic_relief(relief.raster_shape(_editorial_extent("A4")[1], ext), dataset) if dataset else None
+    shape = relief.raster_shape(_editorial_extent("A4")[1], ext)
+    rel = (make or _synthetic_relief)(shape, dataset) if dataset else None
     return render_race.render(act, xy, [(0, LineString(xy[30:-30]))], basemap, ext, str(tmp_path / "r.png"),
                               size="A4", dpi=10, title="T", city="Madrid", date=act.start, relief=rel, **kw)
 
@@ -1806,12 +1807,13 @@ def _atlas_world():
     return cities, cells, [atlas.fit(c, w / h) for c, (_, _, w, h) in zip(cities, cells)]
 
 
-def _atlas_page(tmp_path, basemaps, dataset="glo30", **kw):
-    """atlas.render_atlas on A4 of the two cities, with these basemaps and a synthetic relief per map: its info."""
+def _atlas_page(tmp_path, basemaps, dataset="glo30", make=None, **kw):
+    """atlas.render_atlas on A4 of the two cities, with these basemaps and a synthetic relief per map (make(shape,
+    dataset) builds another): its info."""
     from pinless import atlas
     cities, cells, extents = _atlas_world()
     k = 210 / 297
-    reliefs = [_synthetic_relief(relief.raster_shape(w * k, e), dataset) if dataset else None
+    reliefs = [(make or _synthetic_relief)(relief.raster_shape(w * k, e), dataset) if dataset else None
                for (_, _, w, _), e in zip(cells, extents)]
     return atlas.render_atlas(cities, cells, extents, basemaps, str(tmp_path / "a.png"), size="A4", dpi=10,
                               reliefs=reliefs, **kw)
@@ -1855,6 +1857,54 @@ def test_each_atlas_map_shades_no_water_and_the_print_credits_only_what_it_drew(
     boxes.clear()
     _atlas_page(tmp_path, [(_empty(), _empty(), seas[0]), (_empty(), _empty(), _empty())])  # the second map on land
     assert [b[0] for b in boxes].count(relief.notice("glo30", "en")) == 1, "one map drawn: the notice"
+
+
+def _two_shades(shape, dataset="glo30"):
+    """A relief whose crisp shade (lit everywhere) and smooth shade (in shadow everywhere) tell apart which is drawn."""
+    return relief.Relief(np.full(shape, 0.8, np.float32), dataset, 0, 0.5, smooth=np.full(shape, -0.8, np.float32))
+
+
+def test_the_city_couple_race_and_atlas_prints_draw_the_smooth_shade(monkeypatch, tmp_path):
+    """Every print but the trail shades over the city ground filter (relief.smooth), where a town's roofs do not print
+    as speckle; the crisp shade is the trail print's, and shade= still picks the raster to draw."""
+    import matplotlib.pyplot as plt
+    from shapely.geometry import LineString
+    from test_couple_poster import _couple
+    seen = []
+    real = render_editorial.relief_rgba
+    monkeypatch.setattr(render_editorial, "relief_rgba", lambda shade, colours: seen.append(np.array(shade))
+                        or real(shade, colours))
+
+    def drew_smooth(what):
+        assert seen and all((a == -0.8).all() for a in seen), f"{what}: the smooth shade"
+        seen.clear()
+
+    extent, map_w = _editorial_extent("A4")
+    shape = relief.raster_shape(map_w, extent)
+    pieces = [(0, LineString([(1000, 1000), (11000, 9000)])), (1, LineString([(1000, 9000), (11000, 1000)]))]
+    for couple in (None, _couple(owner=(0, 1))):
+        info = render_editorial.render(pieces, (_empty(), _empty(), _empty()), extent, STATS, str(tmp_path / "e.png"),
+                                       size="A4", dpi=10, city="X", year="2025", relief=_two_shades(shape),
+                                       couple=couple)
+        assert info["relief"] is True
+        drew_smooth("the poster for two" if couple else "the city poster")
+    _race_page(tmp_path, (_empty(), _empty(), _empty()), make=_two_shades)
+    drew_smooth("the race print")
+    _atlas_page(tmp_path, [None, None], make=_two_shades)
+    assert len(seen) == 2
+    drew_smooth("the atlas")
+    fig, ax = plt.subplots()
+    rel = _two_shades(shape)
+    render_editorial.draw_relief(ax, rel, extent, render_editorial.STYLES["huella"], None, 1.0, map_w)
+    drew_smooth("draw_relief by default")
+    render_editorial.draw_relief(ax, rel, extent, render_editorial.STYLES["huella"], None, 1.0, map_w,
+                                 shade=rel.shade)
+    assert len(seen) == 1 and (seen[0] == 0.8).all(), "shade= draws the raster it is given"
+    plain = relief.Relief(rel.shade, "glo30", 0, 0.5)
+    seen.clear()
+    render_editorial.draw_relief(ax, plain, extent, render_editorial.STYLES["huella"], None, 1.0, map_w)
+    assert len(seen) == 1 and (seen[0] == 0.8).all(), "a relief without a smooth shade draws its own"
+    plt.close(fig)
 
 
 def test_both_credit_lines_are_set_as_the_osm_line_of_today():

@@ -1141,3 +1141,32 @@ def test_inks_for_a_deep_shadow_stop_at_the_page_ink_in_their_order():
         same = render_trail.shadow_inks(TS, S, 0.0 if dark else 100.0)
         assert all(same[key] == render_trail._ink_at(S["bg"], (S["sub"], S["ink"]), gap(TS[key], S))
                    for key in render_trail.INK_KEYS), f"{name}: a ground beyond the paper changes nothing"
+
+
+def test_built_up_land_takes_the_smooth_shade_and_heights_feathered_at_its_edge():
+    H, W = 200, 300
+    map_w = 261.0
+    classes = np.full((H, W), landcover.TREE, np.uint8)
+    assert render_trail.built_weight(classes, map_w) is None, "no town, no weight"
+    classes[60:140, 100:200] = landcover.BUILT
+    w = render_trail.built_weight(classes, map_w)
+    assert w.shape == (H, W) and w.dtype == np.float32 and 0 <= w.min() and w.max() <= 1
+    assert (w[70:130, 110:190] == 1.0).all(), "the town itself"
+    px = W / map_w
+    reach = int(np.ceil(1 + 3 * render_trail.BUILT_FEATHER_MM * px))  # the pixel it grows by, then 3 sigma
+    assert w[100, 200] > 0.5, "the pixel just outside its edge"
+    assert w[100, 200 + reach:].max() < 0.02 and w[:60 - reach].max() < 0.02, "faded within the feather"
+    crisp, smooth = np.full((H, W), 0.5, np.float32), np.full((H, W), -0.5, np.float32)
+    z, z_smooth = np.full((H, W), 1000.0, np.float32), np.full((H, W), 900.0, np.float32)
+    rel = relief.Relief(crisp, "glo30", 0, 0.5, smooth=smooth, z=z, z_smooth=z_smooth)
+    ground = landcover.LandCover(classes, 0, 0.0)
+    shade, heights = render_trail.trail_surface(rel, ground, map_w)
+    assert shade[100, 150] == -0.5 and heights[100, 150] == 900.0, "over the town: the city ground filter"
+    assert shade[100, 280] == 0.5 and heights[100, 280] == 1000.0, "far from it: the crisp surface"
+    edge = shade[100, 195:200 + reach]
+    assert (np.diff(edge) >= 0).all() and -0.5 < edge[5] < 0.5, "feathered across its edge"
+    shade, heights = render_trail.trail_surface(rel, None, map_w)
+    assert shade is crisp and heights is z, "--ground style: the crisp surface"
+    shade, heights = render_trail.trail_surface(relief.Relief(crisp, "glo30", 0, 0.5, z=z), ground, map_w)
+    assert shade is crisp and heights is z, "no smooth surface: the crisp one"
+    assert render_trail.trail_surface(None, ground, map_w) == (None, None)
