@@ -21,9 +21,10 @@ walk network, paths and tracks preferred over roads):
 - zermatt and ebro: short loops to look at snow and ice, and at farmland and rice fields, before a change to the
   colours of the ground (not demos: write them under out/).
 
-- Paths: never a via ferrata (OSM's walk network includes them, and some belong to hiking relations). With
-  marked=True a route keeps to the marked hiking trails (OSM route=hiking relations, fetched once from Overpass and
-  cached next to the walk network as hiking_ways.json): an unmarked way costs UNMARKED times more.
+- Paths: a via ferrata costs 50 times its length, so a route keeps off them where any walk goes round (OSM's walk
+  network includes them, and some belong to hiking relations). With marked=True a route keeps to the marked
+  hiking trails (OSM route=hiking relations, fetched once from Overpass and cached next to the walk network as
+  hiking_ways.json): an unmarked way costs UNMARKED times more.
 - Elevation: sampled from the Copernicus DEM (GLO-30) through pinless.relief's reader, at the true positions, with
   a little barometer noise. A development tool may read the DEM; the poster code never samples it. On a route by
   the sea (sea=True) only the land cells count, and where the DEM's sea mask covers a neck of land narrower than
