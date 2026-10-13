@@ -194,6 +194,42 @@ def test_a_label_moves_to_stay_clear_of_the_edge_the_course_and_other_labels():
     assert not box(*a[3]).intersects(box(*b[3]))
 
 
+def test_a_label_goes_where_it_hides_no_lower_summit():
+    """Three summits in a row, like the Tre Cime: the highest in the middle with a long name in two languages. Its
+    label on the right would hide the third summit's triangle, on the left the second's, and above or below one of
+    them, so it goes to a corner, and all three are named (the first place free of the map's edge, the course and
+    the labels drawn before would leave the third summit unnamed)."""
+    mm = (EXTENT[1] - EXTENT[0]) / (render_trail.RIGHT - render_trail.LEFT)
+    row = [(5000.0, 4000.0, "Cima Grande - Grosse Zinne", 2999.0),
+           (5000.0 - 12 * mm, 4000.0 - 1 * mm, "Cima Ovest - Westliche Zinne", 2973.0),
+           (5000.0 + 12 * mm, 4000.0 + 1 * mm, "Cima Piccola - Kleine Zinne", 2857.0)]
+    placed = render_trail.place_peaks(row, EXTENT, 1.0, [])
+    assert [p[2] for p in placed] == ["CIMA GRANDE - GROSSE ZINNE 2999 m", "CIMA OVEST - WESTLICHE ZINNE 2973 m",
+                                      "CIMA PICCOLA - KLEINE ZINNE 2857 m"]
+    gx, gy, _, (x0, y0, x1, y1), _ = placed[0]
+    assert x0 > gx and y0 > gy, "right and below: the first corner that hides neither"
+    boxes = [box(*p[3]) for p in placed]
+    for a, b in itertools.combinations(boxes, 2):
+        assert not a.intersects(b)
+
+
+def test_the_other_tops_of_a_mountain_are_not_named():
+    """Two summits that share a base name within SAME_PEAK_M are one mountain: the higher is named by the base name
+    alone. Farther apart, or with another base name, both are named."""
+    m = render_trail.SAME_PEAK_M
+    top = (5000.0, 4000.0, "Aiguilles Crochues - Sommet S", 2840.0)
+    near = (5000.0 + 0.5 * m, 4000.0 + 0.2 * m, "Aiguilles Crochues", 2837.0)
+    assert [p[2] for p in render_trail.place_peaks([near, top], EXTENT, 1.0, [])] == ["AIGUILLES CROCHUES 2840 m"]
+    far = (5000.0 + 1.3 * m, 4000.0 + 2.5 * m, "Aiguilles Crochues", 2837.0)
+    assert [p[2] for p in render_trail.place_peaks([far, top], EXTENT, 1.0, [])] == [
+        "AIGUILLES CROCHUES - SOMMET S 2840 m", "AIGUILLES CROCHUES 2837 m"]
+    other = (5000.0 + 0.5 * m, 4000.0 + 0.2 * m, "Aiguille de la Persévérance", 2837.0)
+    assert len(render_trail.place_peaks([other, top], EXTENT, 1.0, [])) == 2
+    assert render_trail.base_name("Cima Grande - Große Zinne") == "Cima Grande"
+    assert render_trail.base_name("Yr Wyddfa / Snowdon") == "Yr Wyddfa"
+    assert render_trail.base_name("Tête-à-Tête") == "Tête-à-Tête", "a hyphen inside a name is not a separator"
+
+
 def test_a_label_keeps_its_gap_from_the_course_and_a_wandering_stop_does_not_stall_it():
     import time
 
