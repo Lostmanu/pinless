@@ -1,5 +1,6 @@
 """The automatic area is where you run most, and the OSM download survives a busy server without caching a bad map."""
 import datetime as dt
+import json
 import os
 import socket
 
@@ -273,6 +274,27 @@ def test_the_city_lookup_sends_its_point_rounded_to_about_a_kilometre(monkeypatc
     assert area.city_name(40.41629, -3.69729) == "Madrid"
     assert len(sent) == 1 and "lat=40.42&lon=-3.70&" in sent[0], "rounded to 0.01 degrees"
     assert "4162" not in sent[0] and "6972" not in sent[0]
+
+
+def test_the_region_of_an_island_is_its_archipelago_where_there_is_no_state(monkeypatch):
+    import io
+    import urllib.request
+
+    class Answer(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    answers = {"32.74": {"town": "Caniçal", "city": "Machico", "archipelago": "Madeira", "country": "Portugal"},
+               "39.57": {"city": "Palma", "state": "Balearic Islands", "archipelago": "Balearic Islands",
+                         "country": "Spain"}}
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: Answer(json.dumps(
+        {"address": answers[req.full_url.split("lat=")[1][:5]]}).encode()))
+    monkeypatch.setattr(area, "_last_lookup", [-1e9])
+    assert area.place_region(32.74, -16.73) == ("Machico", "Madeira", "Portugal")
+    assert area.place_region(39.57, 2.65) == ("Palma", "Balearic Islands", "Spain")
 
 
 def test_the_area_for_two_keeps_the_partner_who_records_fewer_points():

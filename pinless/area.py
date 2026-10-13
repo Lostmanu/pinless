@@ -231,7 +231,9 @@ def _lookup(lat, lon, lang, timeout, region):
     city = next((adr[k] for k in ("city", "town", "village", "municipality", "county") if adr.get(k)), "")
     city = city or d.get("name", "") or ""
     if region:
-        out = (city, next((adr[k] for k in ("state", "region", "province") if adr.get(k)), ""), adr.get("country", ""))
+        # an island's archipelago stands for the region where the country has none there (Madeira)
+        out = (city, next((adr[k] for k in ("state", "region", "province", "archipelago") if adr.get(k)), ""),
+               adr.get("country", ""))
     else:
         out = (city, adr.get("country", ""))
     known[key] = list(out)

@@ -9,8 +9,9 @@ The privacy rules are the race print's (race.cut), reused as they are:
 - The title is never the activity's own name unless the user gives it with --title: a name can say where a walk
   starts. No start or finish pin is drawn.
 Only the map box (for the OpenStreetMap layers, and the Copernicus cells of the relief and the WorldCover tiles of the
-ground when they are on) and the middle of the drawn stretch rounded to about 1 km (for the place name) leave the
-machine.
+ground when they are on) and the middle of the drawn stretch rounded to about 1 km (for the place name; where it
+names no place, as in the sea of a bay a walk goes round, the drawn point nearest to it, rounded the same way) leave
+the machine.
 """
 from __future__ import annotations
 
@@ -86,6 +87,35 @@ def ice_or_rock(ground_, relief_, folder, extent, crs, log=print):
         log(f"[ground] snow and ice below the snowline where OpenStreetMap maps no glacier: drawn as rock "
             f"({f'{share * 100:.0f} %' if share >= 0.005 else 'under 1 %'} of the map)")
     return out
+
+
+def _names_a_place(answer):
+    """True when a reverse lookup (city, region, country) names a place below the country."""
+    city, _, country = answer
+    return bool(city) and city.strip().casefold() != (country or "").strip().casefold()
+
+
+def place_of(pieces, crs, lang="en"):
+    """(city, region, country) of the drawn stretch (area.place_region): the answer for the middle of its first piece,
+    rounded to about 1 km. Where that names no place below the country (the middle of a walk round a bay lies in the
+    sea, and the answer there is the country alone), one more point is asked: the drawn point nearest to the middle
+    that rounds to another point, rounded the same way. A point of the printed route, never one cut away from it."""
+    inv = Transformer.from_crs(crs, 4326, always_xy=True)
+    mid = np.median(np.asarray(pieces[0][1].coords), axis=0)
+    lon, lat = inv.transform(*mid)
+    key = (round(float(lat), 2), round(float(lon), 2))
+    out = area.place_region(*key, lang=lang)
+    if _names_a_place(out) or not out[2]:  # a place, or no answer at all (offline): nothing more is asked
+        return out
+    drawn = np.concatenate([np.asarray(p.coords) for _, p in pieces])
+    lons, lats = inv.transform(drawn[:, 0], drawn[:, 1])
+    keys = [(round(float(la), 2), round(float(lo), 2)) for la, lo in zip(lats, lons)]
+    other = [i for i, k in enumerate(keys) if k != key]
+    if not other:
+        return out
+    i = min(other, key=lambda j: float(np.hypot(*(drawn[j] - mid))))
+    again = area.place_region(*keys[i], lang=lang)
+    return again if _names_a_place(again) else out
 
 
 def run(sel, pool, a, log=print):
@@ -165,9 +195,7 @@ def run(sel, pool, a, log=print):
     ground = getattr(a, "ground", None) or "nature"  # the colours of the land: on unless --ground style
     ground_ = landcover.prepare_many([(extent, crs, map_w)], log=log)[0] if ground == "nature" else None
     ground_ = ice_or_rock(ground_, relief_, folder, extent, crs, log=log)
-    inv = Transformer.from_crs(crs, 4326, always_xy=True)
-    mid_lon, mid_lat = inv.transform(*np.median(np.asarray(pieces[0][1].coords), axis=0))
-    city, region, country = area.place_region(round(float(mid_lat), 2), round(float(mid_lon), 2), lang=a.lang)
+    city, region, country = place_of(pieces, crs, lang=a.lang)
     if route.name and not a.title:
         log(f"[trail] title: {city or 'none'}. The activity's own name is not printed unless you pass it with "
             f"--title (names often say where a walk starts)")

@@ -647,6 +647,57 @@ def test_the_place_is_looked_up_from_the_middle_of_the_drawn_stretch(monkeypatch
     assert round(lat_w, 2) != round(lat, 2), "not the middle of the whole walk, which reaches towards home"
 
 
+def test_a_middle_in_the_sea_is_looked_up_again_at_the_nearest_drawn_point(monkeypatch, tmp_path):
+    """A walk round a bay: the middle of the drawn stretch lies in the sea, where the answer is the country alone. The
+    drawn point nearest to it that rounds to another point is asked next, rounded the same way, and its place names
+    the print; when that names no place either, the first answer stays."""
+    t = np.linspace(0.1 * np.pi, 0.9 * np.pi, 600)
+    walk = _hike(np.column_stack([4000 * np.cos(t), 4000 * np.sin(t)]), "bay")  # an arc round a bay 8 km wide
+    places = {}
+    asked = []
+
+    def lookup(lat, lon, lang="en"):
+        asked.append((lat, lon))
+        return ("Portugal", "", "Portugal") if len(asked) == 1 else places.get("second", ("Machico", "Madeira",
+                                                                                           "Portugal"))
+
+    for second, title, place in ((None, "Machico", "Madeira, Portugal"),
+                                 (("", "", "Portugal"), "Portugal", "Portugal")):
+        if second:
+            places["second"] = second
+        captured = {}
+        asked.clear()
+        _trail_world(monkeypatch, [walk], captured, tmp_path)
+        monkeypatch.setattr(trail.area, "place_region", lookup)
+        assert cli.main(["x.gpx", "--layout", "trail", "--dpi", "20", "--out", str(tmp_path / "t.png")]) == 0
+        pieces = captured["pieces"]
+        crs = trail.render.utm_crs(*np.median(np.asarray(walk.lonlat), axis=0))
+        inv = trail.Transformer.from_crs(crs, 4326, always_xy=True)
+        mid = np.median(np.asarray(pieces[0][1].coords), axis=0)
+        drawn = np.concatenate([np.asarray(p.coords) for _, p in pieces])
+        lon_m, lat_m = inv.transform(*mid)
+        first = (round(lat_m, 2), round(lon_m, 2))
+        keys = [(round(la, 2), round(lo, 2)) for lo, la in (inv.transform(*p) for p in drawn)]
+        near = min((i for i, k in enumerate(keys) if k != first), key=lambda i: np.hypot(*(drawn[i] - mid)))
+        assert np.hypot(*(drawn[near] - mid)) > 500, "the middle lies in the bay, away from the walk"
+        assert asked == [first, keys[near]]
+        assert (captured["title"], captured["place"]) == (title, place)
+    # a cove: the drawn point nearest to the middle rounds to the middle's own point, so the next one is asked
+    asked.clear()
+    places.pop("second")
+    cove = _hike(np.column_stack([900 * np.cos(t), 900 * np.sin(t)]), "cove")
+    captured = {}
+    _trail_world(monkeypatch, [cove], captured, tmp_path)
+    monkeypatch.setattr(trail.area, "place_region", lookup)
+    assert cli.main(["x.gpx", "--layout", "trail", "--dpi", "20", "--out", str(tmp_path / "t.png")]) == 0
+    pieces = captured["pieces"]
+    mid = np.median(np.asarray(pieces[0][1].coords), axis=0)
+    drawn = np.concatenate([np.asarray(p.coords) for _, p in pieces])
+    lon_n, lat_n = inv.transform(*drawn[np.argmin(np.hypot(*(drawn - mid).T))])
+    assert (round(lat_n, 2), round(lon_n, 2)) == asked[0], "the nearest drawn point rounds to the middle's point"
+    assert len(asked) == 2 and asked[0] != asked[1] and captured["title"] == "Machico"
+
+
 def test_a_free_text_type_is_logged_as_other(monkeypatch, tmp_path, capsys):
     walk = _hike(_loop(0, 0, 2500, n=500), kind="Evening walk from Calle Mayor 5")
     _trail_world(monkeypatch, [walk], {}, tmp_path)
