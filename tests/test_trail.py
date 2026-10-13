@@ -230,8 +230,33 @@ def test_summit_labels_and_triangles_have_a_halo_in_the_paper_colour():
     for patch in ax.patches:
         (halo,) = patch.get_path_effects()
         assert to_rgba(halo._gc["foreground"]) == to_rgba(S["bg"]) and halo._gc["linewidth"] == render_trail.HALO_PT
+        assert halo._gc["joinstyle"] == "round", "a mitred halo sends spikes out of the corners of an M"
         assert to_rgba(patch.get_facecolor()) == to_rgba(S["ink"]), "in the ink: they read over the relief"
     plt.close(fig)
+
+
+def test_a_round_halo_sends_no_spike_out_of_a_sharp_corner():
+    """A label in a black ink with its white halo, on a black page: the white reaches no farther above the top of
+    the letters (place_text sets their capital height at the label's top) than half the halo's width. A mitred halo
+    sends spikes far above an M, out of the sharp corners where its strokes meet."""
+    import matplotlib.pyplot as plt
+
+    k, mm_px = 2.0, 600 / 25.4  # the scale of the label, and pixels per millimetre of the page at 600 dpi
+    S = {"ink": "#000000", "bg": "#ffffff"}
+    fig = plt.figure(figsize=(2, 1), dpi=600, facecolor="#000000")
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, 50.8)
+    ax.set_ylim(25.4, 0)  # page millimetres, y down
+    ax.axis("off")
+    label_x, label_y = 7.0, 8.0  # A3-grid mm: the label's top at 16 mm of this page
+    render_trail.draw_summits(ax, [(-20.0, 0.0, "MWMWM", None, (label_x, label_y))], S, k)  # its triangle off the page
+    fig.canvas.draw()
+    white = np.asarray(fig.canvas.buffer_rgba())[..., 0] > 128
+    plt.close(fig)
+    assert white.any(), "the halo is drawn"
+    top_mm = np.flatnonzero(white.any(axis=1))[0] / mm_px
+    half = render_trail.HALO_PT * k * render_trail.PT_MM / 2
+    assert top_mm >= label_y * k - half - 2 / mm_px, (top_mm, label_y * k - half)
 
 
 def test_summits_load_from_the_cache_with_their_heights(tmp_path):

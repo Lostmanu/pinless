@@ -800,8 +800,9 @@ def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS, map_h=MAP_H):
 def draw_summits(ax, summits, S, k):
     """The placed summits (place_peaks) on the page axes (millimetres, y down): a triangle and the label in the ink,
     both with a halo in the paper colour, so a path, a contour or a shadow that runs under a name does not run
-    through its letters, as on a topographic map."""
-    halo = [patheffects.withStroke(linewidth=HALO_PT * k, foreground=S["bg"])]
+    through its letters, as on a topographic map. The halo's corners are round: a mitred stroke sends spikes out of
+    the sharp corners of letters (the M, the V)."""
+    halo = [patheffects.withStroke(linewidth=HALO_PT * k, foreground=S["bg"], joinstyle="round")]
     for gx, gy, text, _, (lx, ly) in summits:
         tri = [((gx - TRI_W / 2) * k, (gy + TRI_DOWN) * k), ((gx + TRI_W / 2) * k, (gy + TRI_DOWN) * k),
                (gx * k, (gy - TRI_UP) * k)]
