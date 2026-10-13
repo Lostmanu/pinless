@@ -3,10 +3,10 @@
 **Your year of running as a print-ready poster of your city. From your Strava export, on your own computer, without showing where you live.**
 
 <p align="center">
-  <img src="docs/wall-huella.jpg" width="49%" alt="The warm paper poster of a year of runs in Madrid, framed in oak and hung above a sideboard">
+  <img src="docs/wall-huella.jpg" width="49%" alt="The warm paper poster of a year of runs in Madrid, framed in oak on a wall above an oak sideboard, books and two stoneware vases, in the dappled light of a window">
   <img src="docs/wall-carbon.jpg" width="49%" alt="The same poster in the dark carbon style, in a black frame">
 </p>
-<p align="center"><sub>A3 prints in standard 40x50 cm frames, drawn to scale (<code>tools/mockup.py</code>). Demo posters made from a synthetic runner (<code>tools/simulate_runner.py</code>), not from a real person.</sub></p>
+<p align="center"><sub>A3 prints in standard 40x50 cm frames, rendered to scale in a modelled room lit by a window (<code>tools/mockup.py</code>, a small path tracer), not photographs. Demo posters made from a synthetic runner (<code>tools/simulate_runner.py</code>), not from a real person.</sub></p>
 
 ```bash
 pip install https://github.com/Lostmanu/pinless/archive/refs/heads/main.zip
@@ -76,7 +76,7 @@ The line weight always grows with how often you ran a street; `--color-by` decid
 
 <p align="center">
   <img src="docs/atlas-huella.jpg" width="40%" alt="Atlas of six cities run in one year: Madrid, Lisbon, Paris, Rome, Valencia and Zurich">
-  <img src="docs/wall-atlas.jpg" width="58%" alt="The atlas framed in oak and hung above a sideboard">
+  <img src="docs/wall-atlas.jpg" width="58%" alt="The atlas framed in oak on a wall above an oak sideboard">
 </p>
 <p align="center"><sub>Demo atlas from the synthetic runner with trips (<code>tools/simulate_trips.py</code>); try it with <code>pinless demo/strava_export_atlas_demo.zip --layout atlas</code>.</sub></p>
 
@@ -90,7 +90,7 @@ One small map per city on the same print: the city where you ran most comes firs
 
 <p align="center">
   <img src="docs/race.jpg" width="40%" alt="Finisher print of a half marathon in Madrid with its elevation profile, time, pace and kilometre splits">
-  <img src="docs/wall-race.jpg" width="58%" alt="The race print in a black frame hung above a sideboard">
+  <img src="docs/wall-race.jpg" width="58%" alt="The race print in a black frame on a wall above an oak sideboard">
 </p>
 
 ```bash
@@ -106,16 +106,17 @@ A run that starts or ends at one of your private places (a long run from home) i
 <p align="center">
   <img src="docs/trail.jpg" width="32%" alt="Trail print of a loop over Penalara in the Sierra de Guadarrama: green pine woods and meadows, the granite ridge in stone grey, terrain relief baked into the colours, contour lines, paths, named summits, the elevation profile and the route numbers">
   <img src="docs/trail-desert.jpg" width="32%" alt="Trail print of a walk in the Desierto de Tabernas: the badlands etched in desert orange with burnt brown shadows, the steppe in straw, contour lines, paths, the elevation profile and the route numbers">
-  <img src="docs/trail-dolomites.jpg" width="32%" alt="Trail print of the loop round the Tre Cime di Lavaredo in the Dolomites: green meadows, pale dolomite rock and scree, small lakes, the route in deep red on cream paper, the six named summits, the elevation profile and the route numbers">
+  <img src="docs/trail-dolomites.jpg" width="32%" alt="Trail print of the loop round the Tre Cime di Lavaredo in the Dolomites: green meadows, pale dolomite rock and scree, small lakes, the route in deep red on cream paper, the three Cime and their neighbours named, the elevation profile and the route numbers">
 </p>
 <p align="center">
-  <img src="docs/trail-alps.jpg" width="32%" alt="Trail print in the ocean style of the walk from La Flegere up to Lac Blanc above Chamonix: meadows, grey rock and white snow patches under the Aiguilles Crochues, the lakes in pale blue, the route in deep blue, the elevation profile and the route numbers">
-  <img src="docs/trail-coast.jpg" width="32%" alt="Trail print in the ocean style of the Ponta de Sao Lourenco on Madeira: the long green peninsula between two seas, the route in deep blue out to the Casa do Sardinha and back, the elevation profile and the route numbers">
+  <img src="docs/trail-alps.jpg" width="32%" alt="Trail print in the dark midnight style of the walk from La Flegere up to Lac Blanc above Chamonix and on past the Lacs des Cheserys down to the Col des Montets: dark green woods and meadows, grey rock under the named peaks of the Aiguilles Rouges, the Arve valley, the route in bright blue, the elevation profile and the route numbers">
+  <img src="docs/trail-coast.jpg" width="32%" alt="Trail print in the ocean style of the Ponta de Sao Lourenco on Madeira: the long green peninsula between two seas with its cliffs in relief and contour lines, the route in deep blue out to the Casa do Sardinha and back, the elevation profile and the route numbers">
 </p>
 <p align="center">
-  <img src="docs/wall-trail.jpg" width="80%" alt="The Penalara trail print in an oak frame hung above a sideboard">
+  <img src="docs/wall-trail.jpg" width="49%" alt="The Penalara trail print in an oak frame on a wall above an oak sideboard, in the dappled light of a window">
+  <img src="docs/wall-trail-white.jpg" width="49%" alt="The Lac Blanc trail print in the dark midnight style, in a white frame on the same wall">
 </p>
-<p align="center"><sub>Demo routes: synthetic hikes on real OpenStreetMap paths, with heights from the Copernicus elevation model (<code>tools/simulate_hike.py</code>), not a real person's walks. Peñalara and Tabernas in Spain and the Tre Cime di Lavaredo in the Dolomites in the default style; Lac Blanc above Chamonix and the Ponta de São Lourenço on Madeira in the ocean style.</sub></p>
+<p align="center"><sub>Demo routes: synthetic hikes on real OpenStreetMap paths, with heights from the Copernicus elevation model (<code>tools/simulate_hike.py</code>), not a real person's walks. Peñalara and Tabernas in Spain and the Tre Cime di Lavaredo in the Dolomites in the default style, Lac Blanc above Chamonix in the midnight style and the Ponta de São Lourenço on Madeira in the ocean style. Peñalara framed in oak and Lac Blanc in white, rendered to scale in a modelled room (<code>tools/mockup.py</code>), not photographs.</sub></p>
 
 Try the demo routes:
 
@@ -123,7 +124,7 @@ Try the demo routes:
 pinless demo/hike_demo.gpx --layout trail --title "Peñalara"
 pinless demo/hike_desert_demo.gpx --layout trail --title "Tabernas"
 pinless demo/hike_dolomites_demo.gpx --layout trail --title "Tre Cime di Lavaredo"
-pinless demo/hike_alps_demo.gpx --layout trail --title "Lac Blanc" --style ocean
+pinless demo/hike_alps_demo.gpx --layout trail --title "Lac Blanc" --style midnight
 pinless demo/hike_coast_demo.gpx --layout trail --title "Ponta de São Lourenço" --style ocean
 ```
 
@@ -146,7 +147,7 @@ The privacy rules are the race print's, with your private places learned from ev
 
 <p align="center">
   <img src="docs/couple-huella.jpg" width="40%" alt="Poster of two runners' year in Madrid: Lucia's streets in red, Marcos's in blue, the streets they share in black">
-  <img src="docs/wall-couple.jpg" width="58%" alt="The poster for two framed in oak and hung above a sideboard">
+  <img src="docs/wall-couple.jpg" width="58%" alt="The poster for two framed in oak on a wall above an oak sideboard">
 </p>
 <p align="center"><sub>Demo poster from two synthetic runners (<code>tools/simulate_runner.py</code>); try it with <code>pinless demo/strava_export_madrid_demo.zip --with demo/strava_export_madrid_partner_demo.zip --name Lucia --with-name Marcos</code>.</sub></p>
 
