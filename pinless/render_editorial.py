@@ -143,7 +143,9 @@ PRINT_TOL_MM = 0.04  # geometry is simplified to this, on paper: far below what 
 SHARED_MM = 0.5  # two lines this close on paper read as one street
 SMOOTH_MM = 1.5  # a change of whose street it is, shorter than this along a line, is a fleck: it takes its neighbours'
 COUPLE_BASE = 0.62  # the thinnest couple stroke (pt x k): a hairline keeps its hue
-ROUTE_GAIN = 0.42  # how much a route thickens from its rarest to its commonest weight (pt x k); the key uses it too
+ROUTE_BASE = 0.68  # the thinnest route stroke (pt x k)
+ROUTE_GAIN = 0.85  # how much a route thickens from its rarest to its commonest weight (pt x k); the key too
+STREET_QUIET = 0.38  # the city and couple posters: side streets and paths this share of the way to the paper
 
 
 class Couple(NamedTuple):
@@ -209,11 +211,12 @@ def _poly_path(polys):
     return MPath(np.concatenate(verts), np.concatenate(codes)) if verts else None
 
 
-def draw_basemap(ax, basemap, extent, S, k, map_w_mm, sw=1.0):
+def draw_basemap(ax, basemap, extent, S, k, map_w_mm, sw=1.0, quiet=0.0):
     """Green, water (sea included) and streets, as one compound path per kind.
 
     OSM walk graphs hold every street twice (one per direction), so each geometry is drawn once whatever its
-    direction. Everything is cut to the map and simplified to PRINT_TOL_MM on paper."""
+    direction. Everything is cut to the map and simplified to PRINT_TOL_MM on paper. quiet: the side streets and
+    paths move this share of the way to the paper (the main roads keep their colour), so the routes lead."""
     edges, green, water = basemap
     tol = (extent[1] - extent[0]) / map_w_mm * PRINT_TOL_MM
     for layer, color, z in ((green, S["green"], 1), (water, S["water"], 2)):
@@ -232,6 +235,10 @@ def draw_basemap(ax, basemap, extent, S, k, map_w_mm, sw=1.0):
     hw = edges["highway"].map(_hw)
     for cls, mask in (("path", ~hw.isin(MAJOR | MINOR)), ("minor", hw.isin(MINOR)), ("major", hw.isin(MAJOR))):
         color, width = S["street"][cls]
+        if quiet and cls != "major":
+            bg = np.asarray(to_rgb(S["bg"]))
+            color = tuple(float(v) for v in np.clip(np.asarray(to_rgb(color)) + (bg - np.asarray(to_rgb(color)))
+                                                    * quiet, 0, 1))
         path = _line_path(p for g in _clip_simplify(edges[mask].geometry, extent, tol)
                           for p in _parts(g, ("LineString",)))
         if path is not None:
@@ -375,7 +382,8 @@ def footer_credits(text, S, lang, y, osm_max_w, relief_max_w, dataset=None, grou
              max_w=relief_max_w if last and len(lines) > 1 else osm_max_w)
 
 
-def draw_routes(ax, segments, counts, cap, cmap, k, base=0.55, gain=ROUTE_GAIN, scale=1.0, glow=0.0, values=None):
+def draw_routes(ax, segments, counts, cap, cmap, k, base=ROUTE_BASE, gain=ROUTE_GAIN, scale=1.0, glow=0.0,
+                values=None):
     """Routes weighted by how often they were run and coloured by `values` in [0, 1] (default: the same frequency),
     in LEVELS steps, thinnest first. Consecutive segments of a step are joined back into polylines; the geometry
     itself is untouched. glow > 0 lays a wide, faint stroke of the same colour under each step (vector, so the PDF
@@ -419,9 +427,10 @@ def route_colours(color_by, raws, S):
     return vals, legend, cmap
 
 
-def draw_legend(plot, text, k, S, cmap, legend, lang, y, names=None):
+def draw_legend(plot, text, k, S, cmap, legend, lang, y, names=None, weights=(ROUTE_BASE, ROUTE_GAIN)):
     """The key at the bottom right: what the line colour means. plot/text draw in A3-grid millimetres.
-    names: the two names of a poster for two (mode "who")."""
+    names: the two names of a poster for two (mode "who"); weights: (base, gain) of the routes' strokes, which the
+    repetition key draws."""
     es = lang == "es"
     mode = legend.get("mode", "heat")
     if mode == "who":  # weight: how often either ran a street; colour: whose street it is, in five steps
@@ -445,7 +454,8 @@ def draw_legend(plot, text, k, S, cmap, legend, lang, y, names=None):
     if mode in ("heat", "single"):
         for i, v in enumerate(np.linspace(0, 1, 6)):
             plot([(218 + i * 8.4) * k, (225 + i * 8.4) * k], [(y + 1) * k, (y + 1) * k],
-                 color=cmap(v if mode == "heat" else 0.85), lw=(0.55 + ROUTE_GAIN * v) * k, solid_capstyle="round")
+                 color=cmap(v if mode == "heat" else 0.85), lw=(weights[0] + weights[1] * v) * k,
+                 solid_capstyle="round")
         text(279, y - 1, "+", pt=8, align="right", color=S["sub"])
     elif mode == "month":
         letters = "EFMAMJJASOND" if es else "JFMAMJJASOND"
@@ -800,7 +810,7 @@ def render(pieces, basemap, extent, stats, out_path, style="huella", size="A3", 
     ax.set_ylim(extent[2], extent[3])
     ax.set_aspect("equal")
     ax.axis("off")
-    draw_basemap(ax, basemap, extent, S, k, map_w)  # map_w: millimetres of paper
+    draw_basemap(ax, basemap, extent, S, k, map_w, quiet=STREET_QUIET)  # map_w: millimetres of paper
     drawn = draw_relief(ax, relief, extent, S, basemap[2], k, map_w) if relief is not None else False
 
     # Fixed physical density resolution makes PDF and PNG frequencies independent

@@ -31,6 +31,10 @@ from .localtime import local_start
 from .render_sport import _num
 
 EARTH_KM = 6371.0088
+# The atlas keeps its own route weights (pt x k): its small maps are drawn thinner than a city poster's, and its key
+# draws the strokes it always drew
+ATLAS_GAIN = 0.42
+ATLAS_KEY = (0.55, ATLAS_GAIN)
 TOP, BOTTOM, LEFT, RIGHT = 87.0, 372.0, 18.0, 279.0  # grid area on the A3 layout grid (mm, scaled for other sizes)
 CAPTION, GAP_X, GAP_Y = 15.0, 8.0, 7.0
 ASPECT_MIN, ASPECT_MAX = 0.75, 2.2  # no map narrower or flatter than this (width/height)
@@ -292,8 +296,8 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
         if reliefs and reliefs[i]:
             any_relief |= draw_relief(ax, reliefs[i], ext, S, bm[2] if bm is not None else None, k, w * k)
             dataset = reliefs[i].dataset
-        draw_routes(ax, segments, counts, cap, cmap, k, base=0.5, scale=max(sw, 0.8), glow=S.get("glow", 0.0),
-                    values=vals)
+        draw_routes(ax, segments, counts, cap, cmap, k, base=0.5, gain=ATLAS_GAIN, scale=max(sw, 0.8),
+                    glow=S.get("glow", 0.0), values=vals)
         # caption
         cy = y + h + 3.0
         T(x, cy + 0.4, f"{i + 1:02d}", pt=14, font=REGULAR, color=S["accent"], height=4.4)
@@ -317,7 +321,7 @@ def render_atlas(cities, cells, extents, basemaps, out_path, style="huella", siz
         T(xx, 391.5, label, pt=6.3, color=S["sub"], max_w=58)
     rule(398)
     T(18, 404, "CADA SALIDA DEJA HUELLA." if es else "EVERY RUN LEAVES A TRACE.", pt=6.8)
-    draw_legend(page.ax.plot, T, k, S, cmap, legend, lang, 404)
+    draw_legend(page.ax.plot, T, k, S, cmap, legend, lang, 404, weights=ATLAS_KEY)
     footer_credits(T, S, lang, 412, 200, 220, dataset if any_relief else None)
     if more:
         note = (f"+{more} CIUDAD{'' if more == 1 else 'ES'} SIN MAPA" if es
