@@ -354,18 +354,50 @@ def built_weight(classes, map_w_mm):
     return np.clip(w * 1.5, 0, 1).astype(np.float32)
 
 
+HOLD_SAMPLE = 250_000  # the dark paper's light side is measured on about this many pixels of the map
+
+
+def _dark_hold(rgb, shadowed, lift, keep):
+    """The share (0 to 1) of the light side's lift that a dark map can take: the largest at which the mean L* of
+    its land stays at most that of the unbaked ground (rgb), from the shadows (shadowed) and the full lift. Measured on
+    a regular sample of HOLD_SAMPLE pixels or so."""
+    H, W = rgb.shape[:2]
+    step = max(1, math.ceil(math.sqrt(H * W / HOLD_SAMPLE)))
+    land = np.ones((H, W), bool) if keep is None else ~np.asarray(keep, dtype=bool)
+    land = land[::step, ::step]
+    if not land.any():
+        return 1.0
+    a, b, d = (v[::step, ::step][land] for v in (rgb, shadowed, lift))
+    l0 = float(lstar_image(a * 255).mean())
+
+    def mean_at(t):
+        return float(lstar_image(np.clip(b + d * t, 0, 1) * 255).mean())
+
+    if mean_at(1.0) <= l0:
+        return 1.0
+    lo, hi = 0.0, 1.0  # the shadows alone only darken: mean_at(0) <= l0
+    for _ in range(16):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if mean_at(mid) <= l0 else (lo, mid)
+    return lo
+
+
 def bake(rgb, s, dry, dark, keep=None):
     """The relief baked into the ground colours (rgb, float in [0, 1], (H, W, 3)) by the shade s ((H, W) in [-1,
     1]): shadows multiply each channel by 1 - ks * |s| * k (k from K_COOL to K_WARM with the dryness), light moves
-    kl * s of the way to BAKE_LIGHT (BAKE[dark] = (ks, kl)). keep: a mask of pixels left exactly as they were (the
+    kl * s of the way to BAKE_LIGHT (BAKE[dark] = (ks, kl)). On dark paper the light side gives back at most what the
+    shadows took (_dark_hold): a map whose slopes mostly face the light (a valley side lit from the north-west) does
+    not print lighter than its ground, so the poster stays dark. keep: a mask of pixels left exactly as they were (the
     water). Returns uint8 (H, W, 3)."""
     rgb = np.asarray(rgb, dtype=np.float64)
     s = np.asarray(s, dtype=np.float64)[..., None]
     k = np.asarray(K_COOL) + (np.asarray(K_WARM) - np.asarray(K_COOL)) * float(dry)
     ks, kl = BAKE[bool(dark)]
     out = rgb * (1 - ks * np.maximum(-s, 0) * k)
-    out = out + (np.asarray(BAKE_LIGHT) - out) * kl * np.maximum(s, 0)
-    out = np.clip(np.round(out * 255), 0, 255).astype(np.uint8)
+    lift = (np.asarray(BAKE_LIGHT) - out) * kl * np.maximum(s, 0)
+    if dark:
+        lift *= _dark_hold(rgb, out, lift, keep)
+    out = np.clip(np.round((out + lift) * 255), 0, 255).astype(np.uint8)
     if keep is not None:
         out[keep] = np.clip(np.round(rgb[keep] * 255), 0, 255).astype(np.uint8)
     return out

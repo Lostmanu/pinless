@@ -1115,6 +1115,39 @@ def test_a_dark_ground_stays_dark_with_its_relief_baked_in():
             assert -4 <= change <= 1, f"{style} dry {dry}: {change:+.1f} L*"
 
 
+def test_a_dark_alpine_map_lit_on_most_of_its_slopes_does_not_print_lighter():
+    """Zermatt's valley sides face the north-west light: most of its land is lit (the shade's median was +0.26 on the
+    real map), and on dark paper the light side lifted the map 1.6 L* over its ground. The light side gives back at
+    most what the shadows took: the land's mean L* does not rise, the lit faces still lift, the water is untouched;
+    light paper keeps its full light side."""
+    H, W = 120, 240
+    classes = np.full((H, W), landcover.GRASS, np.uint8)
+    classes[:, 60:120] = landcover.MOSS
+    classes[:, 120:180] = landcover.BARE
+    classes[:, 180:220] = landcover.SNOW
+    classes[:, 220:] = landcover.WATER
+    rng = np.random.default_rng(3)
+    shade = np.where(rng.random((H, W)) < 0.7, 0.7, -0.6).astype(np.float32)  # lit on 70 % of the map
+    water = classes == landcover.WATER
+    for style in ("carbon", "midnight", "huella"):
+        S = render_editorial.STYLES[style]
+        dark = landcover._lstar(to_rgb_(S["bg"])) < 50
+        calm = landcover.ground_rgb(classes, S, 0.0)
+        baked = render_trail.bake(calm / 255, shade, 0.0, dark, keep=water)
+        L0, L1 = _lch_image(calm)[0], _lch_image(baked)[0]
+        change = L1[~water].mean() - L0[~water].mean()
+        lit = (shade > 0) & ~water
+        assert np.array_equal(baked[water], calm[water]), f"{style}: the water as it is"
+        if dark:
+            assert -4 <= change <= 0.1, f"{style}: {change:+.2f} L*, the poster stays dark"
+            assert (L1[lit] - L0[lit]).mean() > 1, f"{style}: the lit faces still lift"
+        else:
+            kl = render_trail.BAKE[False][1]
+            c = calm[lit] / 255
+            full = c + (np.asarray(render_trail.BAKE_LIGHT) - c) * kl * shade[lit][:, None]
+            assert np.abs(baked[lit] - np.round(full * 255)).max() <= 1, f"{style}: light paper keeps its light side"
+
+
 def test_the_land_classes_are_calmed_towards_the_maps_own_land():
     S = render_editorial.STYLES["huella"]
     classes = np.full((40, 50), landcover.TREE, np.uint8)
