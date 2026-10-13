@@ -5,8 +5,8 @@
 - geocode_bbox: the bounding box of a named place (one Nominatim request through osmnx).
 - city_name: the city/town near a point (one Nominatim reverse request, the point rounded to about 1 km), for the
   headline.
-- fetch_basemap: streets (walk network), green, water, coastline and named summits for a bbox, cached on disk by
-  rounded bbox.
+- fetch_basemap: streets (walk network), green, water, coastline, and for the trail print named summits and
+  glaciers, for a bbox, cached on disk by rounded bbox.
 Only the bbox of the area (and a point rounded to about 1 km for the city name) is sent to OpenStreetMap services;
 activity files never leave the machine.
 """
@@ -360,17 +360,22 @@ LAYERS = (
     ("coast", {"natural": "coastline"}),
     # named summits for the trail print (points with name and ele)
     ("peaks", {"natural": "peak"}),
+    # glaciers for the trail print: where the land cover's snow and ice below the snowline is ice, not pale rock
+    ("glacier", {"natural": "glacier"}),
 )
 OPTIONAL = {"coast": "[osm] the coastline could not be fetched now: this map has no sea; run again later to add it",
-            "peaks": "[osm] the summits could not be fetched now: this map names none; run again later to add them"}
-ON_REQUEST = {"peaks"}  # only the trail print names summits: no other print asks Overpass for them
+            "peaks": "[osm] the summits could not be fetched now: this map names none; run again later to add them",
+            "glacier": "[osm] the glaciers could not be fetched now: the land cover's snow and ice is drawn as it is; "
+                       "run again later to check it against them"}
+ON_REQUEST = {"peaks", "glacier"}  # only the trail print names summits and draws ice: no other print asks for them
 
 
 def fetch_basemap(bbox, root=None, log=print, extra=()):
     """Download (once) and cache the OSM layers for a bbox. Returns the folder that render.load_basemap reads.
     A layer is cached as empty only when OSM answers that there is nothing of that kind in the box; a server error
     stops instead, so a busy server never leaves a map without its parks or water. The layers of ON_REQUEST (the
-    summits) are fetched only when named in extra, so a city poster on a cache made before them stays offline."""
+    summits and the glaciers) are fetched only when named in extra, so a city poster on a cache made before them stays
+    offline."""
     import osmnx as ox
     from osmnx._errors import InsufficientResponseError
 
@@ -400,7 +405,8 @@ def fetch_basemap(bbox, root=None, log=print, extra=()):
         log(f"[osm] downloading {nombre} for the area (one time, cached)...")
         try:
             gdf = _overpass(lambda: ox.features_from_bbox(box_, tags=tags), log)
-            kinds = {"coast": ["LineString", "MultiLineString"], "peaks": ["Point"]}.get(
+            kinds = {"coast": ["LineString", "MultiLineString"], "peaks": ["Point"],
+                     "glacier": ["Polygon", "MultiPolygon"]}.get(
                 nombre, ["LineString", "MultiLineString", "Polygon", "MultiPolygon"])
             gdf = gdf[gdf.geometry.type.isin(kinds)]
             cols = ("name", "ele") if nombre == "peaks" else ("leisure", "landuse", "natural", "waterway", "water",
@@ -413,8 +419,9 @@ def fetch_basemap(bbox, root=None, log=print, extra=()):
         except RuntimeError:
             if nombre not in OPTIONAL:
                 raise
-            # the coast only paints the sea and the summits only name the hills: without a server now, the map is
-            # drawn without them and nothing is cached, so the next run tries again
+            # the coast only paints the sea, the summits only name the hills and the glaciers only tell ice from
+            # pale rock: without a server now, the map is drawn without them and nothing is cached, so the next run
+            # tries again
             log(OPTIONAL[nombre])
             continue
         gdf.to_file(path, driver="GPKG")

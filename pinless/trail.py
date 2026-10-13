@@ -51,6 +51,43 @@ def load_peaks(folder, bbox_ll, crs):
             for p, nm, v in zip(gdf.geometry, gdf["name"], ele)]
 
 
+def load_glaciers(folder, crs):
+    """[shapely polygons] of the OSM glaciers in the cache, projected to crs; None when the cache has no glacier layer
+    (it could not be fetched yet)."""
+    import os
+
+    import geopandas as gpd
+
+    path = os.path.join(folder, "glacier.gpkg")
+    if not os.path.exists(path):
+        return None
+    gdf = gpd.read_file(path)
+    if not len(gdf):
+        return []
+    gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])].to_crs(crs)
+    return [g for g in gdf.geometry if g is not None and not g.is_empty]
+
+
+def ice_or_rock(ground_, relief_, folder, extent, crs, log=print):
+    """The land cover with its snow and ice below the snowline drawn as rock where OpenStreetMap maps no glacier
+    (landcover.rock_for_snow): WorldCover takes pale scree for snow. It needs both the heights of the relief and the
+    glacier layer; without either, the snow and ice is drawn as it is."""
+    if ground_ is None or not (np.asarray(ground_.classes) == landcover.SNOW).any():
+        return ground_
+    z = getattr(relief_, "z", None)
+    glaciers = load_glaciers(folder, crs)
+    if z is None or glaciers is None or np.shape(z) != np.shape(ground_.classes):
+        return ground_
+    x0, x1, y0, y1 = extent
+    _, lat = Transformer.from_crs(crs, 4326, always_xy=True).transform((x0 + x1) / 2, (y0 + y1) / 2)
+    mask = landcover.glacier_mask(glaciers, extent, np.shape(z))
+    out, share = landcover.rock_for_snow(ground_, z, lat, mask)
+    if share > 0:
+        log(f"[ground] snow and ice below the snowline where OpenStreetMap maps no glacier: drawn as rock "
+            f"({f'{share * 100:.0f} %' if share >= 0.005 else 'under 1 %'} of the map)")
+    return out
+
+
 def run(sel, pool, a, log=print):
     """sel: the activities after the type/year filters; pool: every activity of the export (for the places).
     Returns the exit code, as race.run."""
@@ -115,7 +152,7 @@ def run(sel, pool, a, log=print):
         log(f"[osm] STOP: {ex}. Nothing was sent or exported.")
         return 2
     try:
-        folder = area.fetch_basemap(big, log=log, extra=("peaks",))
+        folder = area.fetch_basemap(big, log=log, extra=("peaks", "glacier"))
         basemap = render.load_basemap(folder, big, crs)
     except RuntimeError as ex:
         log(f"[osm] STOP: {ex}. Run the same command again later.")
@@ -127,6 +164,7 @@ def run(sel, pool, a, log=print):
     relief_ = relief.prepare_many([(extent, crs, map_w)], log=log)[0] if mode == "shade" else None
     ground = getattr(a, "ground", None) or "nature"  # the colours of the land: on unless --ground style
     ground_ = landcover.prepare_many([(extent, crs, map_w)], log=log)[0] if ground == "nature" else None
+    ground_ = ice_or_rock(ground_, relief_, folder, extent, crs, log=log)
     inv = Transformer.from_crs(crs, 4326, always_xy=True)
     mid_lon, mid_lat = inv.transform(*np.median(np.asarray(pieces[0][1].coords), axis=0))
     city, region, country = area.place_region(round(float(mid_lat), 2), round(float(mid_lon), 2), lang=a.lang)

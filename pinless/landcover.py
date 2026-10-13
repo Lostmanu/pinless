@@ -605,6 +605,64 @@ def shares(classes):
     return {int(v): float(c) / classes.size for v, c in zip(values, counts)}
 
 
+# --- snow and ice, or pale rock --------------------------------------------------------------------------------------
+
+# WorldCover's snow and ice also takes in pale rock: the dolomite scree north of the Tre Cime di Lavaredo, at 2270 to
+# 2470 m, is a band of it 1.5 km wide, though no glacier lies there. Below the snowline the class is ice only where
+# OpenStreetMap maps a glacier (the tongues of the Alps reach down to 1500 m); elsewhere it is drawn as bare land.
+# SNOWLINE: (degrees from the equator, metres) of a low snowline, under the regional snowlines of the world's mountains
+# (5000 m and more in the tropics and the subtropics, about 2900 m in the Alps, 1500 m in Norway, near the sea in
+# Svalbard), so that the high snowfields of a land OpenStreetMap maps few glaciers in stay white.
+SNOWLINE = ((0.0, 4500.0), (30.0, 4500.0), (35.0, 3800.0), (40.0, 3200.0), (45.0, 2700.0), (50.0, 2200.0),
+            (55.0, 1700.0), (60.0, 1200.0), (65.0, 800.0), (70.0, 400.0), (75.0, 0.0))
+
+
+def snowline(lat):
+    """The low snowline (m) at a latitude: SNOWLINE, interpolated."""
+    lats, heights = zip(*SNOWLINE)
+    return float(np.interp(abs(float(lat)), lats, heights))
+
+
+def glacier_mask(polygons, extent, shape):
+    """bool (H, W), row 0 north: the pixels of the map raster whose centre lies in one of the polygons (shapely
+    Polygons or MultiPolygons in map units, holes kept)."""
+    from matplotlib.path import Path
+
+    x0, x1, y0, y1 = extent
+    H, W = shape
+    out = np.zeros(shape, dtype=bool)
+    for poly in polygons:
+        for part in getattr(poly, "geoms", [poly]):
+            if part.is_empty:
+                continue
+            bx0, by0, bx1, by1 = part.bounds
+            c0, c1 = max(0, math.floor((bx0 - x0) / (x1 - x0) * W)), min(W, math.ceil((bx1 - x0) / (x1 - x0) * W))
+            r0, r1 = max(0, math.floor((y1 - by1) / (y1 - y0) * H)), min(H, math.ceil((y1 - by0) / (y1 - y0) * H))
+            if c0 >= c1 or r0 >= r1:
+                continue
+            X, Y = np.meshgrid(x0 + (np.arange(c0, c1) + 0.5) * (x1 - x0) / W,
+                               y1 - (np.arange(r0, r1) + 0.5) * (y1 - y0) / H)
+            pts = np.column_stack([X.ravel(), Y.ravel()])
+            inside = Path(np.asarray(part.exterior.coords)).contains_points(pts)
+            for hole in part.interiors:
+                inside &= ~Path(np.asarray(hole.coords)).contains_points(pts)
+            out[r0:r1, c0:c1] |= inside.reshape(r1 - r0, c1 - c0)
+    return out
+
+
+def rock_for_snow(cover, z, lat, glacier):
+    """(the land cover, the share of the map redrawn): its snow and ice drawn as bare land where it lies below the
+    snowline (snowline(lat)) and outside the glaciers (glacier: a mask of the map raster). z: the heights of the map
+    raster. The dryness is the land cover's own, measured with the snow in it: a mountain stays a mountain."""
+    classes = np.asarray(cover.classes)
+    rock = (classes == SNOW) & ~np.asarray(glacier, dtype=bool) & (np.asarray(z) < snowline(lat))
+    if not rock.any():
+        return cover, 0.0
+    out = classes.copy()
+    out[rock] = BARE
+    return LandCover(out, cover.level, cover.dry), float(rock.mean())
+
+
 # --- colour difference (CIEDE2000) ----------------------------------------------------------------------------------
 
 def lab(rgb):

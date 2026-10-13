@@ -172,6 +172,9 @@ def test_an_older_cache_gets_its_coast_and_summits_for_its_own_whole_box(tmp_pat
     assert area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lambda *_: None,
                               extra=("peaks",)) == folder
     assert [t for _, t in asked] == [{"natural": "coastline"}, {"natural": "peak"}], "the trail print does, once"
+    assert area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lambda *_: None,
+                              extra=("peaks", "glacier")) == folder
+    assert [t for _, t in asked][2:] == [{"natural": "glacier"}], "and the glaciers, once"
     assert {a[0] for a in asked} == {(-3.8, 40.3, -3.6, 40.5)}, "the folder's own box (west, south, east, north)"
     assert len(gpd.read_file(os.path.join(folder, "coast.gpkg"))) == 0
     assert len(gpd.read_file(os.path.join(folder, "peaks.gpkg"))) == 0
@@ -203,7 +206,8 @@ def _empty_answer():
 
 
 @pytest.mark.parametrize("layer, tags, said", [("coast", {"natural": "coastline"}, "this map has no sea"),
-                                               ("peaks", {"natural": "peak"}, "this map names none")])
+                                               ("peaks", {"natural": "peak"}, "this map names none"),
+                                               ("glacier", {"natural": "glacier"}, "snow and ice is drawn as it is")])
 def test_a_missing_coast_or_summits_do_not_stop_the_map(tmp_path, monkeypatch, layer, tags, said):
     # the coast only paints the sea and the summits only name the hills: if no server answers, draw without them and
     # cache nothing (the next run retries)
@@ -217,7 +221,8 @@ def test_a_missing_coast_or_summits_do_not_stop_the_map(tmp_path, monkeypatch, l
     monkeypatch.setattr(socket, "gethostbyname_ex", lambda h: (h, [], ["192.0.2.1"]))
     monkeypatch.setattr(ox, "graph_from_bbox", lambda *a, **k: _tiny_graph())
     monkeypatch.setattr(ox, "features_from_bbox", lambda box_, tags: features(box_, tags))
-    folder = area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lines.append, extra=("peaks",))
+    folder = area.fetch_basemap((40.40, -3.71, 40.42, -3.68), root=str(tmp_path), log=lines.append,
+                                extra=("peaks", "glacier"))
     assert os.path.exists(os.path.join(folder, "green.gpkg"))
     assert not os.path.exists(os.path.join(folder, f"{layer}.gpkg"))
     assert any(said in s for s in lines)

@@ -1245,3 +1245,73 @@ def test_a_town_on_the_trail_map_is_baked_with_the_smooth_shade_and_its_contours
     far = (slice(None), slice(3 * W // 4, None))
     assert (seen["shade"][town] == -0.6).all() and (seen["shade"][far] == 0.6).all(), "baked: smooth over the town"
     assert np.allclose(seen["z"][town], z[town] - 40) and np.array_equal(seen["z"][far], z[far]), "the same heights"
+
+
+# --- snow and ice, or pale rock ----------------------------------------------------------------------------------------
+
+def test_the_snowline_falls_from_the_tropics_to_the_poles_and_is_the_same_south():
+    assert landcover.snowline(0) == landcover.snowline(-25) == 4500
+    assert 2500 < landcover.snowline(46.6) < 2600, "the Dolomites: under the Alps' snowline of about 2900 m"
+    assert landcover.snowline(-46.6) == landcover.snowline(46.6)
+    assert landcover.snowline(61) < 1500 and landcover.snowline(78) == landcover.snowline(-85) == 0
+    lats = np.linspace(0, 90, 91)
+    assert np.all(np.diff([landcover.snowline(v) for v in lats]) <= 0), "never higher nearer the poles"
+
+
+def test_glaciers_are_rasterised_by_pixel_centre_with_their_holes():
+    from shapely.geometry import MultiPolygon, Polygon
+
+    extent, shape = (0.0, 100.0, 0.0, 50.0), (5, 10)  # pixels of 10 m, row 0 north
+    ring = Polygon([(10, 10), (60, 10), (60, 40), (10, 40)], [[(30, 20), (40, 20), (40, 30), (30, 30)]])
+    far = Polygon([(500, 500), (600, 500), (600, 600)])  # off the map
+    mask = landcover.glacier_mask([MultiPolygon([ring]), far], extent, shape)
+    want = np.zeros(shape, bool)
+    want[1:4, 1:6] = True  # centres 15 to 55 m east, 15 to 35 m north
+    want[2, 3] = False  # the hole: the centre (35, 25)
+    assert np.array_equal(mask, want)
+    assert not landcover.glacier_mask([], extent, shape).any()
+
+
+def test_snow_below_the_snowline_is_rock_unless_osm_maps_a_glacier_there():
+    """The Tre Cime di Lavaredo (46.6 degrees north): WorldCover's snow on the scree at 2350 m is drawn as bare land,
+    but kept on an OSM glacier at that height and above the snowline anywhere; the dryness is the cover's own."""
+    classes = np.full((4, 6), landcover.GRASS, np.uint8)
+    classes[:, :4] = landcover.SNOW
+    z = np.full((4, 6), 2350.0)
+    z[0] = 2900.0  # a high north face
+    glacier = np.zeros((4, 6), bool)
+    glacier[:, 3] = True
+    cover = landcover.LandCover(classes, 2, 0.25)
+    out, share = landcover.rock_for_snow(cover, z, 46.6, glacier)
+    want = classes.copy()
+    want[1:, :3] = landcover.BARE
+    assert np.array_equal(out.classes, want) and share == pytest.approx(9 / 24)
+    assert (out.level, out.dry) == (2, 0.25) and np.array_equal(cover.classes, classes), "the input is kept"
+    same, none = landcover.rock_for_snow(cover, z, 78.0, glacier)  # Svalbard: snow down to the sea
+    assert same is cover and none == 0.0
+
+
+def test_the_trail_print_draws_snow_below_the_snowline_as_rock_only_with_heights_and_glaciers(monkeypatch, tmp_path):
+    import geopandas as gpd
+    from shapely.geometry import box as sbox
+
+    from pinless import trail
+
+    crs = render.utm_crs(12.30, 46.62)
+    x, y = Transformer.from_crs(4326, crs, always_xy=True).transform(12.30, 46.62)
+    extent = (x - 1000.0, x + 1000.0, y - 1000.0, y + 1000.0)
+    shape = (20, 20)
+    classes = np.full(shape, landcover.SNOW, np.uint8)
+    cover = landcover.LandCover(classes, 0, 0.0)
+    rel = relief.Relief(np.zeros(shape, np.float32), "glo30", 0, 0.5, z=np.full(shape, 2350.0, np.float32))
+    logs = []
+    assert trail.ice_or_rock(cover, rel, str(tmp_path), extent, crs, log=logs.append) is cover, "no glacier layer"
+    west = Transformer.from_crs(crs, 4326, always_xy=True).transform(x - 1000.0, y)[0]
+    gpd.GeoDataFrame({"natural": ["glacier"]}, geometry=[sbox(west - 0.01, 46.60, 12.30, 46.64)],
+                     crs=4326).to_file(tmp_path / "glacier.gpkg")
+    assert trail.ice_or_rock(cover, None, str(tmp_path), extent, crs, log=logs.append) is cover, "no heights"
+    assert not logs
+    out = trail.ice_or_rock(cover, rel, str(tmp_path), extent, crs, log=logs.append)
+    assert (out.classes[:, :10] == landcover.SNOW).all() and (out.classes[:, 10:] == landcover.BARE).all()
+    assert logs == ["[ground] snow and ice below the snowline where OpenStreetMap maps no glacier: drawn as rock "
+                    "(50 % of the map)"]

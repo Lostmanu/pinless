@@ -749,7 +749,7 @@ def test_a_full_trail_run_writes_png_pdf_and_preview(monkeypatch, tmp_path, caps
                      "--preview", str(folder / "t.jpg"), "--color-by", "elevation"]) == 0
     assert sorted(p.name for p in folder.iterdir()) == ["t.jpg", "t.pdf", "t.png"]
     assert all((folder / f).stat().st_size > 0 for f in ("t.jpg", "t.pdf", "t.png"))
-    assert [s[2] for s in captured["info"]["summits"]] == ["PEÑALARA 2428 m"] and captured["extra"] == ("peaks",)
+    assert [s[2] for s in captured["info"]["summits"]] == ["PEÑALARA 2428 m"] and captured["extra"] == ("peaks", "glacier")
     assert captured["info"]["legend"]["mode"] == "elevation" and captured["date"] == START
     pdf = (folder / "t.pdf").read_bytes()
     assert b"CreationDate" not in pdf and b"hike.gpx" not in pdf
