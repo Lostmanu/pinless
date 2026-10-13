@@ -1,6 +1,9 @@
 """The trail print (one route on a topographic map): its numbers, its summits, its privacy and its command line."""
 import datetime as dt
+import glob
 import itertools
+import os
+from xml.etree import ElementTree
 
 import geopandas as gpd
 import numpy as np
@@ -735,35 +738,57 @@ def test_a_style_file_draws_the_trail(monkeypatch, tmp_path):
     assert (tmp_path / "t.png").stat().st_size > 0
 
 
-def test_the_demo_hike_reads_as_one_synthetic_loop():
-    import os
+# Every demo hike of tools/simulate_hike.py: the box its middle lies in (south, west, north, east), its route type,
+# its length (km) and high point (m), and the minutes it stands still
+DEMO_HIKES = {
+    "hike_demo.gpx": ((40.79, -4.02, 40.88, -3.90), "loop", (12.5, 13.5), (2400, 2440), 35,
+                      "round Penalara (2428 m), with stops of 20 and 15 minutes"),
+    "hike_desert_demo.gpx": ((36.98, -2.56, 37.10, -2.36), "out_and_back", (14.5, 15.5), (670, 690), 20,
+                             "up the badlands of the Desierto de Tabernas below El Puntal, 20 minutes at the top"),
+    "hike_dolomites_demo.gpx": ((46.60, 12.28, 46.64, 12.32), "loop", (9.5, 10.5), (2440, 2465), 40,
+                                "round the Tre Cime di Lavaredo over the Forcella Lavaredo (2454 m), with stops of "
+                                "10 and 30 minutes"),
+    "hike_alps_demo.gpx": ((45.95, 6.86, 45.99, 6.92), "out_and_back", (6.3, 6.8), (2350, 2375), 30,
+                           "above Chamonix up to Lac Blanc (2352 m), 30 minutes by the lake"),
+    "hike_coast_demo.gpx": ((32.73, -16.71, 32.76, -16.68), "out_and_back", (6.0, 6.8), (100, 115), 25,
+                            "on the Ponta de Sao Lourenco (Madeira) over the cliffs by the Pedra Furada, 25 minutes "
+                            "at the Casa do Sardinha"),
+}
 
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "demo", "hike_demo.gpx")
-    (act,), rep = ingest.read_export(path)
-    assert rep.used == 1 and act.type == "Hike" and act.ele and act.times
-    crs = trail.render.utm_crs(*np.median(np.asarray(act.lonlat), axis=0))
-    tr = trail.Transformer.from_crs(4326, crs, always_xy=True)
-    xy = np.column_stack(tr.transform(*np.asarray(act.lonlat).T))
-    assert render_trail.route_type(xy) == "loop" and 12.5 < render_trail.along(xy)[-1] / 1000 < 13.5
-    assert 2400 < render_trail.high_point(xy, act.ele)[1] < 2440, "over Penalara (2428 m)"
-    secs, paused = render_trail.moving_time(xy, act.times, act.ele)
-    assert paused and act.times[-1] - secs == pytest.approx(35 * 60, abs=120), "the two stops, 20 and 15 minutes"
+
+def _demo(name):
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "demo", name)
 
 
-def test_the_desert_demo_hike_reads_as_one_synthetic_out_and_back():
-    import os
-
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "demo", "hike_desert_demo.gpx")
-    (act,), rep = ingest.read_export(path)
+@pytest.mark.parametrize("name", sorted(DEMO_HIKES))
+def test_each_demo_hike_reads_as_one_synthetic_walk_of_its_route(name):
+    (s, w, n, e), kind, (km_lo, km_hi), (top_lo, top_hi), stopped, what = DEMO_HIKES[name]
+    (act,), rep = ingest.read_export(_demo(name))
     assert rep.used == 1 and act.type == "Hike" and act.ele and act.times
     lon, lat = np.median(np.asarray(act.lonlat), axis=0)
-    assert 36.98 < lat < 37.10 and -2.56 < lon < -2.36, "in the Desierto de Tabernas"
+    assert s < lat < n and w < lon < e, what
     crs = trail.render.utm_crs(lon, lat)
     xy = np.column_stack(trail.Transformer.from_crs(4326, crs, always_xy=True).transform(*np.asarray(act.lonlat).T))
-    assert render_trail.route_type(xy) == "out_and_back" and 14.5 < render_trail.along(xy)[-1] / 1000 < 15.5
-    assert 670 < render_trail.high_point(xy, act.ele)[1] < 690, "up the badlands below El Puntal"
+    assert render_trail.route_type(xy) == kind and km_lo < render_trail.along(xy)[-1] / 1000 < km_hi, what
+    assert top_lo < render_trail.high_point(xy, act.ele)[1] < top_hi, what
+    assert min(act.ele) > 0, "never below the sea: a neck the elevation model masks as sea is crossed above it"
     secs, paused = render_trail.moving_time(xy, act.times, act.ele)
-    assert paused and act.times[-1] - secs == pytest.approx(20 * 60, abs=120), "the stop at the top, 20 minutes"
+    assert paused and act.times[-1] - secs == pytest.approx(stopped * 60, abs=120), what
+
+
+def test_every_demo_hike_is_checked_and_says_it_is_synthetic_with_its_sources():
+    names = {os.path.basename(p) for p in glob.glob(_demo("hike_*.gpx"))}
+    assert names == set(DEMO_HIKES), "a demo hike without its check above, or a check without its file"
+    ns = {"g": "http://www.topografix.com/GPX/1/1"}
+    for name in sorted(names):
+        root = ElementTree.parse(_demo(name)).getroot()
+        assert "synthetic" in root.get("creator") and len(root.findall("g:trk", ns)) == 1, name
+        desc = root.find("g:metadata/g:desc", ns).text
+        assert "Synthetic hike" in desc and "nobody's real data" in desc, name
+        assert "© OpenStreetMap contributors, ODbL" in desc and "Copernicus WorldDEM-30" in desc, name
+        rights = root.find("g:metadata/g:copyright", ns)
+        assert rights.get("author") == "OpenStreetMap contributors", name
+        assert rights.find("g:license", ns).text == "https://opendatacommons.org/licenses/odbl/1-0/", name
 
 
 def test_a_planned_route_without_clock_or_heights_still_draws(monkeypatch, tmp_path):

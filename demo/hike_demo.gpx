@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gpx creator="pinless simulate_hike (synthetic)" version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
-<metadata><desc>Synthetic hike for the Pinless demo: nobody's real data.</desc></metadata>
+<metadata><desc>Synthetic hike for the Pinless demo: nobody's real data. The line follows OpenStreetMap paths with simulated GPS noise, and the clock and the stops are simulated (Tobler's hiking function). Paths: &#169; OpenStreetMap contributors, ODbL. Heights: sampled from the Copernicus DEM GLO-30, produced using Copernicus WorldDEM-30 &#169; DLR e.V. 2010-2014 and &#169; Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.</desc><copyright author="OpenStreetMap contributors"><license>https://opendatacommons.org/licenses/odbl/1-0/</license></copyright></metadata>
 <trk><name>Penalara desde Cotos</name><type>hiking</type><trkseg>
 <trkpt lat="40.822347" lon="-3.962280"><ele>1848.5</ele><time>2025-07-12T07:40:00Z</time></trkpt>
 <trkpt lat="40.822450" lon="-3.962327"><ele>1845.2</ele><time>2025-07-12T07:40:10Z</time></trkpt>
