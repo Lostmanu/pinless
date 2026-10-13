@@ -227,7 +227,7 @@ def test_summit_labels_and_triangles_have_a_halo_in_the_paper_colour():
     for patch in ax.patches:
         (halo,) = patch.get_path_effects()
         assert to_rgba(halo._gc["foreground"]) == to_rgba(S["bg"]) and halo._gc["linewidth"] == render_trail.HALO_PT
-        assert to_rgba(patch.get_facecolor()) == to_rgba(S["sub"])
+        assert to_rgba(patch.get_facecolor()) == to_rgba(S["ink"]), "in the ink: they read over the relief"
     plt.close(fig)
 
 
@@ -830,3 +830,80 @@ def test_a_single_file_is_warned_about_and_drawn_whatever_its_type_on_every_layo
     assert cli.main(["x.zip"]) == 2
     out = capsys.readouterr().out
     assert "this export has: other 1, Hike 1" in out and "Calle Mayor" not in out, "a file's own type is never logged"
+
+
+def _rows(monkeypatch):
+    """Every text the page sets through its page axes: (value, x, y, the place_text keywords)."""
+    seen = []
+    real = atlas.place_text
+
+    def spy(value, x, y, k, pt=9, font=None, align="left", max_w=None, height=None, clear=None):
+        if (x, y) != (0, 0):
+            seen.append((str(value), x, y, k, dict(pt=pt, font=font, max_w=max_w, height=height)))
+        return real(value, x, y, k, pt, font, align, max_w, height, clear)
+
+    monkeypatch.setattr(atlas, "place_text", spy)
+    return seen
+
+
+def _baselines(seen, top, bottom):
+    """{value: [(x, baseline in A3-grid mm)]} of the texts set with their top between top and bottom."""
+    out = {}
+    for value, x, y, k, kw in seen:
+        if top <= y <= bottom:
+            out.setdefault(value, []).append((x, y + render_editorial.baseline_of(value, k, **kw)))
+    return out
+
+
+def test_the_units_sit_on_the_baseline_of_their_numbers(monkeypatch, tmp_path):
+    from pinless import render_race
+    seen = _rows(monkeypatch)
+    for size in ("A3", "A4"):
+        del seen[:]
+        _page(tmp_path, size=size)
+        row = _baselines(seen, render_trail.NUMBERS_TOP, render_trail.NUMBERS_TOP + 13)
+        units = [(u, x, b) for u in ("km", "m", "h") for x, b in row.get(u, [])]
+        assert len(units) == 4, "km, m, m and h"
+        for unit, x, b in units:  # the number just left of the unit
+            value = max((v for v in row if v not in ("km", "m", "h")), key=lambda v: max(
+                (xx for xx, _ in row[v] if xx < x), default=-1))
+            assert b == pytest.approx(row[value][0][1], abs=0.1), f"{size} {unit}: on {value}'s baseline"
+    del seen[:]
+    xy = np.column_stack([np.linspace(0, 5000, 501), 800 * np.sin(np.linspace(0, 3, 501))])
+    act = _hike(xy, kind="Run", speed=3.3)
+    render_race.render(act, xy, [(0, LineString(xy[30:-30]))], (EMPTY, EMPTY, EMPTY), (-500, 5500, -2500, 2500),
+                       str(tmp_path / "race.png"), dpi=20, title="Spring 5K", name="Lucia", date=act.start)
+    ytop = min(y for v, x, y, k, kw in seen if v in ("km", "/km")) - 6
+    row = _baselines(seen, ytop - 2, ytop + 12)
+    for unit in ("km", "/km", "m"):
+        (x, b), = row[unit]
+        value = max((v for v in row if v not in ("km", "/km", "m")),
+                    key=lambda v: max((xx for xx, _ in row[v] if xx < x), default=-1))
+        assert b == pytest.approx(row[value][0][1], abs=0.1), f"race {unit}: on {value}'s baseline"
+
+
+def test_the_profile_is_one_opaque_gradient_under_a_bolder_line(monkeypatch, tmp_path):
+    from matplotlib.colors import to_rgb
+    images = []
+    real_fill = render_trail.draw_profile_fill
+    monkeypatch.setattr(render_trail, "draw_profile_fill",
+                        lambda *a, **k: images.append(real_fill(*a, **k)) or images[-1])
+    info, act, xy = _page(tmp_path)
+    (im,) = images
+    a = np.asarray(im.get_array())
+    assert a.shape == (256, 1, 3) and a.dtype == np.uint8, "opaque: no alpha, so no soft mask in a PDF"
+    S = render_editorial.STYLES["huella"]
+    paper, line = np.asarray(to_rgb(S["bg"])) * 255, np.asarray(to_rgb(info["course_ink"])) * 255
+    for row, t in ((0, render_trail.PROFILE_FILL[0]), (-1, render_trail.PROFILE_FILL[1])):
+        assert np.abs(a[row, 0] - (paper + (line - paper) * t)).max() <= 1, "pre-composited on the paper"
+    assert im.get_clip_path() is not None, "clipped to the area under the line"
+    assert im.get_extent()[3] == pytest.approx(max(render_trail.profile(xy, act.ele)[1])), "row 0 at the top"
+
+
+def test_summits_are_set_in_the_ink_and_keep_clear_of_the_bolder_course():
+    assert (render_trail.PEAK_PT, render_trail.HALO_PT, render_trail.COURSE_PT, render_trail.CASING_PT) == \
+        (6.2, 1.9, 2.3, 4.3)
+    assert render_trail.ROUTE_CLEAR_MM == pytest.approx(4.3 * render_trail.PT_MM / 2 + render_trail.ROUTE_GAP_MM)
+    assert render_trail.ROUTE_CLEAR_MM > render_trail.CASING_PT * render_trail.PT_MM / 2, "clear of the casing"
+
+

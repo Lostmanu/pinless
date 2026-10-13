@@ -21,6 +21,8 @@ import shapely
 from matplotlib import patheffects
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap, to_hex, to_rgb
 from matplotlib.patches import PathPatch, Polygon as MPolygon, Rectangle
+from matplotlib.path import Path as MPath
+from PIL import Image, ImageFilter
 from shapely.geometry import LineString, box as _box
 
 from . import landcover, privacy
@@ -30,7 +32,7 @@ from .relief import raster_shape as relief_raster_shape
 from .render import MAJOR, MINOR, MM, SIZES, _hw
 from .render_editorial import DISPLAY, PRINT_TOL_MM, REGULAR, STYLES, TEXT, _clip_simplify, _keep_alpha, _line_path
 from .render_editorial import _lstar, _parts, _poly_path, _relief_alpha, draw_basemap, draw_relief, draw_routes
-from .render_editorial import footer_credits
+from .render_editorial import baseline_of, footer_credits
 from .render_editorial import place_text, svg_rc
 from .render_race import MONTHS, along, climb, pace_along, profile, restrict, vertex_positions
 from .render_sport import _num
@@ -47,10 +49,12 @@ SMOOTH_S, STEP_S = 20.0, 5.0  # the track along which a pause must be slow too: 
 FLAT_M = 20.0  # a stretch that climbs less than this from its lowest to its highest point is not coloured by height
 PROFILE_SPAN_M = 50.0  # the profile band shows at least this many metres of height
 MAX_PEAKS = 6
-PEAK_PT = 5.4  # summit labels (pt x k)
-HALO_PT = 1.2  # their halo in the paper colour, all round (pt x k)
-CASING_PT = 3.4  # the course's casing in the paper colour (pt x k), as on the race print
+PEAK_PT = 6.2  # summit labels (pt x k)
+HALO_PT = 1.9  # their halo in the paper colour, all round (pt x k)
+COURSE_PT = 2.3  # the course (pt x k)
+CASING_PT = 4.3  # its casing in the paper colour (pt x k)
 PT_MM = 25.4 / 72
+PROFILE_FILL = (0.42, 0.04)  # the profile's gradient: this share of the way from the paper to the line, top to bottom
 ROUTE_TYPES = {"loop": ("LOOP", "CIRCULAR"), "out_and_back": ("OUT & BACK", "IDA Y VUELTA"),
                "point_to_point": ("POINT TO POINT", "LINEAL")}
 
@@ -483,14 +487,9 @@ def _grid_xy(extent, x, y, map_h=MAP_H):
             MAP_TOP + (y1 - np.asarray(y)) / (y1 - y0) * map_h)
 
 
-TRI_W, TRI_UP, TRI_DOWN = 1.9, 1.1, 0.55  # the summit triangle (grid mm): width, apex above and base below the point
+TRI_W, TRI_UP, TRI_DOWN = 2.4, 1.4, 0.7  # the summit triangle (grid mm): width, apex above and base below the point
 EDGE_MM, GAP_MM, ROUTE_GAP_MM = 1.2, 0.8, 0.5
 ROUTE_CLEAR_MM = CASING_PT * PT_MM / 2 + ROUTE_GAP_MM  # a summit label keeps this far from the course's centre line
-
-
-def _baseline(value, k, **kw):
-    """How far below its top (A3-grid mm) place_text sets the baseline of a text."""
-    return float(place_text(value, 0, 0, k, **kw)[1].transform((0, 0))[1]) / k
 
 
 def peak_label(name, ele):
@@ -548,20 +547,40 @@ def place_peaks(peaks, extent, k, course, max_n=MAX_PEAKS, map_h=MAP_H):
 
 
 def draw_summits(ax, summits, S, k):
-    """The placed summits (place_peaks) on the page axes (millimetres, y down): a triangle and the label in the sub
-    colour, both with a thin halo in the paper colour, so a path or a contour that runs under a name does not run
+    """The placed summits (place_peaks) on the page axes (millimetres, y down): a triangle and the label in the ink,
+    both with a halo in the paper colour, so a path, a contour or a shadow that runs under a name does not run
     through its letters, as on a topographic map."""
     halo = [patheffects.withStroke(linewidth=HALO_PT * k, foreground=S["bg"])]
     for gx, gy, text, _, (lx, ly) in summits:
         tri = [((gx - TRI_W / 2) * k, (gy + TRI_DOWN) * k), ((gx + TRI_W / 2) * k, (gy + TRI_DOWN) * k),
                (gx * k, (gy - TRI_UP) * k)]
-        ax.add_patch(MPolygon(tri, closed=True, facecolor=S["sub"], edgecolor="none", lw=0, path_effects=halo))
+        ax.add_patch(MPolygon(tri, closed=True, facecolor=S["ink"], edgecolor="none", lw=0, path_effects=halo))
         path, trans, _, _ = place_text(text, lx, ly, k, PEAK_PT, TEXT)
-        ax.add_patch(PathPatch(path, transform=trans + ax.transData, color=S["sub"], lw=0, snap=False,
+        ax.add_patch(PathPatch(path, transform=trans + ax.transData, color=S["ink"], lw=0, snap=False,
                                path_effects=halo))
 
 
 # --- the page ---------------------------------------------------------------------------------------------------------
+
+UNIT_PT, UNIT_GAP_MM = 11, 1.2  # the units beside the numbers (pt x k, A3-grid mm), on the numbers' baseline
+
+
+def draw_profile_fill(pax, x, e, base, line, paper):
+    """The area under the profile as ONE opaque image of 256 x 1 pixels, a gradient pre-composited on the paper from
+    PROFILE_FILL[0] of the way to the line colour at the profile's top to PROFILE_FILL[1] at its foot, clipped to the
+    area under the line. Opaque: a PDF holds it without a soft mask."""
+    t = np.linspace(*PROFILE_FILL, 256)[:, None, None]  # row 0 at the top
+    p, c = np.asarray(to_rgb(paper)), np.asarray(to_rgb(line))
+    img = np.clip(np.round((p + (c - p) * t) * 255), 0, 255).astype(np.uint8)
+    top = float(np.max(e))
+    im = pax.imshow(img, extent=(float(x[0]), float(x[-1]), base, top), aspect="auto", origin="upper",
+                    interpolation="none", zorder=1)
+    verts = np.concatenate([[[x[0], base]], np.column_stack([x, e]), [[x[-1], base], [x[0], base]]])
+    codes = np.full(len(verts), MPath.LINETO, dtype=np.uint8)
+    codes[0], codes[-1] = MPath.MOVETO, MPath.CLOSEPOLY
+    im.set_clip_path(PathPatch(MPath(verts, codes), transform=pax.transData))
+    return im
+
 
 def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella", size="A3", dpi=300, title="",
            place="", name="", date=None, lang="en", color_by="single", pdf_path=None, svg_path=None, preview_path=None,
@@ -655,24 +674,23 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     if len(segments):  # a casing in the paper colour lifts the course off the paths
         ax.add_patch(PathPatch(_line_path(list(segments)), fill=False, edgecolor=S["bg"], linewidth=CASING_PT * k,
                                capstyle="round", joinstyle="round", zorder=4.8))
-    draw_routes(ax, segments, np.full(len(segments), 30.0), 3.0, cmap, k, base=1.7, gain=0.0,
+    draw_routes(ax, segments, np.full(len(segments), 30.0), 3.0, cmap, k, base=COURSE_PT, gain=0.0,
                 glow=S.get("glow", 0.0), values=values)
     summits = place_peaks(peaks, extent, k, coords, map_h=grid_h)
     draw_summits(page.ax, summits, S, k)
 
-    # elevation profile under the map, its highest point marked
+    # elevation profile under the map: the course's line over a gradient from it to the paper, the high point marked
     hi_point = None
     if ele:
         d, e = profile(xy, ele)
         span = max(e.max() - e.min(), PROFILE_SPAN_M)  # a flat route stays flat, not a sawtooth of altimeter noise
-        base, top = e.min() - 0.15 * span, e.max() + 0.30 * span
+        base, top = e.min() - 0.08 * span, e.max() + 0.24 * span
         pax = fig.add_axes([LEFT * k / wmm, 1 - (PROFILE_TOP + PROFILE_H) * k / hmm, (RIGHT - LEFT) * k / wmm,
                             PROFILE_H * k / hmm], zorder=2)
         pax.set_facecolor("none")
-        fill, line = (S["accent"], S["accent"]) if legend["mode"] == "single" else (S["heat"][0], S["heat"][3])
-        pax.fill_between(d / 1000, base, e, color=fill, alpha=0.22 if legend["mode"] == "single" else 0.55,
-                         linewidth=0)
-        pax.plot(d / 1000, e, color=line, linewidth=0.9 * k)
+        line = ink if legend["mode"] == "single" else S["heat"][3]
+        draw_profile_fill(pax, d / 1000, e, base, line, S["bg"])
+        pax.plot(d / 1000, e, color=line, linewidth=1.1 * k, solid_capstyle="round", zorder=2)
         pax.set_xlim(0, d[-1] / 1000)
         pax.set_ylim(base, top)
         pax.axis("off")
@@ -680,10 +698,10 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
         hi_point = he
         gx = LEFT + hd / d[-1] * (RIGHT - LEFT)
         gy = PROFILE_TOP + (top - he) / (top - base) * PROFILE_H
-        page.ax.add_patch(plt.Circle((gx * k, gy * k), 0.55 * k, color=S["ink"], lw=0, zorder=3))
+        page.ax.add_patch(plt.Circle((gx * k, gy * k), 0.75 * k, color=S["ink"], lw=0, zorder=3))
         label = f"{he:.0f} m"
-        _, _, lw_, lh_ = place_text(label, 0, 0, k, 5.6, TEXT)
-        T(min(max(gx, LEFT + lw_ / 2), RIGHT - lw_ / 2), gy - 1.1 - lh_, label, pt=5.6, align="center")
+        _, _, lw_, lh_ = place_text(label, 0, 0, k, 6.0, TEXT)
+        T(min(max(gx, LEFT + lw_ / 2), RIGHT - lw_ / 2), gy - 1.3 - lh_, label, pt=6.0, align="center")
         step = km_step(d[-1])
         for km_mark in range(0, int(d[-1] // 1000) + 1, step):
             T(LEFT + km_mark * 1000 / d[-1] * (RIGHT - LEFT), PROFILE_TOP + PROFILE_H + 2, str(km_mark), pt=4.4,
@@ -705,15 +723,16 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
              (fmt_hours(secs) if secs else "—", "h" if secs else "",
               ("TIEMPO EN MOVIMIENTO" if es else "MOVING TIME") if paused else ("TIEMPO" if es else "TIME"))]
     col = (RIGHT - LEFT) / len(cells)
-    base = _baseline("0", k, pt=40, font=DISPLAY, height=11)
+    base = baseline_of("0", k, pt=40, font=DISPLAY, height=11)
     for i, (value, unit, label) in enumerate(cells):
         x = LEFT + i * col
-        unit_w = place_text(unit, 0, 0, k, 9, REGULAR)[2] + 1.5 if unit else 0.0
+        unit_w = place_text(unit, 0, 0, k, UNIT_PT, REGULAR)[2] + UNIT_GAP_MM if unit else 0.0
         fit = dict(pt=40, font=DISPLAY, max_w=col - 9 - unit_w, height=11)
         # a value shrunk to its column (POINT TO POINT) sits on the numbers' baseline, not under their top
-        w_, _ = T(x, ytop + 1 + base - _baseline(value, k, **fit), value, **fit)
-        if unit:
-            T(x + w_ + 1.5, ytop + 6.5, unit, pt=9, font=REGULAR, color=S["accent"])
+        w_, _ = T(x, ytop + 1 + base - baseline_of(value, k, **fit), value, **fit)
+        if unit:  # on the numbers' baseline
+            T(x + w_ + UNIT_GAP_MM, ytop + 1 + base - baseline_of(unit, k, pt=UNIT_PT, font=REGULAR), unit,
+              pt=UNIT_PT, font=REGULAR, color=S["accent"])
         T(x, ytop + 15, label, pt=6.0, color=S["sub"], max_w=col - 4)
 
     # footer: what the line colour means, attribution (three credit lines sit closer, and the line above them rises)

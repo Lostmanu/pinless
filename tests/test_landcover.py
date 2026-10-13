@@ -784,9 +784,9 @@ def test_the_ground_is_drawn_north_up_under_the_course_with_its_own_inks(monkeyp
     for frac, want in ((0.2, S["accent"]), (0.8, dict(render_trail.ROUTE_INKS[False])["deep red"])):
         y = y0 + frac * (y1 - y0)  # a course across the south of the map (on the rock), then across the north (woods)
         xy = np.column_stack([np.linspace(x0 + 0.25 * (x1 - x0), x1 - 0.25 * (x1 - x0), 300), np.full(300, y)])
-        seen.clear()
+        seen.clear()  # at 100 dpi the 2.3 pt course spans three rows of pixels: its middle one is all ink
         info = render_trail.render(_hike(xy), xy, [(0, LineString(xy))], (EMPTY, EMPTY, EMPTY), extent,
-                                   str(tmp_path / "ns.png"), dpi=60, style="forest",
+                                   str(tmp_path / "ns.png"), dpi=100, style="forest",
                                    ground=landcover.LandCover(classes, 0, 0.0))
         assert info["course_ink"] == want, "the ink follows the ground under the course, not the whole map's"
         png = np.asarray(Image.open(tmp_path / "ns.png").convert("RGB")).astype(int)
@@ -795,8 +795,10 @@ def test_the_ground_is_drawn_north_up_under_the_course_with_its_own_inks(monkeyp
         pal = {c: np.round(np.asarray(landcover.palette(S)[c]) * 255) for c in (landcover.TREE, landcover.BARE)}
         assert np.abs(png[int(top + 6 * k), int(left + 10 * k)] - pal[landcover.TREE]).max() <= 2, "woods north"
         assert np.abs(png[int(bottom - 6 * k), int(left + 10 * k)] - pal[landcover.BARE]).max() <= 2, "rock south"
-        on = png[int(round(top + (1 - frac) * (bottom - top))), png.shape[1] // 2]
-        assert np.abs(on - np.round(np.asarray(to_rgb(want)) * 255)).max() <= 3, "the course over the ground"
+        row = int(round(top + (1 - frac) * (bottom - top)))
+        ink = np.round(np.asarray(to_rgb(want)) * 255)
+        on = min((png[r, png.shape[1] // 2] for r in (row - 1, row, row + 1)), key=lambda c: np.abs(c - ink).max())
+        assert np.abs(on - ink).max() <= 3, "the course over the ground (its middle row of pixels)"
     painted = {"colours": {c: landcover.palette(S)[c] for c in (landcover.TREE, landcover.BARE)},
                "shares": landcover.shares(classes),
                "mean": tuple(landcover.ground_rgb(classes, S).reshape(-1, 3).mean(0) / 255)}
@@ -858,6 +860,7 @@ def test_the_ground_is_one_image_of_the_map_box_and_nothing_spills(tmp_path):
     import base64
     from matplotlib.colors import to_rgb
     pdf, svg = tmp_path / "g.pdf", tmp_path / "g.svg"
+    # the ground and the profile's gradient (256 x 1)
     info = _trail_page(tmp_path, pdf_path=str(pdf), svg_path=str(svg), name="g.png", dpi=40)
     assert info["ground"] is True
     shape = relief.raster_shape(render_trail.RIGHT - render_trail.LEFT,
@@ -865,14 +868,19 @@ def test_the_ground_is_one_image_of_the_map_box_and_nothing_spills(tmp_path):
                                                   render_trail.map_aspect(), pad_frac=0.1))
     objects = re.split(rb"\d+ 0 obj", pdf.read_bytes())
     images = [o for o in objects if b"/Subtype /Image" in o]
-    assert len(images) == 1, "one image, opaque: no soft mask"
-    w, h = int(re.search(rb"/Width (\d+)", images[0]).group(1)), int(re.search(rb"/Height (\d+)", images[0]).group(1))
-    assert (h, w) == shape
+    assert len(images) == 2 and not any(b"/SMask" in o for o in images), "two images, opaque: no soft mask"
+    sizes = sorted((int(re.search(rb"/Height (\d+)", o).group(1)), int(re.search(rb"/Width (\d+)", o).group(1)))
+                   for o in images)
+    assert sizes == sorted([shape, (256, 1)]), "the ground at the map raster, the profile's gradient"
     tags = re.findall(r"<image [^>]*>", svg.read_text(encoding="utf-8"))
-    assert len(tags) == 1
-    data = re.search(r'data:image/png;base64,([^"]+)"', tags[0]).group(1)
-    with Image.open(io.BytesIO(base64.b64decode(data))) as im:
-        assert im.size[::-1] == shape, "the SVG embeds the array as it is"
+    assert len(tags) == 2, "one SVG image per image"
+    got = []
+    for tag in tags:
+        data = re.search(r'data:image/png;base64,([^"]+)"', tag).group(1)
+        with Image.open(io.BytesIO(base64.b64decode(data))) as im:
+            got.append(im.size[::-1])
+            assert "A" not in im.mode or im.getchannel("A").getextrema() == (255, 255), "opaque"
+    assert sorted(got) == sorted([shape, (256, 1)]), "the SVG embeds the arrays as they are"
     png = np.asarray(Image.open(tmp_path / "g.png").convert("RGB")).astype(int)
     k = png.shape[1] / 297  # pixels per A3-grid millimetre
     bg = np.round(np.asarray(to_rgb(render_editorial.STYLES["huella"]["bg"])) * 255)

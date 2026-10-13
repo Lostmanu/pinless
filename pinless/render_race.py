@@ -22,11 +22,12 @@ from .atlas import _Page as Page
 from .colouring import fmt_pace
 from .render import MM, SIZES
 from .render_editorial import DISPLAY, REGULAR, STYLES, _line_path, draw_basemap, draw_routes, place_text
-from .render_editorial import draw_relief, footer_credits, svg_rc
+from .render_editorial import baseline_of, draw_relief, footer_credits, svg_rc
 from .render_sport import _num
 from .stats import fmt_time
 
 MAP_TOP, MAP_H = 90.0, 222.0
+UNIT_PT, UNIT_GAP_MM = 11, 1.2  # the units beside the numbers (pt x k, A3-grid mm), on the numbers' baseline
 MONTHS = {"en": "JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split(),
           "es": "ENE FEB MAR ABR MAY JUN JUL AGO SEP OCT NOV DIC".split()}
 
@@ -215,9 +216,12 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
              (f"+{climb(profile(xy, ele)[1]):.0f}" if ele else "—", "m", "DESNIVEL" if es else "CLIMB")]
     for i, (value, unit, label) in enumerate(cells):
         x = 18 + i * 65.25
-        w_, _ = T(x, ytop + 1, value, pt=40, font=DISPLAY, max_w=52, height=11)
-        if unit:
-            T(x + w_ + 1.5, ytop + 6.5, unit, pt=9, font=REGULAR, color=S["accent"])
+        fit = dict(pt=40, font=DISPLAY, max_w=52, height=11)
+        w_, _ = T(x, ytop + 1, value, **fit)
+        if unit:  # on the number's baseline
+            T(x + w_ + UNIT_GAP_MM, ytop + 1 + baseline_of(value, k, **fit) - baseline_of(unit, k, pt=UNIT_PT,
+                                                                                          font=REGULAR),
+              unit, pt=UNIT_PT, font=REGULAR, color=S["accent"])
         T(x, ytop + 15, label, pt=6.0, color=S["sub"])
 
     # kilometre splits: one bar per full km, the last part (if any) apart and paler; the fastest is a full km

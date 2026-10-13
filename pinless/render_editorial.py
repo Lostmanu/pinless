@@ -509,6 +509,12 @@ def place_text(value, x, y, k, pt=9, font=None, align="left", max_w=None, height
     return path, trans, width / k, (top - bottom) * scale / k
 
 
+def baseline_of(value, k, **kw):
+    """How far below its top (A3-grid mm) place_text sets the baseline of a text: a unit set beside a number sits on
+    the number's baseline when its top is the number's top plus the difference of their baselines."""
+    return float(place_text(value, 0, 0, k, **kw)[1].transform((0, 0))[1]) / k
+
+
 def place_runs(parts, x, y, k, pt=9, font=None, align="left", max_w=None, height=None, clear=None):
     """A line of text in several colours, set like one string: parts is [(text, colour), ...]. The scale and the
     transform are those of the joined string (place_text), so max_w, height and clear apply to the whole line; each
