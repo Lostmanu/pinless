@@ -288,7 +288,7 @@ The demo hikes (`demo/hike_*.gpx`) are synthetic too: nobody walked them. `tools
 - `penalara` (`demo/hike_demo.gpx`): a loop over Peñalara in the Sierra de Guadarrama.
 - `tabernas` (`demo/hike_desert_demo.gpx`): up the badlands of the Desierto de Tabernas to below El Puntal and back.
 - `trecime` (`demo/hike_dolomites_demo.gpx`): the loop round the Tre Cime di Lavaredo from the Rifugio Auronzo, kept to the marked trails (CAI 101 and 105) of OpenStreetMap's hiking relations.
-- `lacblanc` (`demo/hike_alps_demo.gpx`): from the top of the La Flégère cable car above Chamonix up to Lac Blanc and back.
+- `lacblanc` (`demo/hike_alps_demo.gpx`): from the top of the La Flégère cable car above Chamonix up to Lac Blanc, then past the Lacs des Chéserys and down to the Col des Montets.
 - `saolourenco` (`demo/hike_coast_demo.gpx`): the PR 8 out along the Ponta de São Lourenço on Madeira to the Casa do Sardinha and back; over the narrow neck that the elevation model's sea mask covers, the heights of the path on either side are joined.
 
 The tool keeps off the via ferratas that OpenStreetMap's walk network includes (each costs 50 times its length). Writing a route again needs the network once (Overpass and the elevation model; `PINLESS_OVERPASS` picks another Overpass server); from the same cache and `--seed` the file comes out byte for byte the same. The same tool walks two short loops to look at before a change to the colours of the ground: rice fields and marsh in the Ebro delta (`--route ebro`) and rock, snow and ice above Zermatt (`--route zermatt`), written under `out/`.

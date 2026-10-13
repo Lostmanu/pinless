@@ -13,7 +13,7 @@ walk network, paths and tracks preferred over roads):
   Mezzo, on the CAI trails 101 and 105; 10 minutes at the Forcella Lavaredo and 30 at the Locatelli.
 - lacblanc (the Alps demo, demo/hike_alps_demo.gpx): in Chamonix (France), from the top of the La Flegere cable car
   past the Lac de la Flegere and up to the Refuge du Lac Blanc and the shore of the lake, facing the Mont Blanc
-  massif, and back the same way; a 30 minute stop by the lake.
+  massif, then east past the Lacs des Cheserys and down to the Col des Montets; a 30 minute stop by the lake.
 - saolourenco (the coast demo, demo/hike_coast_demo.gpx): Madeira's PR 8, the Vereda da Ponta de Sao Lourenco,
   from the car park above the Baia d'Abra out along the dry peninsula between the two seas, over the Pedra Furada
   viewpoint, to the Casa do Sardinha and back the same way (the climb to the Furado beyond it is closed: access=no
@@ -82,13 +82,13 @@ ROUTES = {
                     crs=32633, start="2025-07-20T06:40:00", out="demo/hike_dolomites_demo.gpx",  # WGS 84 / UTM 33N
                     marked=True),
     # from the top of the La Flegere cable car up the path past the Lac de la Flegere to the Refuge du Lac Blanc and
-    # the dam between its two lakes, and back the same way
-    "lacblanc": dict(box=(45.950, 6.865, 45.992, 6.915),
+    # the dam between its two lakes, then east past the Lacs des Cheserys and down through the Aiguilles Rouges
+    # nature reserve to the Col des Montets
+    "lacblanc": dict(box=(45.950, 6.865, 46.005, 6.935),
                      waypoints=[("La Flegere", 45.9607, 6.8870), ("Lac de la Flegere", 45.9697, 6.8879),
                                 ("Refuge du Lac Blanc", 45.9812, 6.8916), ("Lac Blanc", 45.9822, 6.8902),
-                                ("Refuge du Lac Blanc", 45.9812, 6.8916), ("Lac de la Flegere", 45.9697, 6.8879),
-                                ("La Flegere", 45.9607, 6.8870)],
-                     stops={"Lac Blanc": 30 * 60}, name="Lac Blanc depuis La Flegere", crs=32632,
+                                ("Lacs des Cheserys", 45.9851, 6.9020), ("Col des Montets", 45.9990, 6.9230)],
+                     stops={"Lac Blanc": 30 * 60}, name="Lac Blanc et Cheserys", crs=32632,
                      start="2025-08-31T06:50:00", out="demo/hike_alps_demo.gpx"),  # WGS 84 / UTM 32N
     # PR 8 on OSM: the ways tagged fee=yes with the IFCN ticket link, from the guidepost by the roundabout at the end
     # of the ER214 to the Casa do Sardinha (the building, way 169877344); the Pedra Furada viewpoint keeps the walk

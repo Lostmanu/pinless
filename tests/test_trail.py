@@ -860,8 +860,9 @@ DEMO_HIKES = {
     "hike_dolomites_demo.gpx": ((46.60, 12.28, 46.64, 12.32), "loop", (9.5, 10.5), (2440, 2465), 40,
                                 "round the Tre Cime di Lavaredo over the Forcella Lavaredo (2454 m), with stops of "
                                 "10 and 30 minutes"),
-    "hike_alps_demo.gpx": ((45.95, 6.86, 45.99, 6.92), "out_and_back", (6.3, 6.8), (2350, 2375), 30,
-                           "above Chamonix up to Lac Blanc (2352 m), 30 minutes by the lake"),
+    "hike_alps_demo.gpx": ((45.95, 6.86, 46.00, 6.93), "point_to_point", (8.6, 9.4), (2350, 2375), 30,
+                           "above Chamonix up to Lac Blanc (2352 m), 30 minutes by the lake, and down past the Lacs "
+                           "des Cheserys to the Col des Montets"),
     "hike_coast_demo.gpx": ((32.73, -16.71, 32.76, -16.68), "out_and_back", (6.0, 6.8), (100, 115), 25,
                             "on the Ponta de Sao Lourenco (Madeira) over the cliffs by the Pedra Furada, 25 minutes "
                             "at the Casa do Sardinha"),
