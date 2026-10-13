@@ -292,44 +292,45 @@ def _keep_alpha(S, colour, cap):
 
 def relief_colours(S):
     """((shadow rgb, alpha), (light rgb, alpha)) of the relief in a style, calibrated so the relief stays quieter
-    than the faintest route ink: in L*, light styles darken by at most min(7, 0.30 route) and lighten by min(2.5,
-    0.15 route); dark styles darken by min(5, 0.5 L*bg, 0.30 route) and lighten by min(6, 0.30 route), where route is
-    the L* contrast of the first route colour.
+    than the faintest route ink: in L*, light styles darken by at most min(16, 0.5 route) and lighten by min(4, 0.2
+    route); dark styles darken by min(8, 0.6 L*bg, 0.5 route) and lighten by min(12, 0.35 route), where route is the
+    L* contrast of the first route colour. No shadow goes past an alpha of 0.60, no light past 0.70.
 
     The light side is also held to what the map under it can bear: over light paper a white veil lifts the paper by
-    only one or two L* steps while it fades the streets and parks under it by up to 60%, so its alpha is capped where
-    they keep RELIEF_KEEP of their contrast. S["relief"] overrides it all."""
+    only a few L* steps while it fades the streets and parks under it, so its alpha is capped where they keep
+    RELIEF_KEEP of their contrast. S["relief"] overrides it all."""
     if "relief" in S:
         return S["relief"]
     bg = to_rgb(S["bg"])
     lb = _lstar(bg)
     route = abs(lb - _lstar(to_rgb(S["heat"][0])))
     if lb >= 50:
-        shadow, ts, light, tl = S["ink"], min(7, 0.30 * route), "#ffffff", min(2.5, 0.15 * route)
+        shadow, ts, light, tl = S["ink"], min(16, 0.5 * route), "#ffffff", min(4, 0.2 * route)
     else:
-        shadow, ts, light, tl = "#000000", min(5, 0.5 * lb, 0.30 * route), S["ink"], min(6, 0.30 * route)
-    a_light = min(_relief_alpha(bg, to_rgb(light), tl, 0.60), _keep_alpha(S, to_rgb(light), 0.60))
-    return ((to_rgb(shadow), _relief_alpha(bg, to_rgb(shadow), ts, 0.35)), (to_rgb(light), a_light))
+        shadow, ts, light, tl = "#000000", min(8, 0.6 * lb, 0.5 * route), S["ink"], min(12, 0.35 * route)
+    a_light = min(_relief_alpha(bg, to_rgb(light), tl, 0.70), _keep_alpha(S, to_rgb(light), 0.70))
+    return ((to_rgb(shadow), _relief_alpha(bg, to_rgb(shadow), ts, 0.60)), (to_rgb(light), a_light))
+
+
+RAMP_FULL, RAMP_GAMMA = _relief.RAMP_FULL, _relief.RAMP_GAMMA
 
 
 def relief_rgba(shade, colours):
     """uint8 (H, W, 4): the shadow colour where the shade is negative, the light colour elsewhere, with alpha
-    growing with the shade up to the side's alpha at relief.FULL_AT. Flat ground (0) is fully transparent."""
+    the side's alpha * min(1, |shade| / RAMP_FULL) ** RAMP_GAMMA. Flat ground (0) is exactly transparent."""
     (shadow, a_s), (light, a_l) = colours
     s = np.asarray(shade, dtype=np.float32)
     neg = s < 0
     rgba = np.empty(s.shape + (4,), np.uint8)
     rgba[..., :3] = np.where(neg[..., None], np.round(np.asarray(shadow) * 255), np.round(np.asarray(light) * 255))
-    rgba[..., 3] = np.round(255 * np.where(neg, a_s, a_l) * np.minimum(1.0, np.abs(s) / _relief.FULL_AT))
+    ramp = np.minimum(1.0, np.abs(s) / RAMP_FULL) ** RAMP_GAMMA
+    rgba[..., 3] = np.round(255 * np.where(neg, a_s, a_l) * ramp)
     return rgba
 
 
-def draw_relief(ax, relief, extent, S, water, k, map_w_mm):
-    """The relief as ONE image of exactly the map box (interpolation 'none': a PDF or SVG embeds that array as it
-    is), between the streets (zorder 3) and the routes (4.8 and up), clipped off the water polygons that are drawn.
-    Returns whether anything was drawn."""
-    if relief.shade.shape != _relief.raster_shape(map_w_mm, extent):
-        raise ValueError("the relief raster does not match the map")
+def land_clip_path(extent, water, map_w_mm):
+    """The map box minus the water polygons that draw_basemap draws (made valid), as a Path; None when nothing of
+    the map is land. The relief and the contour lines are clipped to it, so they stay off lakes and the sea."""
     x0, x1, y0, y1 = extent
     clip = _box(x0, y0, x1, y1)
     if water is not None and len(water):
@@ -338,10 +339,23 @@ def draw_relief(ax, relief, extent, S, water, k, map_w_mm):
                                            extent, tol) for p in _parts(g, ("Polygon",))]
         if polys:  # made valid first: a self-crossing lake that draw_basemap fills would stop GEOS here
             clip = shapely.difference(clip, shapely.union_all(shapely.make_valid(np.asarray(polys, dtype=object))))
-    path = _poly_path(list(_parts(clip, ("Polygon",)))) if not clip.is_empty else None
+    return _poly_path(list(_parts(clip, ("Polygon",)))) if not clip.is_empty else None
+
+
+def draw_relief(ax, relief, extent, S, water, k, map_w_mm, shade=None):
+    """The relief as ONE image of exactly the map box (interpolation 'none': a PDF or SVG embeds that array as it
+    is), between the streets (zorder 3) and the routes (4.8 and up), clipped off the water polygons that are drawn.
+    shade: the raster to draw; by default the smooth shade over the city ground filter (relief.smooth), where a
+    town's roofs do not print, else relief.shade. Returns whether anything was drawn."""
+    if shade is None:
+        shade = relief.smooth if getattr(relief, "smooth", None) is not None else relief.shade
+    if np.shape(shade) != _relief.raster_shape(map_w_mm, extent):
+        raise ValueError("the relief raster does not match the map")
+    x0, x1, y0, y1 = extent
+    path = land_clip_path(extent, water, map_w_mm)
     if path is None:
         return False
-    im = ax.imshow(relief_rgba(relief.shade, relief_colours(S)), extent=extent, origin="upper",
+    im = ax.imshow(relief_rgba(shade, relief_colours(S)), extent=extent, origin="upper",
                    interpolation="none", zorder=3.5)
     im.set_clip_path(PathPatch(path, transform=ax.transData))
     ax.set_xlim(x0, x1)

@@ -7,8 +7,13 @@ blocks a track touches. Tracks, zones and activities never reach this module.
 - The elevation is read with HTTP Range requests and decoded by a small stdlib zlib + numpy reader (DEFLATE with the
   floating point predictor), cached under the Pinless cache in dem/.
 - A coarse probe decides whether the land is hilly enough to show: flat cities and open sea get nothing.
-- The elevation is resampled onto the map's own projected grid, smoothed in proportion to the paper, lit from the
-  north-west and returned as one shade raster per map, exactly the map box at 150 ppi.
+- The elevation is resampled onto the map's own projected grid (cubic convolution) and smoothed only as much as the
+  paper shows. Three signals make the shade: a hillshade lit from the north-west for the form, Leland Brown's texture
+  shading for the ridges and gullies at every scale, and the sky-view factor for the depth of cirques and gorges.
+- Two shades come back per map, exactly the map box at 150 ppi: the crisp one of the surface itself, and a smooth one
+  over a ground filter that takes the buildings of a town out (a normalised convolution of the streets, squares and
+  parks between them), for city prints and the built-up land of the trail print. The heights of both surfaces come
+  back too, smoothed for contour lines.
 Any network or decoding failure means a poster without relief (and one log line), never another data source.
 """
 from __future__ import annotations
@@ -23,6 +28,7 @@ import struct
 import urllib.error
 import urllib.request
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
@@ -34,9 +40,11 @@ from . import area
 HEADER_BYTES = 16384
 TIMEOUT_S = 20
 PPI = 150
-SIGMA_MIN_M = 45.0  # smoothing of the detail relief: never less (GLO-30 is a surface model: roofs and trees)
-SIGMA_PAPER_MM = 0.40  # ... and never less than this much paper
-OPEN_M = 150.0  # ground filter: a grey opening this wide removes buildings and trees
+# The level rule: the detail level is the coarsest whose spacing is within max(SIGMA_MIN_M, SIGMA_PAPER_MM of paper).
+# It fixes which blocks a map downloads, so it stays as it was; the shade itself is smoothed far less (CRISP_*)
+SIGMA_MIN_M = 45.0
+SIGMA_PAPER_MM = 0.40
+OPEN_M = 150.0  # city ground filter: a grey opening this wide finds the ground between buildings
 OPEN_MAX_SPACING_M = 60.0  # ... only on grids at least this fine (in practice GLO-30 full resolution)
 GATE_SIGMA_M = 250.0  # the probe: smoothing,
 GATE_S = 0.15  # the shade that counts as a slope,
@@ -44,8 +52,18 @@ GATE_SHARE = 0.02  # and the share of the land that must be sloped for a map to 
 LAND_EPS_M = 0.5  # a sample farther than this from 0 m is land
 LAND_MIN_FRAC = 0.02  # less land than this in the map: mostly water, no relief
 AZIMUTH_DEG = 315
-ALTITUDE_DEG = 45
-FULL_AT = 0.6  # a shade this strong gets the full alpha of its side
+ALTITUDE_DEG = 45  # the probe's light (the gate)
+CRISP_SIGMA_M, CRISP_SIGMA_MM = 8.0, 0.25  # crisp shade smoothing: max(8 m, 0.25 mm of paper)
+SHADE_ALT_DEG = 55  # the detail hillshade's light
+TEX_ALPHA, TEX_K, TEX_FLOOR = 0.8, 1.5, 1.0  # texture shading: detail exponent, contrast, normalisation floor (m)
+SVF_DIRS, SVF_MM, SVF_MIN_M, SVF_MAX_M = 16, 14.0, 250.0, 600.0  # sky view: directions, radius (paper mm, bounds)
+AO_FLOOR = 0.10  # the sky view's occlusion is normalised by max(p99, this): flat land gains no false depth
+W_HS, W_TEX, W_AO, GAIN = 0.65, 0.6, 0.45, 1.25  # the blend of the three signals and its contrast
+URBAN_DH_M, URBAN_SIGMA_M, URBAN_MIN_W, URBAN_SHADE_SIGMA_M = 2.5, 60.0, 0.02, 20.0  # the city ground filter
+CONTOUR_SIGMA_M, CONTOUR_SIGMA_MM = 20.0, 0.20  # the heights for contour lines: max(20 m, 0.20 mm of paper)
+RAMP_FULL, RAMP_GAMMA = 0.9, 0.85  # a drawn overlay's alpha = side alpha * min(1, |s| / 0.9) ** 0.85
+SVF_ROWS = 24  # the sky view runs in bands of this many rows (threads)
+_WORKERS = max(1, min(8, os.cpu_count() or 1))
 MAX_CELLS = 16
 BUDGET_BYTES = 64 * 2 ** 20
 VALID_M = (-500.0, 9000.0)
@@ -82,10 +100,13 @@ class _Unsupported(ReliefError):
 
 @dataclass(frozen=True, eq=False)
 class Relief:
-    shade: np.ndarray  # float32 (H, W) in [-1, 1], row 0 north: < 0 shadow, > 0 light, 0 flat
+    shade: np.ndarray  # float32 (H, W) in [-1, 1], row 0 north: < 0 shadow, > 0 light, 0 flat; the crisp surface
     dataset: str
     level: int
     share: float  # the probe's share of sloped land
+    smooth: np.ndarray = None  # float32 (H, W): the shade over the city ground filter (buildings taken out)
+    z: np.ndarray = None  # float32 (H, W): heights (m) of the surface, smoothed for contour lines
+    z_smooth: np.ndarray = None  # float32 (H, W): heights (m) of the city ground, smoothed for contour lines
 
 
 @dataclass(frozen=True)
@@ -512,14 +533,33 @@ def _opening(z, ky, kx):
     return run(run(z, ky, 0, np.max), kx, 1, np.max)
 
 
-def _ground(mos):
-    """The ground filter on a grid fine enough to show buildings (N-S spacing up to OPEN_MAX_SPACING_M)."""
+def _median3(z):
+    """3 x 3 median (edges repeated): takes out single-pixel spikes and pits (a lone building or tree, a radar glint)
+    and keeps the edges of ridges and gullies."""
+    zp = np.pad(z, 1, mode="edge")
+    n, m = z.shape
+    return np.median(np.stack([zp[i:i + n, j:j + m] for i in range(3) for j in range(3)]), axis=0)
+
+
+def _ground_urban(mos):
+    """The ground under a town, on a grid fine enough to show buildings (N-S spacing up to OPEN_MAX_SPACING_M), without
+    the terraces a grey opening leaves: the opening only finds the ground (the pixels it lowers by less than
+    URBAN_DH_M: streets, squares, parks), and the ground between them is a normalised convolution of those pixels
+    (Knutsson and Westin 1993), a Gaussian of URBAN_SIGMA_M through every one of them. Where no ground pixel lies near
+    enough (URBAN_MIN_W), the opening itself."""
     sy = mos.dlat * M_PER_DEG_LAT
     if sy > OPEN_MAX_SPACING_M:
         return mos
     mid = mos.lat0 - mos.dlat * (mos.z.shape[0] - 1) / 2
     sx = M_PER_DEG_LON * math.cos(math.radians(mid)) * mos.dlon
-    return Mosaic(_opening(mos.z, _odd(OPEN_M / sy), _odd(OPEN_M / sx)), mos.lon0, mos.dlon, mos.lat0, mos.dlat)
+    z = _median3(np.asarray(mos.z, dtype=np.float64))
+    opened = _opening(z, _odd(OPEN_M / sy), _odd(OPEN_M / sx))
+    ground = (z - opened < URBAN_DH_M).astype(np.float64)
+    g = Grid(sx, sy, z.shape[1], z.shape[0], 0)
+    w = _gauss(ground, URBAN_SIGMA_M, g)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        est = _gauss(z * ground, URBAN_SIGMA_M, g) / w
+    return Mosaic(np.where(w > URBAN_MIN_W, est, opened), mos.lon0, mos.dlon, mos.lat0, mos.dlat)
 
 
 def _sample(mos, lon, lat):
@@ -538,6 +578,53 @@ def _sample(mos, lon, lat):
     top = a + (b - a) * tc  # in this form a constant field stays exactly constant
     bottom = c + (d - c) * tc
     return top + (bottom - top) * tr
+
+
+def _keys(t):
+    """The four weights of cubic convolution (Keys, a = -0.5) at fractional offset t: an interpolant through the
+    samples whose slope is continuous, so a hillshade of it has no creases along the data's pixel edges."""
+    t2, t3 = t * t, t * t * t
+    return (-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1, -1.5 * t3 + 2 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2)
+
+
+def _sample_cubic(mos, lon, lat, *more):
+    """Cubic convolution samples of the mosaic, with _sample's checks (a point outside it raises); the outer taps
+    repeat the edges. Written as differences from the tap at the floor, so a constant field stays exactly constant.
+    more: other height grids of the same shape and position (the city ground), sampled at the same points; then a
+    list of the samples of each."""
+    nr, nc = mos.z.shape
+    col = (np.asarray(lon) - mos.lon0) / mos.dlon
+    row = (mos.lat0 - np.asarray(lat)) / mos.dlat
+    if not (np.isfinite(col).all() and np.isfinite(row).all() and col.min() >= 0 and row.min() >= 0
+            and col.max() <= nc - 1 and row.max() <= nr - 1) or nr < 4 or nc < 4:
+        raise _Unsupported("a sample fell outside the elevation data")
+    c0 = np.minimum(np.floor(col).astype(np.intp), nc - 2)
+    r0 = np.minimum(np.floor(row).astype(np.intp), nr - 2)
+    wc, wr = _keys(col - c0), _keys(row - r0)
+    # the grid padded by one repeated edge pixel all round, so the 4 x 4 taps of every sample are inside it; flat
+    # indices (np.take on the flat grid is several times faster than 2-D fancy indexing)
+    at = (r0 + 1) * (nc + 2) + (c0 + 1)  # the tap at the floor, in the padded grid
+    offsets = [[(i - 1) * (nc + 2) + (j - 1) for j in range(4)] for i in range(4)]
+
+    def one(z):
+        z = np.pad(np.asarray(z, dtype=np.float64), 1, mode="edge").ravel()
+        lines = []
+        for row_off in offsets:
+            base = np.take(z, at + row_off[1])
+            line = base.copy()
+            for j in (0, 2, 3):  # the floor's own term is exactly 0
+                line += wc[j] * (np.take(z, at + row_off[j]) - base)
+            lines.append(line)
+        out = lines[1].copy()
+        for i in (0, 2, 3):
+            out += wr[i] * (lines[i] - lines[1])
+        return out
+
+    if not more:
+        return one(mos.z)
+    if any(np.shape(m) != mos.z.shape for m in more):
+        raise ValueError("grids of another shape")
+    return [one(mos.z)] + [one(m) for m in more]
 
 
 @dataclass(frozen=True)
@@ -595,16 +682,103 @@ def _gauss(z, sigma, g):
     return z
 
 
-def _shade(z, cx, cy):
-    """Hillshade in [-1, 1] lit from AZIMUTH_DEG at ALTITUDE_DEG, row 0 north: 0 on flat ground, -1 in full
-    shadow, 1 facing the light. No vertical exaggeration."""
+def _shade(z, cx, cy, alt_deg=ALTITUDE_DEG):
+    """Hillshade in [-1, 1] lit from AZIMUTH_DEG at alt_deg, row 0 north: 0 on flat ground, -1 in full shadow, 1
+    facing the light. No vertical exaggeration."""
     dzdrow, dzdx = np.gradient(z, cy, cx)
     dzdy = -dzdrow
-    az, alt = math.radians(AZIMUTH_DEG), math.radians(ALTITUDE_DEG)
+    az, alt = math.radians(AZIMUTH_DEG), math.radians(alt_deg)
     lx, ly, lz = math.sin(az) * math.cos(alt), math.cos(az) * math.cos(alt), math.sin(alt)
     hs = np.maximum(0.0, (-dzdx * lx - dzdy * ly + lz) / np.sqrt(dzdx ** 2 + dzdy ** 2 + 1))
     s = hs - lz
     return np.clip(np.where(s < 0, s / lz, s / (1 - lz)), -1.0, 1.0)
+
+
+def _texture(z, cx, cy, alpha):
+    """Leland Brown's terrain texture: the fractional Laplacian (-Lap)^(alpha/2) of z, by FFT on the even (mirrored)
+    extension of the grid, so its edges add no seam, once the mean and the plane that fits best are taken out (both
+    have no texture). Positive on ridges, negative in valleys, at every scale; exactly 0 on a constant."""
+    ny, nx = z.shape
+    # the mean and the plane that fits best taken out first: the texture of a plane is 0, but mirrored the plane would
+    # fold into a ridge or a valley along the grid's edges and shade the whole map from one side to the other
+    yy, xx = np.arange(ny) - (ny - 1) / 2, np.arange(nx) - (nx - 1) / 2
+    z = z - z.flat[0]  # a constant becomes exactly 0 (its mean may not round back to it): no texture at all
+    z = z - z.mean()
+    z = z - (z @ xx).sum() / max(ny * (xx @ xx), 1e-12) * xx[None, :] \
+        - (yy @ z).sum() / max(nx * (yy @ yy), 1e-12) * yy[:, None]
+    # grown (edges repeated, south and east) to a size whose double the FFT factors fast: about twice as quick as a
+    # size with a large prime factor; the map's nodes lie a margin away from that edge
+    z = np.pad(z, ((0, _fft_size(ny) - ny), (0, _fft_size(nx) - nx)), mode="edge")
+    zp = np.block([[z, z[:, ::-1]], [z[::-1], z[::-1, ::-1]]])
+    ky = np.fft.fftfreq(zp.shape[0], d=cy)[:, None]
+    kx = np.fft.rfftfreq(zp.shape[1], d=cx)[None, :]
+    k = 2 * np.pi * np.sqrt(kx ** 2 + ky ** 2)
+    return np.fft.irfft2(np.fft.rfft2(zp) * k ** alpha, s=zp.shape)[:ny, :nx]
+
+
+def _fft_size(n):
+    """The smallest m >= n whose double has no prime factor above 7."""
+    m = n
+    while True:
+        r = 2 * m
+        for p in (2, 3, 5, 7):
+            while r % p == 0:
+                r //= p
+        if r == 1:
+            return m
+        m += 1
+
+
+def _sky_view(z, cx, cy, radius_m, n_dir=SVF_DIRS):
+    """Sky-view factor (Zaksek et al. 2011) in [0, 1]: 1 on open ground, lower in gullies, cirques and under cliffs.
+    The horizon in n_dir directions up to radius_m, at steps that grow with the distance (edges repeated; a horizon
+    below the horizontal counts as the horizontal)."""
+    ny, nx = z.shape
+    c = min(cx, cy)
+    steps = np.unique(np.round(np.geomspace(c, radius_m, max(4, int(round(radius_m / c)))) / c).astype(int))
+    pad = int(steps.max()) + 1
+    z = np.asarray(z, dtype=np.float32)
+    zp = np.pad(z, pad, mode="edge")
+    shifts = []  # (row offset, column offset, 1 / distance) of every step of every direction, in order
+    for d in range(n_dir):
+        a = 2 * math.pi * d / n_dir
+        shifts.append([(oy, ox, np.float32(1 / math.hypot(ox * cx, oy * cy)))
+                       for ox, oy in ((int(round(math.sin(a) * r)), int(round(-math.cos(a) * r))) for r in steps)
+                       if ox or oy])
+
+    def band(y0):  # SVF_ROWS rows, every direction, in cache: the work is memory bound, not arithmetic bound
+        y1 = min(ny, y0 + SVF_ROWS)
+        zb = z[y0:y1]
+        acc = np.zeros(zb.shape, np.float32)
+        best, tmp = np.empty(zb.shape, np.float32), np.empty(zb.shape, np.float32)
+        for steps_d in shifts:
+            best[:] = 0  # a horizon below the horizontal counts as the horizontal
+            for oy, ox, inv in steps_d:
+                np.subtract(zp[pad + oy + y0:pad + oy + y1, pad + ox:pad + ox + nx], zb, out=tmp)
+                tmp *= inv
+                np.maximum(best, tmp, out=best)
+            np.multiply(best, best, out=tmp)
+            tmp += 1
+            np.sqrt(tmp, out=tmp)
+            acc += best / tmp  # sin(atan(best)), the directions summed in the same order for every band
+        return acc
+
+    with ThreadPoolExecutor(_WORKERS) as ex:  # numpy lets go of the GIL; the bands do not depend on the threads
+        acc = np.concatenate(list(ex.map(band, range(0, ny, SVF_ROWS)))).astype(np.float64)
+    return 1.0 - acc / n_dir
+
+
+def _blend(zs, g, radius):
+    """The shade of the smoothed heights zs on the work grid: a hillshade at SHADE_ALT_DEG for the form, the texture
+    for ridges and valleys at every scale, the sky view's occlusion for the depth of gullies and cirques, each
+    normalised on the map's own nodes, blended and squeezed into [-1, 1]."""
+    inner = (slice(g.m, g.m + g.ny), slice(g.m, g.m + g.nx))
+    hs = _shade(zs, g.cx, g.cy, SHADE_ALT_DEG)
+    tex = _texture(zs, g.cx, g.cy, TEX_ALPHA)
+    tex = np.tanh(TEX_K * tex / max(float(np.percentile(np.abs(tex[inner]), 99)), TEX_FLOOR))
+    ao = 1 - _sky_view(zs, g.cx, g.cy, radius)
+    ao = np.clip(ao / max(float(np.percentile(ao[inner], 99)), AO_FLOOR), 0, 1)
+    return np.tanh(GAIN * (W_HS * hs + W_TEX * tex - W_AO * ao)) / math.tanh(GAIN)
 
 
 # --- the maps of one print ------------------------------------------------------------------------------------------
@@ -624,7 +798,10 @@ class _Map:
         if not (x1 > x0 and y1 > y0 and self.map_w > 0):
             raise ValueError("an empty map")
         self.shape = raster_shape(self.map_w, self.extent)
-        self.sigma = max(SIGMA_MIN_M, SIGMA_PAPER_MM * (x1 - x0) / self.map_w)  # the detail smoothing
+        self.sigma = max(SIGMA_MIN_M, SIGMA_PAPER_MM * (x1 - x0) / self.map_w)  # the level rule (_detail_level)
+        self.tex_sigma = max(CRISP_SIGMA_M, CRISP_SIGMA_MM * (x1 - x0) / self.map_w)  # the shade's smoothing
+        self.tex_radius = min(SVF_MAX_M, max(SVF_MIN_M, SVF_MM * (x1 - x0) / self.map_w))  # the sky view's reach
+        self.contour_sigma = max(CONTOUR_SIGMA_M, CONTOUR_SIGMA_MM * (x1 - x0) / self.map_w)
         self.probe_grid = _grid(self.extent, max(125.0, max(x1 - x0, y1 - y0) / 400), GATE_SIGMA_M)
         # every cell the map could need, whatever the dataset and level: fixed before any request is made
         spacings = [_spacing(ds, L) for ds in HEIGHT0 for L in range(NOMINAL_LEVELS[ds])]
@@ -636,14 +813,18 @@ class _Map:
         self.cells = set() if self.near_180 else set(_cells((lat_a, lat_b, lon_a, lon_b)))
 
     def detail_grid(self, spacing):
-        return _grid(self.extent, max((self.extent[1] - self.extent[0]) / self.shape[1], spacing / 2), self.sigma)
+        """The work grid of the detail shade. Its margin holds the widest of the level rule's smoothing, the sky view's
+        radius plus the shade's smoothing, and the contours' smoothing: the horizon of every map node lies on it, at
+        nodes that the Gaussian's edge does not reach."""
+        reach = max(self.sigma, self.tex_radius / 4 + self.tex_sigma, self.contour_sigma)
+        return _grid(self.extent, max((self.extent[1] - self.extent[0]) / self.shape[1], spacing / 2), reach)
 
     def probe_pad(self, spacing):
         """Padding of the probe box: the outermost node, plus two pixels for the bilinear samples."""
         return self.probe_grid.reach + 2 * spacing
 
     def detail_pad(self, spacing):
-        """Padding of the detail box: the outermost node, the ground filter, two pixels."""
+        """Padding of the detail box: the outermost node, the ground filter, two pixels for the cubic samples."""
         return self.detail_grid(spacing).reach + OPEN_M + 2 * spacing
 
     def box(self, pad):
@@ -719,15 +900,31 @@ def _download(dataset, headers, blocks, root):
 
 
 def _detail(job, dataset, headers, L, root):
-    """The map's shade raster from level L: mosaic, ground filter, map grid, smoothing, shading, output size."""
+    """(shade, smooth, z, z_smooth) of the map from level L: the mosaic and its city ground filter sampled on the map
+    grid, the crisp shade of the surface, the smooth shade of the city ground, and both surfaces' heights smoothed for
+    contour lines, each cropped to the map and resized (bicubic) to the output raster."""
     g = job.detail_grid(_spacing(dataset, L))
     box, cells = job.box(job.detail_pad(_spacing(dataset, L)))
-    mos = _ground(_mosaic(dataset, headers, cells, L, box, root))
-    z = _gauss(_sample(mos, *_nodes(job.extent, job.crs, g)), job.sigma, g)
-    s = _shade(z, g.cx, g.cy)[g.m:g.m + g.ny, g.m:g.m + g.nx]
+    return _rasters(job, _mosaic(dataset, headers, cells, L, box, root), g)
+
+
+def _rasters(job, mos, g):
+    """(shade, smooth, z, z_smooth) of the map on the work grid g from the mosaic mos (see _detail)."""
+    mos = Mosaic(np.asarray(mos.z, dtype=np.float64), mos.lon0, mos.dlon, mos.lat0, mos.dlat)
+    raw, urb = _sample_cubic(mos, *_nodes(job.extent, job.crs, g), _ground_urban(mos).z)
+    with ThreadPoolExecutor(4) as ex:  # four independent rasters; numpy lets go of the GIL in the heavy steps
+        shade = ex.submit(lambda: _blend(_gauss(raw, job.tex_sigma, g), g, job.tex_radius))
+        smooth = ex.submit(lambda: _blend(_gauss(urb, max(job.tex_sigma, URBAN_SHADE_SIGMA_M), g), g, job.tex_radius))
+        z = ex.submit(_gauss, raw, job.contour_sigma, g)
+        z_smooth = ex.submit(_gauss, urb, job.contour_sigma, g)
+        shade, smooth, z, z_smooth = shade.result(), smooth.result(), z.result(), z_smooth.result()
     H, W = job.shape
-    out = np.asarray(Image.fromarray(s.astype(np.float32)).resize((W, H), Image.Resampling.BICUBIC), np.float32)
-    return np.clip(out, -1.0, 1.0).astype(np.float32)
+
+    def out(a):
+        a = np.asarray(a[g.m:g.m + g.ny, g.m:g.m + g.nx], np.float32)
+        return np.asarray(Image.fromarray(a).resize((W, H), Image.Resampling.BICUBIC), np.float32)
+
+    return (np.clip(out(shade), -1.0, 1.0), np.clip(out(smooth), -1.0, 1.0), out(z), out(z_smooth))
 
 
 def prepare_many(maps, log=print, root=None):
@@ -783,7 +980,8 @@ def prepare_many(maps, log=print, root=None):
             log(f"[relief] downloading {len(todo)} blocks, {size / 2 ** 20:.1f} MB (one time, cached)")
         _download(dataset, headers, detail, root)
         for job, share, L, _ in plans:
-            out[job.i] = Relief(_detail(job, dataset, headers, L, root), dataset, L, share)
+            shade, smooth, z, z_smooth = _detail(job, dataset, headers, L, root)
+            out[job.i] = Relief(shade, dataset, L, share, smooth=smooth, z=z, z_smooth=z_smooth)
     except _Unsupported:  # the same on every run: no point in running it again
         log("[relief] skipped: the elevation data does not cover this map as it is; the poster is drawn without relief")
         return [None] * len(maps)

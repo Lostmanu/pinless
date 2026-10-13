@@ -486,22 +486,32 @@ def test_relief_is_north_up_and_lit_from_the_northwest(monkeypatch, tmp_path):
     box, cells = job.box(job.detail_pad(relief._spacing("glo30", rel.level)))
     root = str(tmp_path / "cache" / "dem")
     headers = {c: relief._header("glo30", c, root) for c in cells}
-    z = relief._sample(relief._mosaic("glo30", headers, cells, rel.level, box, root), *relief._nodes(extent, crs, g))
+    mos = relief._mosaic("glo30", headers, cells, rel.level, box, root)
+    z = relief._sample_cubic(mos, *relief._nodes(extent, crs, g))
     r, c = np.unravel_index(np.argmax(z), z.shape)
     nx_, ny_ = extent[0] + (c - g.m + 0.5) * g.cx, extent[3] - (r - g.m + 0.5) * g.cy
     assert abs(nx_ - px) <= g.cx and abs(ny_ - py) <= g.cy
-    # lit from the north-west: brightest on that flank, darkest on the opposite one; north is up
+    # the rasters sit where the hill is: the heights for the contours peak within two output pixels (15 m each)
     H, W = rel.shade.shape
     to_xy = lambda rc: (extent[0] + (rc[1] + 0.5) / W * (extent[1] - extent[0]),
                         extent[3] - (rc[0] + 0.5) / H * (extent[3] - extent[2]))
-    bx, by = to_xy(np.unravel_index(np.argmax(rel.shade), rel.shade.shape))
-    dx_, dy_ = to_xy(np.unravel_index(np.argmin(rel.shade), rel.shade.shape))
-    assert bx < px and by > py, "the most lit slope faces north-west"
-    assert dx_ > px and dy_ < py, "the darkest slope faces south-east"
-    assert rel.shade.max() > 0.1 and rel.shade.min() < -0.1
-    # and the raster sits where the hill is: halfway between its brightest and darkest pixels lies the peak, within
-    # four output pixels (15 m each)
-    assert math.hypot((bx + dx_) / 2 - px, (by + dy_) / 2 - py) <= 60
+    for heights in (rel.z, rel.z_smooth):
+        zx, zy = to_xy(np.unravel_index(np.argmax(heights), heights.shape))
+        assert math.hypot(zx - px, zy - py) <= 30
+
+    def at(s, dx, dy):  # the mean shade of 5 x 5 output pixels around (px + dx, py + dy)
+        row = int((extent[3] - (py + dy)) / (extent[3] - extent[2]) * H)
+        col = int((px + dx - extent[0]) / (extent[1] - extent[0]) * W)
+        return float(s[row - 2:row + 3, col - 2:col + 3].mean())
+
+    # lit from the north-west, north up, both shades: of the hill's four diagonal flanks (at its sigma from the top,
+    # where it is steepest) the north-west one is the brightest and the south-east one the darkest
+    d = 2500 / math.sqrt(2)
+    for name in ("shade", "smooth"):
+        s = getattr(rel, name)
+        nw, ne, sw, se = at(s, -d, d), at(s, d, d), at(s, -d, -d), at(s, d, -d)
+        assert nw > 0.3 and se < 0, name  # at its sigma the hill's flank is still convex: the texture lifts it
+        assert nw > max(ne, sw) and se < min(ne, sw), f"{name}: lit from the north-west, north up"
 
 
 def test_the_shade_stays_between_minus_one_and_one(monkeypatch, tmp_path):
@@ -512,30 +522,38 @@ def test_the_shade_stays_between_minus_one_and_one(monkeypatch, tmp_path):
     extent, crs = _utm_extent(40.5, -3.5, 12000, 10000)
     (rel,) = relief.prepare_many([(extent, crs, A4_MAP)], log=lambda *_: None)
     assert rel.shade.dtype == np.float32 and rel.shade.min() == -1.0 and rel.shade.max() <= 1.0
+    assert rel.smooth.dtype == np.float32 and rel.smooth.min() >= -1.0 and rel.smooth.max() <= 1.0
 
 
 def test_flat_ground_has_shade_exactly_zero(monkeypatch, tmp_path):
+    from pinless.render_editorial import STYLES, relief_colours, relief_rgba
     files = {(40, -4): _cog((40, -4), lambda lon, lat: np.full_like(lon, 650.0))}
     _serve(monkeypatch, files)
     extent, crs = _utm_extent(40.5, -3.5, 12000, 10000)
     job = relief._Map(0, extent, crs, A4_MAP)
     root = str(tmp_path / "dem")
     headers = {c: relief._header("glo30", c, root) for c in job.cells}
-    shade = relief._detail(job, "glo30", headers, 0, root)
-    assert shade.shape == job.shape and not shade.any(), "flat ground: exactly 0"
-    # the detail relief goes through the ground filter: on a grid it counts as full resolution, lone buildings on
-    # flat ground leave no trace (these test cells have 230 m pixels, so the filter is let run on them)
+    shade, smooth, z, z_smooth = relief._detail(job, "glo30", headers, 0, root)
+    assert shade.shape == smooth.shape == z.shape == z_smooth.shape == job.shape
+    assert not shade.any() and not smooth.any(), "flat ground: exactly 0, hillshade, texture and sky view alike"
+    assert not relief_rgba(smooth, relief_colours(STYLES["huella"]))[..., 3].any(), "and an overlay draws nothing"
+    assert np.abs(z - 650).max() < 1e-3 and np.abs(z_smooth - 650).max() < 1e-3
+    # the city ground filter: on a grid that counts as full resolution, a lone building of 2 x 2 pixels on flat ground
+    # leaves no trace in the smooth shade (these test cells have 230 m pixels, so the filter is let run on them); the
+    # crisp shade of the natural ground is not filtered and keeps it
     monkeypatch.setattr(relief, "OPEN_MAX_SPACING_M", 300.0)
 
     def town(lon, lat):
         z = np.full_like(lon, 650.0)
-        z[::7, ::7] = 670.0
+        z[240:242, 240:242] = 670.0  # at the centre of the map (40.5, -3.5)
         return z
 
     _serve(monkeypatch, {(40, -4): _cog((40, -4), town)})
     root = str(tmp_path / "town")
     headers = {c: relief._header("glo30", c, root) for c in job.cells}
-    assert not relief._detail(job, "glo30", headers, 0, root).any(), "buildings are filtered off"
+    shade, smooth, z, z_smooth = relief._detail(job, "glo30", headers, 0, root)
+    assert np.abs(smooth).max() <= 1e-6 and np.abs(z_smooth - 650).max() <= 1e-6, "the building is filtered off"
+    assert np.abs(shade).max() > 0.05 and z.max() > 655, "the crisp surface keeps it"
 
 
 def _plane(lat_c, lon_c, east, north, z0=4000.0):
@@ -654,15 +672,17 @@ def test_flat_land_is_skipped_after_the_probe_only(monkeypatch, tmp_path, terrai
 
 
 @pytest.mark.parametrize("east,north", [(0.15, -0.15), (-0.15, 0.15)])  # facing the light, facing away from it
-def test_a_plane_is_shaded_evenly_and_by_the_formula(monkeypatch, tmp_path, east, north):
+def test_a_plane_is_shaded_evenly(monkeypatch, tmp_path, east, north):
     _serve(monkeypatch, {(40, -4): _cog((40, -4), _plane(40.5, -3.5, east, north))})
     extent, crs = _utm_extent(40.5, -3.5, 12000, 10000)
     (rel,) = relief.prepare_many([(extent, crs, A4_MAP)], log=lambda *_: None)
-    want = _hillshade(east, north)
-    assert abs(want) > 0.2
-    # every pixel, the borders too: the work grid's margin keeps the edges of the smoothing off the map
-    assert np.abs(rel.shade - want).max() < 0.005
-    assert rel.shade.max() - rel.shade.min() < 1e-3
+    assert abs(_hillshade(east, north)) > 0.2
+    # every pixel, the borders too: the work grid's margin keeps the edges of the smoothing, of the sky view's horizon
+    # and of the texture's mirrored grid off the map
+    for name in ("shade", "smooth"):
+        s = getattr(rel, name)
+        assert np.ptp(s) < 0.01, name
+        assert (s > 0).all() if east > 0 else (s < 0).all(), f"{name}: a plane facing the light is lit"
 
 
 def test_the_smoothing_is_a_gaussian_of_sigma_map_units():
@@ -679,12 +699,17 @@ def test_the_smoothing_is_a_gaussian_of_sigma_map_units():
 
 
 def test_the_probe_grid_and_the_detail_smoothing_follow_the_map():
-    """The probe works on cells of 125 m, or 1/400 of a larger map; the detail is smoothed by 0.40 mm of paper, never
-    less than 45 m (GLO-30 is a surface model: roofs and trees)."""
-    for w_m, map_w, sigma, cell in ((12000, A4_MAP, 45.0, 125.0), (100000, 60.0, 0.40 * 100000 / 60.0, 250.0)):
+    """The probe works on cells of 125 m, or 1/400 of a larger map; the level rule's sigma is 0.40 mm of paper, never
+    less than 45 m; the shade is smoothed by 0.25 mm of paper, never less than 8 m; the sky view reaches 14 mm of
+    paper, between 250 and 600 m; the contours' heights are smoothed by 0.20 mm of paper, never less than 20 m."""
+    for w_m, map_w, sigma, cell, tex, radius, contour in (
+            (12000, A4_MAP, 45.0, 125.0, 0.25 * 12000 / A4_MAP, 600.0, 20.0),
+            (100000, 60.0, 0.40 * 100000 / 60.0, 250.0, 0.25 * 100000 / 60.0, 600.0, 0.20 * 100000 / 60.0),
+            (2000, A4_MAP, 45.0, 125.0, 8.0, 250.0, 20.0)):
         extent, crs = _utm_extent(40.5, -3.5, w_m, 0.8 * w_m)
         job = relief._Map(0, extent, crs, map_w)
         assert job.sigma == pytest.approx(sigma), w_m
+        assert (job.tex_sigma, job.tex_radius, job.contour_sigma) == pytest.approx((tex, radius, contour)), w_m
         g = job.probe_grid
         assert (g.cx, g.cy) == pytest.approx((w_m / math.ceil(w_m / cell), 0.8 * w_m / math.ceil(0.8 * w_m / cell))), w_m
         assert g.m == math.ceil(4 * 250 / min(g.cx, g.cy)) + 1, "a margin of four times the probe's 250 m smoothing"
@@ -707,15 +732,142 @@ def test_the_ground_filter_removes_buildings_and_keeps_the_ground():
     assert np.array_equal(relief._opening(mesa, ky, kx), mesa), "a landform wider than the window is kept"
 
 
-def test_the_ground_filter_runs_at_full_resolution_only_with_a_150_m_window(monkeypatch):
+def test_the_city_ground_filter_runs_at_full_resolution_only_with_a_150_m_window(monkeypatch):
     seen = []
     real = relief._opening
     monkeypatch.setattr(relief, "_opening", lambda z, ky, kx: seen.append((ky, kx)) or real(z, ky, kx))
     z = (600 + 50 * np.random.default_rng(1).random((30, 40))).astype(np.float32)
     glo30 = relief.Mosaic(z, lon0=-4.0, dlon=1 / 3600, lat0=40.6, dlat=1 / 3600)  # 30.7 m N-S, 23.5 m E-W here
-    assert np.array_equal(relief._ground(glo30).z, real(z, 5, 7)) and seen == [(5, 7)], "5 x 7 pixels at 40N"
+    out = relief._ground_urban(glo30)
+    assert seen == [(5, 7)], "the ground found with a window of 5 x 7 pixels at 40N"
+    assert out.z.shape == z.shape and (out.lon0, out.dlon, out.lat0, out.dlat) == (-4.0, 1 / 3600, 40.6, 1 / 3600)
+    assert np.isfinite(out.z).all() and out.z.min() >= z.min() - 1e-9 and out.z.max() <= z.max() + 1e-9
     coarse = relief.Mosaic(z, lon0=-4.0, dlon=61 / relief.M_PER_DEG_LAT, lat0=40.6, dlat=61 / relief.M_PER_DEG_LAT)
-    assert relief._ground(coarse) is coarse and seen == [(5, 7)], "pixels of 61 m: no filter"
+    assert relief._ground_urban(coarse) is coarse and seen == [(5, 7)], "pixels of 61 m: no filter"
+
+
+def test_cubic_samples_keep_a_constant_exactly_and_a_ramp():
+    rng = np.random.default_rng(3)
+    lon, lat = -4.0 + rng.random(500) * 0.14, 41.0 - rng.random(500) * 0.11
+    const = relief.Mosaic(np.full((12, 15), 650.123), lon0=-4.0, dlon=0.01, lat0=41.0, dlat=0.01)
+    assert (relief._sample_cubic(const, lon, lat) == 650.123).all(), "a constant stays exactly constant"
+    rows, cols = np.mgrid[0:12, 0:15]
+    ramp = relief.Mosaic(100 + 3.0 * cols - 2.0 * rows, lon0=-4.0, dlon=0.01, lat0=41.0, dlat=0.01)
+    # a pixel in from the edges, where the outer taps repeat the edge and bend the ramp
+    lon, lat = -4.0 + (1 + rng.random(500) * 12) * 0.01, 41.0 - (1 + rng.random(500) * 9) * 0.01
+    want = 100 + 3.0 * (lon + 4.0) / 0.01 - 2.0 * (41.0 - lat) / 0.01
+    assert np.abs(relief._sample_cubic(ramp, lon, lat) - want).max() < 1e-9, "cubic convolution keeps a ramp"
+    with pytest.raises(relief.ReliefError):  # outside the grid: raises, as the bilinear samples do
+        relief._sample_cubic(ramp, np.array([-4.001]), np.array([40.95]))
+
+
+def test_the_texture_is_zero_on_a_constant_positive_on_a_crest_and_negative_in_a_valley():
+    assert not relief._texture(np.full((40, 50), 812.5), 30.0, 30.0, relief.TEX_ALPHA).any()
+    x = (np.arange(90) - 45) * 30.0
+    profile = 600 + 50 * np.exp(-(x + 450) ** 2 / (2 * 120.0 ** 2)) - 50 * np.exp(-(x - 450) ** 2 / (2 * 120.0 ** 2))
+    z = np.tile(profile, (60, 1)) + 0.02 * np.arange(60)[:, None] * 30  # a crest and a valley on a gentle slope
+    t = relief._texture(z, 30.0, 30.0, relief.TEX_ALPHA)
+    assert t[30, 30] > 0 and t[30, 60] < 0, "the crest is a ridge, the trough a valley"
+    assert t[30, 30] == pytest.approx(-t[30, 60], rel=0.05), "and the slope under them adds nothing"
+
+
+def test_the_sky_view_is_one_on_flat_ground_and_lower_in_a_pit_than_on_a_peak():
+    assert np.array_equal(relief._sky_view(np.full((40, 40), 300.0), 30.0, 30.0, 250.0), np.ones((40, 40)))
+    yy, xx = np.mgrid[0:41, 0:41]
+    bump = 40 * np.exp(-((xx - 20) ** 2 + (yy - 20) ** 2) * 30.0 ** 2 / (2 * 90.0 ** 2))
+    peak = relief._sky_view(300 + bump, 30.0, 30.0, 250.0)[20, 20]
+    pit = relief._sky_view(300 - bump, 30.0, 30.0, 250.0)[20, 20]
+    assert peak == 1.0, "every horizon of a summit lies below it"
+    assert pit < 0.95, "a hollow sees less of the sky"
+
+
+def _full_resolution(fn, w_m=3000.0):
+    """A map w_m wide on A4 over a synthetic mosaic at the full resolution of GLO-30 (1 arc-second: 30.7 x 23.5 m at
+    40.5N): (job, its detail grid, the mosaic of fn(x, y), x and y in metres east and north of the map's centre)."""
+    lat_c, lon_c = 40.5, -3.5
+    extent, crs = _utm_extent(lat_c, lon_c, w_m, 0.8 * w_m)
+    job = relief._Map(0, extent, crs, A4_MAP)
+    spacing = relief.M_PER_DEG_LAT / 3600
+    g = job.detail_grid(spacing)
+    lat_a, lat_b, lon_a, lon_b = relief._lonlat_box(extent, crs, job.detail_pad(spacing))
+    d = 1 / 3600
+    lons, lats = np.arange(lon_a - 2 * d, lon_b + 2 * d, d), lat_b + 2 * d - np.arange(0, lat_b - lat_a + 4 * d, d)
+    lon, lat = np.meshgrid(lons, lats)
+    x, y = _metres(lon, lat, lat_c, lon_c)
+    return job, g, relief.Mosaic(fn(x, y), float(lons[0]), d, float(lats[0]), d)
+
+
+def test_the_natural_ground_is_not_opened():
+    """A knife ridge 60 m wide and 40 m high: the crisp shade (no ground filter on natural ground) keeps its lee side
+    in deep shadow; the smooth shade over the city ground filter takes it for a row of buildings."""
+    job, g, mos = _full_resolution(lambda x, y: 600 + 40 * np.exp(-x ** 2 / (2 * 25.0 ** 2)) + 0 * y)
+    shade, smooth, z, _ = relief._rasters(job, mos, g)
+    H, W = shade.shape
+    lee = (slice(H // 4, 3 * H // 4), slice(W // 2, W // 2 + 30))  # its east side: away from a north-west light
+    assert shade[lee].min() < -0.3, "the lee side of the ridge in shadow"
+    assert smooth[lee].min() > shade[lee].min() + 0.2, "weaker over the city ground"
+    assert z.max() > 630, "the heights keep it too"
+
+
+def test_the_city_ground_takes_out_buildings_without_terraces_and_keeps_hills():
+    """Buildings 20 m high of 3 x 3 pixels on a slope leave less than 1 m in the city ground; a hill 40 m high and
+    600 m across at half its height keeps its height within 10 % (the ground is found with a 150 m window: a hill
+    half as wide is lowered, to about 60 % of its height, the price of a town's roofs)."""
+    def plane(x, y):
+        return 600 + 0.05 * x + 0.03 * y
+
+    def town(x, y):
+        z = plane(x, y)
+        for r in range(4, z.shape[0] - 4, 12):
+            for c in range(4, z.shape[1] - 4, 12):
+                z[r:r + 3, c:c + 3] += 20.0
+        return z
+
+    job, g, mos = _full_resolution(town)
+    _, _, z, z_smooth = relief._rasters(job, mos, g)
+    _, _, _, ground = relief._rasters(job, relief.Mosaic(plane(*_metres(*np.meshgrid(
+        mos.lon0 + np.arange(mos.z.shape[1]) * mos.dlon, mos.lat0 - np.arange(mos.z.shape[0]) * mos.dlat))),
+        mos.lon0, mos.dlon, mos.lat0, mos.dlat), g)
+    assert np.abs(z_smooth - ground).max() < 1.0, "the buildings are gone, and no terrace is left in their place"
+    assert np.abs(z - ground).max() > 5.0, "setup: the crisp surface has them"
+    sigma = 600 / 2.3548
+    job, g, mos = _full_resolution(lambda x, y: 600 + 40 * np.exp(-(x ** 2 + y ** 2) / (2 * sigma ** 2)))
+    _, _, z, z_smooth = relief._rasters(job, mos, g)
+    assert z_smooth.max() - 600 >= 0.9 * 40 and z.max() - 600 >= 0.95 * 40
+
+
+DETAIL_MAPS = [(w_km, size) for w_km in (2.9, 5.6, 12, 30, 100) for size in ("A4", "A3", "50x70")]
+
+
+@pytest.mark.parametrize("w_km,size", DETAIL_MAPS)
+def test_the_detail_grid_holds_the_sky_view_radius_and_the_level_is_unchanged(monkeypatch, w_km, size):
+    """The margin of the detail grid reaches at least the sky view's radius (so every horizon of a map node lies on
+    the grid), at every level of both datasets; and the detail level, which fixes the blocks a map downloads, is the
+    one of the level rule as it was: the coarsest whose spacing is within max(45 m, 0.40 mm of paper)."""
+    monkeypatch.setattr(relief, "HEIGHT0", {"glo30": 3600, "glo90": 1200})
+    map_w = render.SIZES[size][0] * (1 - 36 / 297)
+    extent, crs = _utm_extent(40.5, -3.5, w_km * 1000, 0.85 * w_km * 1000)
+    job = relief._Map(0, extent, crs, map_w)
+    for ds in ("glo30", "glo90"):
+        for L in range(relief.NOMINAL_LEVELS[ds]):
+            assert job.detail_grid(relief._spacing(ds, L)).reach >= job.tex_radius, (ds, L)
+    sigma = max(45.0, 0.40 * w_km * 1000 / map_w)
+    for ds, n in (("glo30", 4), ("glo90", 3)):
+        h0 = {"glo30": 3600, "glo90": 1200}[ds]
+        want = max([L for L in range(n) if 110574.0 / h0 * 2 ** L <= sigma] or [0])
+        assert relief._detail_level(job, ds, n) == want, ds
+
+
+def test_the_relief_fields_are_float32_rasters_of_the_map(monkeypatch, tmp_path):
+    _serve(monkeypatch, {(40, -4): _cog((40, -4), _steep)})
+    extent, crs = _utm_extent(40.5, -3.5, 12000, 10000)
+    (rel,) = relief.prepare_many([(extent, crs, A4_MAP)], log=lambda *_: None)
+    for name in ("shade", "smooth", "z", "z_smooth"):
+        a = getattr(rel, name)
+        assert a.shape == relief.raster_shape(A4_MAP, extent) and a.dtype == np.float32, name
+        assert np.isfinite(a).all(), name
+    assert 200 < rel.z.min() < rel.z.max() < 1000, "heights in metres"
+    assert relief.Relief(rel.shade, "glo30", 0, 0.5).smooth is None, "the old positional form still builds a Relief"
 
 
 # three latitude bands of the Copernicus cells; the last two on their UTM zone's central meridian, where the top and
@@ -742,6 +894,7 @@ def test_every_node_and_its_ground_filter_lie_inside_the_requested_windows(monke
                     mos = relief._mosaic(ds, {}, cells, L, box, None)  # every cell as sea: the windows only
                     lo, la = relief._nodes(extent, crs, grid)
                     relief._sample(mos, lo, la)  # raises if a node falls outside
+                    relief._sample_cubic(mos, lo, la)
                     if around:
                         dlat = around / relief.M_PER_DEG_LAT
                         dlon = around / (relief.M_PER_DEG_LON * np.cos(np.radians(la)))
@@ -1183,16 +1336,20 @@ def test_maps_that_share_blocks_download_and_count_them_once(monkeypatch, tmp_pa
 def test_the_shade_is_resized_to_the_output_bicubic(monkeypatch, tmp_path):
     _serve(monkeypatch, {(40, -4): _cog((40, -4), _steep)})
     shades = []
-    real = relief._shade
-    monkeypatch.setattr(relief, "_shade", lambda z, cx, cy: shades.append(real(z, cx, cy)) or shades[-1])
+    real = relief._blend
+    monkeypatch.setattr(relief, "_blend", lambda zs, g, radius: shades.append(real(zs, g, radius)) or shades[-1])
     extent, crs = _utm_extent(40.5, -3.5, 12000, 10000)
     (rel,) = relief.prepare_many([(extent, crs, A4_MAP)], log=lambda *_: None)
     g = relief._Map(0, extent, crs, A4_MAP).detail_grid(relief._spacing("glo30", rel.level))
-    s = shades[-1][g.m:g.m + g.ny, g.m:g.m + g.nx].astype(np.float32)  # the detail shade, its margin cropped
-    assert s.shape != rel.shade.shape, "setup: a resize"
     H, W = rel.shade.shape
-    want = np.clip(np.asarray(Image.fromarray(s).resize((W, H), Image.Resampling.BICUBIC), np.float32), -1, 1)
-    assert np.array_equal(rel.shade, want)
+    resized = []
+    for full in shades:  # the crisp and the smooth shade, in whatever order their threads ran
+        s = full[g.m:g.m + g.ny, g.m:g.m + g.nx].astype(np.float32)  # the margin cropped
+        assert s.shape != rel.shade.shape, "setup: a resize"
+        resized.append(np.clip(np.asarray(Image.fromarray(s).resize((W, H), Image.Resampling.BICUBIC), np.float32),
+                               -1, 1))
+    assert len(resized) == 2
+    assert any(np.array_equal(rel.shade, r) for r in resized) and any(np.array_equal(rel.smooth, r) for r in resized)
 
 
 def test_level_budget_and_size_limits(monkeypatch, tmp_path):
@@ -1260,15 +1417,15 @@ def test_every_style_relief_stays_quieter_than_its_routes():
         lb = _lstar(bg)
         route = abs(lb - _lstar(S["heat"][0]))
         if lb >= 50:
-            t_shadow, t_light = min(7, 0.30 * route), min(2.5, 0.15 * route)
+            t_shadow, t_light = min(16, 0.5 * route), min(4, 0.2 * route)
         else:
-            t_shadow, t_light = min(5, 0.5 * lb, 0.30 * route), min(6, 0.30 * route)
+            t_shadow, t_light = min(8, 0.6 * lb, 0.5 * route), min(12, 0.35 * route)
         (shadow, a_s), (light, a_l) = relief_colours(S)
         d_s = abs(_lstar((1 - a_s) * bg + a_s * np.asarray(shadow)) - lb)
         d_l = abs(_lstar((1 - a_l) * bg + a_l * np.asarray(light)) - lb)
         assert d_s <= t_shadow + 1e-9 and d_l <= t_light + 1e-9, f"{name}: louder than the rule"
         assert max(d_s, d_l) >= 1, f"{name}: the relief would not show"
-        assert a_s <= 0.35 and a_l <= 0.60, name
+        assert a_s <= 0.60 and a_l <= 0.70, name
         assert _lstar(shadow) < lb < _lstar(light), f"{name}: shadows darken, lights lighten"
         # under full light the map stays readable: every street class, the parks and the water lines keep at least
         # 70% of their contrast with the paper (a white veil over light paper fades them far more than it lights)
@@ -1282,12 +1439,12 @@ def test_every_style_relief_stays_quieter_than_its_routes():
                 kept.append(lit / abs(_lstar(c) - lb))
         # and each side as strong as its rule lets it be: at its target, or at its cap, or (the light) where the map
         # under it keeps just 70% of its contrast
-        assert abs(d_s - t_shadow) < 1e-3 or a_s == 0.35, f"{name}: a shadow quieter than its rule"
-        assert abs(d_l - t_light) < 1e-3 or a_l == 0.60 or abs(min(kept) - 0.70) < 1e-3, f"{name}: a dim light"
+        assert abs(d_s - t_shadow) < 1e-3 or a_s == 0.60, f"{name}: a shadow quieter than its rule"
+        assert abs(d_l - t_light) < 1e-3 or a_l == 0.70 or abs(min(kept) - 0.70) < 1e-3, f"{name}: a dim light"
     # the shadow alphas of the spec's table
     assert {name: round(relief_colours(S)[0][1], 3) for name, S in STYLES.items()} == {
-        "huella": 0.098, "carbon": 0.35, "midnight": 0.35, "blueprint": 0.153, "ink": 0.086, "graphite": 0.289,
-        "neon": 0.35, "lavender": 0.077, "sunset": 0.070, "forest": 0.082, "blush": 0.077, "ocean": 0.066}
+        "huella": 0.223, "carbon": 0.485, "midnight": 0.512, "blueprint": 0.242, "ink": 0.195, "graphite": 0.471,
+        "neon": 0.593, "lavender": 0.128, "sunset": 0.116, "forest": 0.136, "blush": 0.128, "ocean": 0.109}
 
 
 def test_a_style_can_set_its_own_relief_colours():
@@ -1357,12 +1514,13 @@ def test_flat_relief_is_transparent():
     from pinless.render_editorial import STYLES, relief_colours, relief_rgba
     rgba = relief_rgba(np.zeros((5, 7), np.float32), relief_colours(STYLES["huella"]))
     assert rgba.shape == (5, 7, 4) and rgba.dtype == np.uint8 and not rgba[..., 3].any()
-    strong = relief_rgba(np.array([[-1.0, -0.3, 0.3, 1.0]], np.float32), relief_colours(STYLES["huella"]))
+    strong = relief_rgba(np.array([[-1.0, -0.3, 0.3, 0.9, 1.0]], np.float32), relief_colours(STYLES["huella"]))
     (shadow, a_s), (light, a_l) = relief_colours(STYLES["huella"])
-    assert strong[0, :, 3].tolist() == [round(255 * a_s), round(255 * a_s * 0.5), round(255 * a_l * 0.5),
-                                        round(255 * a_l)]
+    ramp = (0.3 / 0.9) ** 0.85  # alpha = side alpha * min(1, |s| / 0.9) ** 0.85
+    assert strong[0, :, 3].tolist() == [round(255 * a_s), round(255 * a_s * ramp), round(255 * a_l * ramp),
+                                        round(255 * a_l), round(255 * a_l)]
     assert strong[0, 0, :3].tolist() == strong[0, 1, :3].tolist() == [round(255 * c) for c in shadow], "shadow"
-    assert strong[0, 2, :3].tolist() == strong[0, 3, :3].tolist() == [round(255 * c) for c in light], "light"
+    assert strong[0, 2, :3].tolist() == strong[0, 4, :3].tolist() == [round(255 * c) for c in light], "light"
     assert [round(255 * c) for c in shadow] == [34, 40, 32] and light == (1.0, 1.0, 1.0), "huella: its ink, white"
 
 

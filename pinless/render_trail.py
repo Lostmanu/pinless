@@ -287,24 +287,24 @@ def _ink_at(bg, inks, target):
 
 
 def trail_relief(S, ground=None):
-    """((shadow rgb, alpha), (light rgb, alpha)), as render_editorial.relief_colours, set against the course's own
-    colour (the accent, one bold line) instead of the faintest heat ink: light paper darkens by up to min(13, 0.35
-    route) L* and lightens by min(4, 0.2 route); dark paper darkens by min(8, 0.5 L*bg, 0.35 route) and lightens by
-    min(8, 0.3 route). The light side is held to what the map under it can bear, as on the other prints. Over the
-    land cover (ground: its mean colour) the same changes of L* are measured on that colour instead of the paper.
-    A style that sets "relief" keeps it."""
+    """((shadow rgb, alpha), (light rgb, alpha)), as render_editorial.relief_colours, for the trail map without the
+    land cover (over it the relief is baked into the ground: bake), set against the course's own colour (the accent,
+    one bold line) instead of the faintest heat ink: light paper darkens by up to min(18, 0.6 route) L* and lightens
+    towards a warm white by min(10, 0.35 route); dark paper darkens by min(16, 0.6 L*bg, 0.6 route) and lightens by
+    min(16, 0.35 route). The light side is held to what the map under it can bear, as on the other prints. ground: a
+    colour to measure the changes of L* on instead of the paper. A style that sets "relief" keeps it."""
     if "relief" in S:
         return S["relief"]
     bg = to_rgb(S["bg"])
     lb = _lstar(bg)
     route = abs(lb - _lstar(to_rgb(S["accent"])))
     if lb >= 50:
-        shadow, ts, light, tl = S["ink"], min(13, 0.35 * route), "#ffffff", min(4, 0.2 * route)
+        shadow, ts, a_s, light, tl = S["ink"], min(18, 0.6 * route), 0.60, "#fff6e0", min(10, 0.35 * route)
     else:
-        shadow, ts, light, tl = "#000000", min(8, 0.5 * lb, 0.35 * route), S["ink"], min(8, 0.3 * route)
+        shadow, ts, a_s, light, tl = "#000000", min(16, 0.6 * lb, 0.6 * route), 0.80, S["ink"], min(16, 0.35 * route)
     base = bg if ground is None else ground
     a_light = min(_relief_alpha(base, to_rgb(light), tl, 0.6), _keep_alpha(S, to_rgb(light), 0.6))
-    return ((to_rgb(shadow), _relief_alpha(base, to_rgb(shadow), ts, 0.5)), (to_rgb(light), a_light))
+    return ((to_rgb(shadow), _relief_alpha(base, to_rgb(shadow), ts, a_s)), (to_rgb(light), a_light))
 
 
 # --- the ground: the land cover under the map -------------------------------------------------------------------------

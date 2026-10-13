@@ -396,7 +396,7 @@ def test_the_trail_map_draws_its_paths_over_a_stronger_relief():
         assert min(lstar(S["bg"]), lstar(S["sub"])) < lstar(T["trail"]) < max(lstar(S["bg"]), lstar(S["sub"])), name
         (_, shadow), (light_rgb, light) = T["relief"]
         (_, shadow0), _ = render_editorial.relief_colours(S)
-        assert shadow >= shadow0 and shadow > 0, f"{name}: the course is one bold line, the relief can show more"
+        assert shadow >= shadow0 - 1e-9 and shadow > 0, f"{name}: the course is one bold line, the relief can show more"
         assert light <= render_editorial._keep_alpha(S, light_rgb, 0.6) + 1e-9, "the map under it keeps its contrast"
     own = dict(render_editorial.STYLES["huella"], relief=(((0, 0, 0), 0.1), ((1, 1, 1), 0.0)))
     assert render_trail.trail_style(own)["relief"] == own["relief"], "a style that sets its relief keeps it"
