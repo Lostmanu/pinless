@@ -503,6 +503,46 @@ def test_the_colours_of_the_classes_on_light_and_dark_paper():
     assert len(set(edge.tolist())) >= 4 and (np.diff(edge) >= 0).all(), "the class edge is softened, not stepped"
 
 
+def test_a_dry_land_blends_its_scattered_scrub_into_washes_and_keeps_towns_and_water_crisp():
+    """The steppe of Tabernas printed as a camouflage: spots of scrub and bare ground 1 to 3 mm wide, too large for the
+    generalisation, over the straw of the grass. In a dry land the land colours blend over BLEND_DRY_MM on paper: a
+    2 mm spot prints as a faint wash, a field of bare ground 30 mm wide keeps its orange in its middle, and a town and
+    a lake keep their own colours and do not grey the land next to them. A green land, and a call without the pixel's
+    size on paper, are coloured as before."""
+    px = 0.169  # mm: the raster of an A3 trail map (150 ppi)
+    n = round(2.0 / px)  # a 2 mm spot
+    H, W = 400, 600
+    c = np.full((H, W), landcover.GRASS, np.uint8)
+    spots = [(y, x) for y in range(30, 170, 60) for x in range(30, 270, 60)]  # 10 mm apart: each one alone
+    for i, (y, x) in enumerate(spots):
+        c[y:y + n, x:x + n] = (landcover.SHRUB, landcover.BARE)[i % 2]
+    big = round(30 / px)
+    c[200:200 + big, 300:300 + big] = landcover.BARE
+    c[220:300, 40:120] = landcover.BUILT
+    c[320:390, 40:120] = landcover.WATER
+    S = render_editorial.STYLES["huella"]
+    pal = landcover.ground_palette(c, S, 1.0)
+    before = landcover.ground_rgb(c, S, 1.0)
+    after = landcover.ground_rgb(c, S, 1.0, px_mm=px)
+    hexes = lambda img, y, x: "#%02x%02x%02x" % tuple(int(v) for v in img[y, x])  # noqa: E731
+    grass = "#%02x%02x%02x" % tuple(round(v * 255) for v in pal[landcover.GRASS])
+    for y, x in spots:
+        mid = (y + n // 2, x + n // 2)
+        was, now = landcover.delta_e(hexes(before, *mid), grass), landcover.delta_e(hexes(after, *mid), grass)
+        # measured here: scrub 1.93 -> 0.69, bare land 4.85 -> 0.96 (CIEDE2000 from the grass, after the rounding)
+        assert was > 1.5 and now < 0.4 * was, f"a 2 mm spot prints as a wash: {was:.1f} -> {now:.1f}"
+    centre = (200 + big // 2, 300 + big // 2)
+    assert landcover.delta_e(hexes(after, *centre), hexes(before, *centre)) < 1.0, "a wide field keeps its colour"
+    for y, x, k in ((260, 80, landcover.BUILT), (355, 80, landcover.WATER)):
+        assert (after[y, x] == before[y, x]).all(), f"{landcover.NAMES[k]} keeps its colour"
+    r = math.ceil(3 * landcover.SMOOTH_PX)
+    for y, x in ((260, 120 + r + 1), (355, 120 + r + 1), (215, 80)):  # grass beside the town, the lake, above town
+        assert landcover.delta_e(hexes(after, y, x), grass) < 0.5, "the land next to a town or a lake is not greyed"
+    green = landcover.ground_rgb(c, S, 0.0, px_mm=px)
+    assert (green == landcover.ground_rgb(c, S, 0.0)).all(), "a green land is coloured as before"
+    assert landcover.BLEND_DRY_MM * 1.0 / px > landcover.SMOOTH_PX
+
+
 def _chroma(rgb):
     _, a, b = landcover.lab(rgb)
     return math.hypot(a, b)

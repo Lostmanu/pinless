@@ -202,9 +202,17 @@ def place_region(lat: float, lon: float, lang: str = "en", timeout=20):
     return _lookup(lat, lon, lang, timeout, region=True)
 
 
-def _lookup(lat, lon, lang, timeout, region):
-    import time
+def _at_sea(answer):
+    """True when an answer is the country alone (city, [region,] country): what Nominatim says of a point at sea."""
+    city, country = answer[0], answer[-1]
+    return bool(country) and (not city or city.strip().casefold() == country.strip().casefold())
 
+
+def _lookup(lat, lon, lang, timeout, region):
+    """The answer for the point rounded to about 1 km. Where that point lies at sea (in a bay, or off a narrow
+    peninsula, where every point of the 1 km grid can fall in the water) the answer at the city level is the country
+    alone; the same point is then asked once more at street level, where Nominatim answers with the address of the
+    nearest thing mapped on land, and its city is kept, never its street. Nothing new is sent: the same rounded point."""
     key = f"{lat:.2f},{lon:.2f},{lang}" + (",region" if region else "")
     empty = ("", "", "") if region else ("", "")
     path = os.path.join(cache_root(), "places.json")
@@ -213,33 +221,61 @@ def _lookup(lat, lon, lang, timeout, region):
             known = json.load(f)
     except (OSError, ValueError):
         known = {}
-    if key in known:
-        return tuple(known[key])
+    if key not in known:
+        d = _ask(lat, lon, lang, timeout, zoom=10)
+        if d is None:
+            return empty
+        known[key] = list(_answer(d, region, by_name=True))
+        _save(path, known)
+    out = tuple(known[key])
+    if not _at_sea(out):
+        return out
+    near = key + ",street"
+    if near not in known:
+        d = _ask(lat, lon, lang, timeout, zoom=16)
+        if d is None:
+            return out
+        known[near] = list(_answer(d, region, by_name=False))  # the name at street level is a road's: never kept
+        _save(path, known)
+    again = tuple(known[near])
+    return out if _at_sea(again) or not again[0] else again
+
+
+def _ask(lat, lon, lang, timeout, zoom):
+    """Nominatim's reverse answer (a dict) for the point rounded to 0.01 degrees, or None if the lookup fails.
+    Requests are spaced at least 1.1 s apart (Nominatim usage policy)."""
+    import time
+
     wait = 1.1 - (time.monotonic() - _last_lookup[0])
     if wait > 0:
         time.sleep(wait)
     _last_lookup[0] = time.monotonic()
     url = "https://nominatim.openstreetmap.org/reverse?" + urllib.parse.urlencode(
-        {"lat": f"{lat:.2f}", "lon": f"{lon:.2f}", "format": "jsonv2", "zoom": 10, "accept-language": lang})
+        {"lat": f"{lat:.2f}", "lon": f"{lon:.2f}", "format": "jsonv2", "zoom": zoom, "accept-language": lang})
     try:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            d = json.load(r)
+            return json.load(r)
     except Exception:
-        return empty
+        return None
+
+
+def _answer(d, region, by_name):
+    """(city, [region,] country) of one Nominatim answer; by_name: the answer's own name stands for the city where
+    the address has none (at the city level that name is a place)."""
     adr = d.get("address", {})
     city = next((adr[k] for k in ("city", "town", "village", "municipality", "county") if adr.get(k)), "")
-    city = city or d.get("name", "") or ""
+    city = city or (d.get("name", "") if by_name else "") or ""
     if region:
         # an island's archipelago stands for the region where the country has none there (Madeira)
-        out = (city, next((adr[k] for k in ("state", "region", "province", "archipelago") if adr.get(k)), ""),
-               adr.get("country", ""))
-    else:
-        out = (city, adr.get("country", ""))
-    known[key] = list(out)
+        return (city, next((adr[k] for k in ("state", "region", "province", "archipelago") if adr.get(k)), ""),
+                adr.get("country", ""))
+    return (city, adr.get("country", ""))
+
+
+def _save(path, known):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(known, f, ensure_ascii=False, indent=0)
-    return out
 
 
 def cache_root() -> str:

@@ -471,6 +471,12 @@ WATER_STEP, STREAM_STEP = 9.0, 5.0
 # and a desert still orange (a mix towards the paper in RGB turned both into the same grey brown)
 DARK_MIX, DARK_CHROMA = 0.35, 0.75
 SMOOTH_PX = 1.0  # the Gaussian over the coloured raster (pixels at 150 ppi, 0.17 mm): class edges read painted
+# In a dry land the colours of the land classes blend over this much paper (blend_dry: a Gaussian's sigma, at dryness
+# 1): the scrub and bare ground scattered over a steppe in spots of 1 to 3 mm, generalised but too large to go,
+# printed as a camouflage over the relief (Tabernas); blended, they print as washes of straw, orange and olive. The
+# colour variation of the ground at 0.3 to 3 mm on the Tabernas print: 2.37 (Lab) as classes, 2.18 generalised over
+# 1.5 mm, 1.09 blended over 1.5 mm
+BLEND_DRY_MM = 1.5
 # The land classes of a map are pulled this share of the way to the map's mean land colour, in a green land and in a
 # dry one (calm): with the relief baked into the ground, the patches of the classes must not shout over the ridges.
 # Water, towns, snow and land without data keep their colours: they say where things are, not what grows there
@@ -589,14 +595,32 @@ def ground_palette(classes, S, dry=0.0):
     return calm(palette(S, dry, land_lstar(S, sh, dry)), sh, dry)
 
 
-def ground_rgb(classes, S, dry=0.0):
-    """uint8 (H, W, 3): the classes in the style's ground colours (ground_palette), smoothed by SMOOTH_PX after
-    colouring."""
+def ground_rgb(classes, S, dry=0.0, px_mm=None):
+    """uint8 (H, W, 3): the classes in the style's ground colours (ground_palette), in a dry land blended (blend_dry;
+    px_mm: the raster's pixel on paper, without which nothing is blended), then smoothed by SMOOTH_PX."""
     lut = np.zeros((256, 3))
     for k, c in ground_palette(classes, S, dry).items():
         lut[k] = c
-    rgb = _gauss(lut[np.asarray(classes, dtype=np.uint8)], SMOOTH_PX)
+    c = np.asarray(classes, dtype=np.uint8)
+    rgb = blend_dry(lut[c], c, dry, px_mm)
+    rgb = _gauss(rgb, SMOOTH_PX)
     return np.clip(np.round(rgb * 255), 0, 255).astype(np.uint8)
+
+
+def blend_dry(rgb, classes, dry, px_mm):
+    """The colours of the land classes of a dry land blended by a Gaussian of BLEND_DRY_MM * dry on paper: each land
+    pixel takes the mean colour of the land around it (CALM_KEEP outside the mean, and keeping their own colours, so a
+    town or a lake neither greys the land nor blurs). rgb: float (H, W, 3); the same rgb in a green land, without
+    px_mm, or where the blend would be no wider than SMOOTH_PX."""
+    sigma = BLEND_DRY_MM * float(dry) / px_mm if px_mm else 0.0
+    if sigma <= SMOOTH_PX:
+        return rgb
+    land = ~np.isin(classes, CALM_KEEP)
+    if not land.any():
+        return rgb
+    w = _gauss(land.astype(np.float32), sigma)
+    soft = _gauss(np.where(land[..., None], rgb, 0).astype(np.float32), sigma) / np.maximum(w, 1e-6)[..., None]
+    return np.where(land[..., None], soft, rgb).astype(np.asarray(rgb).dtype)
 
 
 def shares(classes):

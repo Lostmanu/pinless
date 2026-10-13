@@ -16,6 +16,7 @@ the machine.
 from __future__ import annotations
 
 import numpy as np
+import shapely
 from pyproj import Transformer
 
 from . import area, ingest, landcover, privacy, race, relief, render, render_trail
@@ -87,6 +88,21 @@ def ice_or_rock(ground_, relief_, folder, extent, crs, log=print):
         log(f"[ground] snow and ice below the snowline where OpenStreetMap maps no glacier: drawn as rock "
             f"({f'{share * 100:.0f} %' if share >= 0.005 else 'under 1 %'} of the map)")
     return out
+
+
+def chosen_extent(bbox, crs, aspect):
+    """The map extent (x0, x1, y0, y1) of --bbox south,west,north,east: the box round its edges projected to the map's
+    projection (fifty points to an edge, which the projection bends), grown to the map's aspect (width / height)
+    round its middle, never cut."""
+    s, w, n, e = (float(v) for v in bbox.split(","))
+    t = np.linspace(0.0, 1.0, 51)
+    lons = np.concatenate([w + (e - w) * t, np.full_like(t, e), e - (e - w) * t, np.full_like(t, w)])
+    lats = np.concatenate([np.full_like(t, s), s + (n - s) * t, np.full_like(t, n), n - (n - s) * t])
+    xs, ys = Transformer.from_crs(4326, crs, always_xy=True).transform(lons, lats)
+    x0, x1, y0, y1 = float(np.min(xs)), float(np.max(xs)), float(np.min(ys)), float(np.max(ys))
+    cx, cy, width, height = (x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0
+    width, height = max(width, height * aspect), max(height, width / aspect)
+    return (cx - width / 2, cx + width / 2, cy - height / 2, cy + height / 2)
 
 
 def _names_a_place(answer):
@@ -175,7 +191,17 @@ def run(sel, pool, a, log=print):
             "it is drawn as a loop from a public trailhead. If it is not one (a hotel, a friend's home, your own "
             "door), add --zone there.")
 
-    extent = race.frame_course(pieces, render_trail.map_aspect(a.size, profile=bool(route.ele)), pad_frac=PAD)
+    # the map frames the drawn stretch with a margin, or takes the box given with --bbox, which must hold all of it
+    aspect = render_trail.map_aspect(a.size, profile=bool(route.ele))
+    if getattr(a, "bbox", None):
+        extent = chosen_extent(a.bbox, crs, aspect)
+        x0, x1, y0, y1 = extent
+        if not shapely.box(x0, y0, x1, y1).contains(shapely.union_all([p for _, p in pieces])):
+            log("[trail] STOP: the drawn route does not fit in --bbox. Give a box (south,west,north,east) that holds "
+                "all of it, or leave --bbox out and the map frames the route by itself. Nothing was sent or exported.")
+            return 2
+    else:
+        extent = race.frame_course(pieces, aspect, pad_frac=PAD)
     try:
         big = race.osm_box(extent, crs)
     except race.AcrossDateline as ex:

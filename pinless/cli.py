@@ -48,7 +48,8 @@ def main(argv=None):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(prog="pinless")
     p.add_argument("export")
-    p.add_argument("--bbox", default=None, help="south,west,north,east (degrees); default: where you run most")
+    p.add_argument("--bbox", default=None, help="south,west,north,east (degrees); default: where you run most; "
+                   "trail: the map's box, which must hold the whole drawn route (default: the route and a margin)")
     p.add_argument("--place", default=None, help="use a named place as the area, e.g. \"Valencia, Spain\"")
     p.add_argument("--cache", default=None, help="pre-fetched OSM folder name under ./cache (tools/fetch_osm.py)")
     p.add_argument("--title", default="", help="headline text; default: --place or the city found at the area centre")
@@ -175,9 +176,12 @@ def main(argv=None):
         p.error("the race layout colours its course by pace (default), elevation or single")
     if a.layout == "trail" and a.color_by not in ("heat", "pace", "elevation", "single"):
         p.error("the trail layout colours its route in one colour (default), or by elevation or pace")
-    if a.layout in ("race", "trail") and (a.bbox or a.place or a.cache or a.fit or a.headline != "city" or a.graphs):
-        p.error(f"the {a.layout} layout frames its course by itself: --bbox, --place, --cache, --fit, --headline and "
-                f"--graphs do not apply")
+    if a.layout == "race" and (a.bbox or a.place or a.cache or a.fit or a.headline != "city" or a.graphs):
+        p.error("the race layout frames its course by itself: --bbox, --place, --cache, --fit, --headline and "
+                "--graphs do not apply")
+    if a.layout == "trail" and (a.place or a.cache or a.fit or a.headline != "city" or a.graphs):
+        p.error("the trail layout frames its route by itself, or in the box you give with --bbox: --place, --cache, "
+                "--fit, --headline and --graphs do not apply")
     if a.layout == "atlas" and (a.bbox or a.place or a.cache or a.fit or a.headline != "city"):
         p.error("the atlas finds every city by itself: --bbox, --place, --cache, --fit and --headline do not apply")
     if not 1 <= a.max_cities <= 12:

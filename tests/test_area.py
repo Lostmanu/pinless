@@ -297,6 +297,49 @@ def test_the_region_of_an_island_is_its_archipelago_where_there_is_no_state(monk
     assert area.place_region(39.57, 2.65) == ("Palma", "Balearic Islands", "Spain")
 
 
+def test_a_point_at_sea_is_asked_again_at_street_level_for_the_nearest_place(monkeypatch):
+    """Every point of the 1 km grid along the narrow Ponta de Sao Lourenco falls in the sea, where Nominatim's answer at
+    the city level is the country alone (as it was, measured on 13-10-2026, at 32.75,-16.69 and 32.74,-16.70). The same
+    rounded point asked at street level answers with the nearest address on land: its city is kept, never the road
+    that names it. A point that names a place is asked once; a point far out at sea keeps the country alone."""
+    import io
+    import time
+    import urllib.parse
+    import urllib.request
+
+    class Answer(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    sent = []
+    sea = {"name": "Portugal", "address": {"country": "Portugal", "country_code": "pt"}}
+    street = {"name": "Estrada Regional 214", "address": {"road": "Estrada Regional 214", "town": "Caniçal",
+                                                          "city": "Machico", "archipelago": "Madeira",
+                                                          "country": "Portugal"}}
+    answers = {("32.75", "10"): sea, ("32.75", "16"): street, ("32.90", "10"): sea, ("32.90", "16"): sea,
+               ("40.42", "10"): {"address": {"city": "Madrid", "state": "Community of Madrid", "country": "Spain"}}}
+
+    def urlopen(req, timeout=None):
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(req.full_url).query))
+        sent.append((q["lat"], q["lon"], q["zoom"]))
+        return Answer(json.dumps(answers[(q["lat"], q["zoom"])]).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(area, "_last_lookup", [-1e9])
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    assert area.place_region(32.7460305, -16.690687) == ("Machico", "Madeira", "Portugal")
+    assert sent == [("32.75", "-16.69", "10"), ("32.75", "-16.69", "16")], "the same rounded point, twice"
+    assert area.place_names(32.75, -16.69)[0] == "Machico"
+    assert area.place_region(32.75, -16.69) == ("Machico", "Madeira", "Portugal")
+    assert len(sent) == 4, "both answers are cached: the region lookup asks nothing more"
+    assert area.place_region(32.90, -16.69) == ("Portugal", "", "Portugal"), "far out at sea, the country alone"
+    assert area.place_region(40.42, -3.70) == ("Madrid", "Community of Madrid", "Spain")
+    assert sent[-1] == ("40.42", "-3.70", "10") and len(sent) == 7, "a place on land is asked once"
+
+
 def test_the_area_for_two_keeps_the_partner_who_records_fewer_points():
     """The box is the 1st to 99th percentile of each person's own points near the winner, joined: pooled, a partner
     whose watch records ten times fewer points is about 2 % of them and a third of their runs fell outside."""

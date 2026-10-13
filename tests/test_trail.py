@@ -825,9 +825,42 @@ def test_a_route_across_the_180th_meridian_is_refused_before_anything_is_sent(mo
     assert -3.1 < w < -3 < e < -2.9 and 40.3 < s < n < 40.5, "a map elsewhere: its own box"
 
 
+def test_a_bbox_frames_the_trail_map_when_it_holds_the_whole_drawn_route(monkeypatch, tmp_path, capsys):
+    """By itself the map frames the drawn route with a margin: the walk to Lac Blanc never reached the Mont Blanc massif
+    across the valley. --bbox gives the map's box instead (grown to the map's aspect round its middle), so long as it
+    holds the whole drawn route; a box that cuts the route is refused before anything is sent."""
+    walk = _hike(_loop(0, 0, 2500, n=500), "walk")
+    captured = {}
+    _trail_world(monkeypatch, [walk], captured, tmp_path)
+    out = ["--dpi", "20", "--out", str(tmp_path / "t.png")]
+    assert cli.main(["x.gpx", "--layout", "trail"] + out) == 0
+    own = captured["extent"]
+    (w, s), (e, n) = _lonlat([[-6000, -4000], [4000, 9000]])  # the walk (x -5000..0, y -2500..2500), and far north
+    captured.clear()
+    assert cli.main(["x.gpx", "--layout", "trail", "--bbox", f"{s},{w},{n},{e}"] + out) == 0
+    x0, x1, y0, y1 = ext = captured["extent"]
+    crs = trail.render.utm_crs(*np.median(np.asarray(walk.lonlat), axis=0))
+    assert ext == pytest.approx(trail.chosen_extent(f"{s},{w},{n},{e}", crs, render_trail.map_aspect("A3")))
+    assert (x1 - x0) / (y1 - y0) == pytest.approx(render_trail.map_aspect("A3")), "grown to the map's aspect"
+    assert y1 - y0 > 12900 and x1 - x0 > (own[1] - own[0]) * 1.5, "the box given, far wider than its own frame"
+    corners = np.column_stack(trail.Transformer.from_crs(4326, crs, always_xy=True).transform([w, e, e, w],
+                                                                                              [s, s, n, n]))
+    assert (corners[:, 0] >= x0 - 1).all() and (corners[:, 0] <= x1 + 1).all() and (corners[:, 1] >= y0 - 1).all()
+    assert (corners[:, 1] <= y1 + 1).all(), "never cut"
+    capsys.readouterr()
+    captured.clear()
+    (w, s), (e, n) = _lonlat([[-3000, -4000], [4000, 4000]])  # cuts the west of the walk
+    assert cli.main(["x.gpx", "--layout", "trail", "--bbox", f"{s},{w},{n},{e}"] + out) == 2
+    assert "does not fit in --bbox" in capsys.readouterr().out
+    assert "extra" not in captured and "info" not in captured, "no OpenStreetMap request, no print"
+    with pytest.raises(SystemExit) as ex:
+        cli.main(["x.gpx", "--layout", "race", "--bbox", f"{s},{w},{n},{e}"])
+    assert ex.value.code == 2, "the race print still frames its course by itself"
+
+
 def test_trail_command_line_refusals(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(ingest, "read_export", lambda path: ([], ingest.IngestReport()))
-    for bad in (["--bbox", "40,-4,41,-3"], ["--place", "Madrid"], ["--cache", "madrid"], ["--fit"],
+    for bad in (["--place", "Madrid"], ["--cache", "madrid"], ["--fit"], ["--bbox", "41,-4,40,-3"],
                 ["--headline", "name", "--name", "A"], ["--graphs"], ["--with", "b.zip", "--with-name", "B",
                                                                        "--name", "A"], ["--color-by", "month"]):
         with pytest.raises(SystemExit) as ex:

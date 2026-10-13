@@ -420,7 +420,7 @@ def draw_ground(ax, ground, extent, S, map_w_mm, shade=None):
     when nothing was baked)."""
     if ground.classes.shape != relief_raster_shape(map_w_mm, extent):
         raise ValueError("the land cover raster does not match the map")
-    rgb = landcover.ground_rgb(ground.classes, S, ground.dry)
+    rgb = landcover.ground_rgb(ground.classes, S, ground.dry, px_mm=map_w_mm / ground.classes.shape[1])
     dark = _lstar(to_rgb(S["bg"])) < 50
     water = np.asarray(ground.classes) == landcover.WATER
     printed, ref_l = rgb, None
