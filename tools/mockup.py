@@ -8,7 +8,7 @@ numpy, in parallel bands; the noise of the light is filtered apart from the text
 image is developed as a camera would: exposure, a filmic curve, a slight vignette and grain.
 
 A3 goes in a standard 40x50 cm frame with a mat; 50x70 in a 50x70 frame without one.
-Usage: python tools/mockup.py docs/poster-huella.jpg docs/wall-huella.jpg --frame oak [--spp 64]
+Usage: python tools/mockup.py docs/poster-huella.jpg out/room-huella.jpg --frame oak [--spp 64]
 """
 import argparse
 import math

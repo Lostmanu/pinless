@@ -34,14 +34,16 @@ WINDOW_CM = (28.7, 41.0)  # the mat's window: an A3 print with 5 mm under the ma
 # the scenes: frames as (centre x, top y, frame height in px), light direction (towards the shadow), shadow strength,
 # glass glare, a final crop (x0, y0, x1, y1)
 SCENES = {
-    "sofa": {"photo": "sofa.jpg", "frames": [(1225, 118, 455)], "light": (0.35, 0.55), "shadow": 0.42,
-             "glare": 0.05, "crop": (180, 0, 2280, 1582)},
+    "sofa": {"photo": "sofa.jpg", "frames": [(1225, 70, 520)], "light": (0.35, 0.55), "shadow": 0.42,
+             "glare": 0.05, "crop": (560, 0, 1900, 1080)},
     "dusk": {"photo": "dusk.jpg", "frames": [(1180, 38, 600)], "light": (-0.75, 0.45), "shadow": 0.55,
-             "glare": 0.035, "crop": (150, 0, 2250, 1600)},
+             "glare": 0.035, "crop": (520, 0, 1860, 1060)},
     "nordic": {"photo": "nordic.jpg", "frames": [(1318, 92, 520)], "light": (0.45, 0.6), "shadow": 0.30,
-               "glare": 0.04, "crop": (200, 0, 2400, 1600)},
+               "glare": 0.04, "crop": (560, 0, 2090, 1240)},
     "sunny": {"photo": "sunny.jpg", "frames": [(1150, 520, 400), (1530, 520, 400)], "light": (-0.65, 0.4),
-              "shadow": 0.38, "glare": 0.06, "crop": (300, 160, 2400, 1600)},
+              "shadow": 0.38, "glare": 0.06, "crop": (640, 330, 2140, 1430)},
+    "sunny_one": {"photo": "sunny.jpg", "frames": [(1350, 470, 480)], "light": (-0.65, 0.4), "shadow": 0.38,
+                  "glare": 0.06, "crop": (700, 330, 2000, 1290)},
 }
 
 

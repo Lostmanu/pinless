@@ -3,10 +3,10 @@
 **Your year of running as a print-ready poster of your city. From your Strava export, on your own computer, without showing where you live.**
 
 <p align="center">
-  <img src="docs/wall-huella.jpg" width="49%" alt="The warm paper poster of a year of runs in Madrid, framed in oak on a wall above an oak sideboard, books and two stoneware vases, in the dappled light of a window">
-  <img src="docs/wall-carbon.jpg" width="49%" alt="The same poster in the dark carbon style, in a black frame">
+  <img src="docs/wall-huella.jpg" width="49%" alt="The warm paper poster of a year of runs in Madrid, framed in oak above a cream sofa in a bright room">
+  <img src="docs/wall-carbon.jpg" width="49%" alt="The same poster in the dark carbon style, in a brass frame above a corduroy sofa in warm evening light">
 </p>
-<p align="center"><sub>A3 prints in standard 40x50 cm frames, rendered to scale in a modelled room lit by a window (<code>tools/mockup.py</code>, a small path tracer), not photographs. Demo posters made from a synthetic runner (<code>tools/simulate_runner.py</code>), not from a real person.</sub></p>
+<p align="center"><sub>A3 prints in 40x50 cm frames hung in real room photos (<code>tools/mockup_photo.py</code>; photos from Unsplash, credited in <a href="tools/rooms/CREDITS.md">tools/rooms/CREDITS.md</a>). Demo posters made from a synthetic runner (<code>tools/simulate_runner.py</code>), not from a real person.</sub></p>
 
 ```bash
 pip install https://github.com/Lostmanu/pinless/archive/refs/heads/main.zip
@@ -76,7 +76,7 @@ The line weight always grows with how often you ran a street; `--color-by` decid
 
 <p align="center">
   <img src="docs/atlas-huella.jpg" width="40%" alt="Atlas of six cities run in one year: Madrid, Lisbon, Paris, Rome, Valencia and Zurich">
-  <img src="docs/wall-atlas.jpg" width="58%" alt="The atlas framed in oak on a wall above an oak sideboard">
+  <img src="docs/wall-atlas.jpg" width="58%" alt="The atlas in a walnut frame above a built-in sofa in a sunny living room">
 </p>
 <p align="center"><sub>Demo atlas from the synthetic runner with trips (<code>tools/simulate_trips.py</code>); try it with <code>pinless demo/strava_export_atlas_demo.zip --layout atlas</code>.</sub></p>
 
@@ -90,7 +90,7 @@ One small map per city on the same print: the city where you ran most comes firs
 
 <p align="center">
   <img src="docs/race.jpg" width="40%" alt="Finisher print of a half marathon in Madrid with its elevation profile, time, pace and kilometre splits">
-  <img src="docs/wall-race.jpg" width="58%" alt="The race print in a black frame on a wall above an oak sideboard">
+  <img src="docs/wall-race.jpg" width="58%" alt="The race print in a black frame above a white cabinet with a cactus">
 </p>
 
 ```bash
@@ -113,10 +113,10 @@ A run that starts or ends at one of your private places (a long run from home) i
   <img src="docs/trail-coast.jpg" width="32%" alt="Trail print in the ocean style of the Ponta de Sao Lourenco on Madeira: the long green peninsula between two seas with its cliffs in relief and contour lines, the route in deep blue out to the Casa do Sardinha and back, the elevation profile and the route numbers">
 </p>
 <p align="center">
-  <img src="docs/wall-trail.jpg" width="49%" alt="The Penalara trail print in an oak frame on a wall above an oak sideboard, in the dappled light of a window">
-  <img src="docs/wall-trail-white.jpg" width="49%" alt="The Lac Blanc trail print in the dark midnight style, in a white frame on the same wall">
+  <img src="docs/wall-trail.jpg" width="49%" alt="The Tre Cime di Lavaredo print in a natural wood frame and the Ponta de Sao Lourenco print in a white frame, side by side above a sunny sofa">
+  <img src="docs/wall-trail-white.jpg" width="49%" alt="The Lac Blanc trail print in the dark midnight style, in a white frame above a cream sofa">
 </p>
-<p align="center"><sub>Demo routes: synthetic hikes on real OpenStreetMap paths, with heights from the Copernicus elevation model (<code>tools/simulate_hike.py</code>), not a real person's walks. Peñalara and Tabernas in Spain and the Tre Cime di Lavaredo in the Dolomites in the default style, Lac Blanc above Chamonix in the midnight style and the Ponta de São Lourenço on Madeira in the ocean style. Peñalara framed in oak and Lac Blanc in white, rendered to scale in a modelled room (<code>tools/mockup.py</code>), not photographs.</sub></p>
+<p align="center"><sub>Demo routes: synthetic hikes on real OpenStreetMap paths, with heights from the Copernicus elevation model (<code>tools/simulate_hike.py</code>), not a real person's walks. Peñalara and Tabernas in Spain and the Tre Cime di Lavaredo in the Dolomites in the default style, Lac Blanc above Chamonix in the midnight style and the Ponta de São Lourenço on Madeira in the ocean style. Tre Cime in natural wood, Madeira and Lac Blanc in white, hung in real room photos (<code>tools/mockup_photo.py</code>).</sub></p>
 
 Try the demo routes:
 
@@ -147,7 +147,7 @@ The privacy rules are the race print's, with your private places learned from ev
 
 <p align="center">
   <img src="docs/couple-huella.jpg" width="40%" alt="Poster of two runners' year in Madrid: Lucia's streets in red, Marcos's in blue, the streets they share in black">
-  <img src="docs/wall-couple.jpg" width="58%" alt="The poster for two framed in oak on a wall above an oak sideboard">
+  <img src="docs/wall-couple.jpg" width="58%" alt="The poster for two in an oak frame above a corduroy sofa in warm evening light">
 </p>
 <p align="center"><sub>Demo poster from two synthetic runners (<code>tools/simulate_runner.py</code>); try it with <code>pinless demo/strava_export_madrid_demo.zip --with demo/strava_export_madrid_partner_demo.zip --name Lucia --with-name Marcos</code>.</sub></p>
 
@@ -297,6 +297,8 @@ The tool keeps off the via ferratas that OpenStreetMap's walk network includes (
 The tests run offline. The street statistics use `tests/data/madrid_streets.json.gz`, a small extract of the named OpenStreetMap streets around the demo runs (ODbL). `tools/make_street_fixture.py` rebuilds it from the full Madrid graph, and its `--check` option confirms that it gives the same street counts as the full graph.
 
 ## Credits and license
+
+The wall mockups hang the posters in real room photos from Unsplash, used under the Unsplash License; the photographers are named in `tools/rooms/CREDITS.md`. `tools/mockup.py` renders the frames instead in a modelled room, A3 or 50x70, when no photo fits.
 
 Map data © OpenStreetMap contributors, available under the ODbL; every poster carries the attribution, and so does every demo hike in `demo/`, whose line follows OpenStreetMap paths. Fonts: Barlow Condensed and Manrope, SIL Open Font License 1.1 (`pinless/fonts`). Code: MIT.
 
