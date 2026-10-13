@@ -668,9 +668,10 @@ def contour_step(z, extent, map_w_mm, land=None):
 
 
 def contour_lines(z, extent, step, map_w_mm, mask=None):
-    """[(level, (n, 2) array in map units)]: the contour lines of the raster z (row 0 north) at every positive
-    multiple of step, traced between the pixel centres (so every vertex lies inside the map), never through a pixel
-    of mask (True where no line may run), without the short closed loops, simplified to what paper shows."""
+    """[(level, (n, 2) array in map units)]: the contour lines of the raster z (row 0 north) at every multiple of
+    step but 0 (the sea's own level: the coast is the water's edge, drawn with the water; land below the sea, by the
+    Dead Sea, keeps its lines), traced between the pixel centres (so every vertex lies inside the map), never through
+    a pixel of mask (True where no line may run), without the short closed loops, simplified to what paper shows."""
     x0, x1, y0, y1 = extent
     H, W = np.shape(z)
     xs = x0 + (np.arange(W) + 0.5) * (x1 - x0) / W
@@ -683,7 +684,7 @@ def contour_lines(z, extent, step, map_w_mm, mask=None):
     lo, hi = float(np.nanmin(z)), float(np.nanmax(z))
     out = []
     for level in np.arange(math.ceil(lo / step) * step, hi + step, step):
-        if level <= 0 or level > hi:
+        if abs(level) < 1e-9 or level > hi:
             continue
         for line in gen.lines(float(level)):
             if len(line) < 3:

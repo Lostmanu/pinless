@@ -997,6 +997,67 @@ def test_contours_only_on_a_trail_map_with_heights(monkeypatch, tmp_path):
     assert not calls, "never on the city poster"
 
 
+def _slope_page(extent, shape, z0=1000.0, grade=0.2):
+    """Heights of a plane rising east at grade on the pixel centres of the map, and the plane itself."""
+    x0, x1, y0, y1 = extent
+    H, W = shape
+
+    def plane(x):
+        return z0 + grade * (np.asarray(x) - x0)
+
+    xs = x0 + (np.arange(W) + 0.5) * (x1 - x0) / W
+    return np.tile(plane(xs), (H, 1)).astype(np.float64), plane
+
+
+def test_index_lines_are_every_fifth_level_and_both_kinds_keep_off_the_water():
+    import matplotlib.pyplot as plt
+    extent = (0.0, 5611.5, 0.0, 5000.0)  # 1:21,500 on 261 mm: 10 m lines
+    z, plane = _slope_page(extent, (140, 150))
+    classes = np.full(z.shape, landcover.GRASS, np.uint8)
+    classes[50:90, 40:110] = landcover.WATER  # a lake across the slope
+    fig, ax = plt.subplots()
+    info = render_trail.draw_contours(ax, z, extent, render_editorial.STYLES["huella"], 1.0, 261.0, EMPTY,
+                                      classes=classes)
+    assert info["step"] == 10
+    by_width = {p.get_linewidth(): p for p in ax.patches}
+    minor, index = by_width[render_trail.CONTOUR_PT[0]], by_width[render_trail.CONTOUR_PT[1]]
+    every = render_trail.CONTOUR_INDEX * info["step"]
+    for patch, is_index in ((minor, False), (index, True)):
+        v = patch.get_path().vertices
+        z_v = plane(v[:, 0])
+        assert np.allclose(z_v / info["step"], np.round(z_v / info["step"]), atol=1e-6), "on the levels"
+        on_index = np.isclose(z_v / every, np.round(z_v / every), atol=1e-6)
+        assert on_index.all() if is_index else not on_index.any(), "index lines every fifth level, and only them"
+        x0, x1, y0, y1 = extent
+        H, W = z.shape
+        codes = patch.get_path().codes
+        joined = codes[1:] != patch.get_path().MOVETO  # the segments of each line, not the jumps between lines
+        t = np.linspace(0, 1, 50)[:, None, None]
+        pts = (v[:-1][joined] + (v[1:][joined] - v[:-1][joined]) * t).reshape(-1, 2)  # along every segment
+        col = np.clip(((pts[:, 0] - x0) / (x1 - x0) * W).astype(int), 0, W - 1)
+        row = np.clip(((y1 - pts[:, 1]) / (y1 - y0) * H).astype(int), 0, H - 1)
+        assert not (classes[row, col] == landcover.WATER).any(), "no line over the land cover's water"
+    plt.close(fig)
+
+
+def test_land_below_the_sea_keeps_its_contour_lines():
+    """By the Dead Sea or in Death Valley the land lies below 0 m: its lines are drawn like any other, only the sea's
+    own level (0) is not (the coast is the water's edge)."""
+    extent = (0.0, 5611.5, 0.0, 5000.0)
+    import matplotlib.pyplot as plt
+    z, plane = _slope_page(extent, (100, 110), z0=-440.0, grade=540.0 / 5611.5)  # from -440 m to +100 m
+    step = render_trail.contour_step(z, extent, 261.0)
+    levels = sorted({level for level, _ in render_trail.contour_lines(z, extent, step, 261.0)})
+    assert step == 10 and levels[0] == -430 and levels[-1] == 90
+    assert 0 not in levels and -10 in levels and 10 in levels
+    fig, ax = plt.subplots()
+    render_trail.draw_contours(ax, z, extent, render_editorial.STYLES["huella"], 1.0, 261.0, EMPTY)
+    index = {p.get_linewidth(): p for p in ax.patches}[render_trail.CONTOUR_PT[1]]
+    z_v = plane(index.get_path().vertices[:, 0])
+    assert np.isclose(z_v, -50).any() and np.isclose(z_v, -400).any(), "index lines below the sea too"
+    plt.close(fig)
+
+
 def test_on_the_plain_paper_the_contours_stay_fainter_than_the_paths():
     """Without the land cover the lines are in the colour the paths are inked towards: an index line over the paper
     stays well closer to the paper than a path, so the paths read as paths and the lines as terrain."""
