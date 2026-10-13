@@ -92,9 +92,9 @@ def main(argv=None):
     p.add_argument("--relief", default=None, choices=["off", "shade"],
                    help="shade: terrain relief under the map where the land is hilly (editorial, atlas, race and "
                         "trail), from the Copernicus elevation model on Amazon S3, which learns the 1-degree cells "
-                        "around the map and, where the land is hilly, the blocks of about 30 km that cover it (never "
-                        "your routes); downloaded once (cached); flat areas get none. Default: shade for the trail "
-                        "layout, off for the others")
+                        "around the map and, where the land is hilly, the blocks of about 30 km that cover it and "
+                        "about 2 km around it (never your routes); downloaded once (cached); flat areas get none. "
+                        "Default: shade for the trail layout, off for the others")
     p.add_argument("--ground", default=None, choices=["nature", "style"],
                    help="trail: nature (default) paints the map's ground in the colours of the land, green woods "
                         "and meadows, wheat fields, stone rock, white snow, straw and orange in a dry land, from ESA "

@@ -14,8 +14,8 @@ description: Make a print-ready poster of a runner's year from their Strava expo
 - If the export path is unknown, ask the user for it. Do not search their disk for it.
 - Add `--relief shade` only when the user asks for terrain or relief; it also downloads Copernicus elevation data
   from Amazon S3, which learns the 1-degree cells around the map and, where the land is hilly, the blocks of about
-  30 km inside them that cover it (never the routes); without it nothing is sent there. `--layout trail` has it on
-  by default: tell the user, and pass `--relief off` if they do not want it.
+  30 km inside them that cover it and about 2 km around it (never the routes); without it nothing is sent there.
+  `--layout trail` has it on by default: tell the user, and pass `--relief off` if they do not want it.
 - `--layout trail` also paints the map's ground in the colours of the land from ESA WorldCover on Amazon S3, which
   learns only the 3-degree tiles around the map and the blocks inside them that cover it, about 9 by 7 km at 40
   degrees of latitude (never the routes); pass `--ground style` if the user does not want that request or prefers

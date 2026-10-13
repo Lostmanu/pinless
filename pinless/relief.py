@@ -932,7 +932,7 @@ def prepare_many(maps, log=print, root=None):
     (tracks, zones, activities) reaches this function. Any network or decoding failure means no relief anywhere on
     the print and one log line; a map that is too large, flat or mostly water gets None and its own line."""
     log("[relief] terrain from the Copernicus elevation model (Amazon S3 learns the 1-degree cells around the map and, "
-        "where the land is hilly, the blocks of about 30 km that cover it; never your routes)")
+        "where the land is hilly, the blocks of about 30 km that cover it and about 2 km around it; never your routes)")
     out = [None] * len(maps)
 
     def say(i, text):
