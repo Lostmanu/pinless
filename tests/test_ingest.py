@@ -75,6 +75,34 @@ def test_a_planned_route_without_track_points_is_read_from_its_route_points(tmp_
     assert act.type == "Unknown" and act.ele == [1830.0, 1900.0]
 
 
+def _planner(step_s, ele):
+    """A route drawn in a planner and saved by a converter (DownloadGPX, met on 14-10-2026): a point every ~220 m, the
+    clock step_s seconds a point, the elevation ele(i)."""
+    pts = "".join(f'<trkpt lat="{40.410 + 0.002 * i:.5f}" lon="-3.6886"><ele>{ele(i)}</ele>'
+                  f'<time>{(dt.datetime(2026, 10, 14, 17, 33) + dt.timedelta(seconds=step_s * i)).isoformat()}Z'
+                  f'</time></trkpt>' for i in range(20))
+    return ('<?xml version="1.0"?><gpx version="1.1" creator="DownloadGPX" xmlns="http://www.topografix.com/GPX/1/1">'
+            f'<trk><name> Retiro Loop</name><trkseg>{pts}</trkseg></trk></gpx>').encode()
+
+
+def test_a_route_from_a_planner_keeps_its_points_and_drops_its_made_up_clock_and_flat_zero_heights(tmp_path):
+    """A planner's route saved as GPX ran 4 km in 21 s at a height of 0 m: read as a clock, every 200 m step of it was
+    a stray fix, one file was refused and the other kept 2 of its 22 points. A clock no body can keep (a median of more
+    than MAX_MS) is no clock: the route keeps every point and is read without time, pace or date; heights that never
+    change are no heights. A real clock and real heights over the same steps are kept."""
+    path = tmp_path / "route.gpx"
+    path.write_bytes(_planner(1, lambda i: 0))
+    (act,), rep = ingest.read_export(str(path))
+    assert len(act.lonlat) == 20, "every point of the route, none taken for a stray fix"
+    assert act.times is None and act.start is None and act.ele is None
+    assert rep.no_clock == 1 and rep.used == 1
+    path.write_bytes(_planner(75, lambda i: 650 + i))  # 220 m in 75 s: a runner's clock, and a slope
+    (act,), rep = ingest.read_export(str(path))
+    assert len(act.lonlat) == 20 and act.times[-1] == 19 * 75.0 and act.ele[-1] == 669.0 and rep.no_clock == 0
+    assert act.start == dt.datetime(2026, 10, 14, 17, 33, tzinfo=dt.timezone.utc)
+    assert not ingest.plausible_clock([(0, 0), (0.001, 0), (0.002, 0)], [0.0, 0.0, 0.0]), "no step takes time"
+
+
 def test_a_single_tcx_course_and_a_single_fit_file(tmp_path):
     import datetime as dt
 

@@ -45,6 +45,18 @@ def _step_m(p, q):
     return 6371000.0 * math.hypot(math.radians(q[0] - p[0]) * math.cos(lat), math.radians(q[1] - p[1]))
 
 
+MAX_MS = 30.0  # faster than this the body cannot go: a stray fix, or a clock that is not one
+
+
+def plausible_clock(lonlat, secs):
+    """True when a track's clock can be its own: at least half its steps take time, and the median of their speeds is
+    one a body can go (MAX_MS). A route drawn in a planner and saved as GPX can carry a made-up clock, a fix a second
+    over steps of 200 m (DownloadGPX: 4 km in 21 s); read as a clock, every step of it is a stray fix."""
+    steps = [(_step_m(lonlat[i], lonlat[i + 1]), secs[i + 1] - secs[i]) for i in range(len(lonlat) - 1)]
+    speeds = sorted(d / t for d, t in steps if t > 0)
+    return bool(steps) and 2 * len(speeds) >= len(steps) and speeds[len(speeds) // 2] <= MAX_MS
+
+
 def stray_ends(lonlat, secs=None, jump_m=300.0, window_m=500.0):
     """(lo, hi): the points to keep once the stray fixes at either end are dropped, or (0, 0) if nothing real is left.
 
@@ -62,7 +74,7 @@ def stray_ends(lonlat, secs=None, jump_m=300.0, window_m=500.0):
         secs = None  # an incomplete clock is no clock
     if secs is not None:
         dts = [abs(secs[i + 1] - secs[i]) for i in range(n - 1)]
-        stray = [d > 50 and (d / max(t, 1e-3) > 30 or (d > jump_m and (d / max(t, 1e-3) > 12 or t > 600)))
+        stray = [d > 50 and (d / max(t, 1e-3) > MAX_MS or (d > jump_m and (d / max(t, 1e-3) > 12 or t > 600)))
                  for d, t in zip(steps, dts)]
     else:
         limit = max(jump_m, 8 * sorted(steps)[len(steps) // 2])
@@ -110,6 +122,7 @@ class IngestReport:
     no_gps: int = 0
     unreadable: int = 0
     unsupported: int = 0
+    no_clock: int = 0  # activities whose clock is made up (plausible_clock): read without time
     reasons: dict = field(default_factory=dict)
 
     def skip(self, kind, name, why):
@@ -333,7 +346,12 @@ def read_export(path: str):
             secs = None
             if ts and all(t is not None for t in ts) and len(ts) == len(pts):
                 secs = [(t - ts[0]).total_seconds() for t in ts]
+            if secs is not None and not plausible_clock(pts, secs):  # a planner's made-up clock: no clock, no date
+                secs, t0 = None, None
+                rep.no_clock += 1
             heights = ele if ele and len(ele) == len(pts) and all(e is not None for e in ele) else None
+            if heights is not None and max(heights) == min(heights):  # a planner writes 0 everywhere: no elevation
+                heights = None
             act = clean(Activity(id=base if len(tracks) == 1 else f"{base}#{n}",
                                  type=(m.get("type") or kind or "Unknown"), start=t0, lonlat=pts, source=name,
                                  times=secs, ele=heights, name=m.get("name") or title))

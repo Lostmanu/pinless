@@ -200,6 +200,9 @@ def main(argv=None):
     acts, rep = ingest.read_export(a.export)
     print(f"[ingest] files {rep.files_seen} · used {rep.used} · no GPS {rep.no_gps} · unreadable {rep.unreadable} · "
           f"unsupported {rep.unsupported}")
+    if rep.no_clock:
+        print(f"[ingest] {rep.no_clock} activit{'y has' if rep.no_clock == 1 else 'ies have'} a made-up clock (a route "
+              f"saved from a planner moves hundreds of metres a second): read without time, pace or date")
     if len(acts) == 1 and a.layout != "trail":  # the trail print says it where it learns its places
         print(trail.ONE_ACTIVITY)
     sel = _select(acts, a.type, a.year)
