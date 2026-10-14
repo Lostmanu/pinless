@@ -2,6 +2,7 @@
 import datetime as dt
 import zipfile
 
+import numpy as np
 import pytest
 
 from pinless import ingest
@@ -101,6 +102,46 @@ def test_a_route_from_a_planner_keeps_its_points_and_drops_its_made_up_clock_and
     assert len(act.lonlat) == 20 and act.times[-1] == 19 * 75.0 and act.ele[-1] == 669.0 and rep.no_clock == 0
     assert act.start == dt.datetime(2026, 10, 14, 17, 33, tzinfo=dt.timezone.utc)
     assert not ingest.plausible_clock([(0, 0), (0.001, 0), (0.002, 0)], [0.0, 0.0, 0.0]), "no step takes time"
+
+
+def test_the_distance_strava_recorded_is_read_in_its_units_and_used_for_the_totals(tmp_path):
+    """Strava's activities.csv carries the distance it measured, in the account's units (km or miles) and, in newer
+    exports, again in metres under the same name, in the account's language. The value nearest the track's own
+    length, in km, miles or metres, within RECORDED of it, is the activity's; anything else is ignored. The totals use
+    it: a sum of the steps between fixes adds their noise."""
+    from pinless import stats
+
+    def gpx(n):  # n steps of ~111 m north
+        pts = "".join(f'<trkpt lat="{40.41 + 0.001 * i:.4f}" lon="-3.70"><time>2025-04-06T08:{i // 2:02d}:'
+                      f'{30 * (i % 2):02d}Z</time></trkpt>' for i in range(n + 1))
+        return ('<?xml version="1.0"?><gpx xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>' + pts
+                + "</trkseg></trk></gpx>").encode()
+
+    own = ingest.track_m([(-3.70, 40.41 + 0.001 * i) for i in range(19)])  # 18 steps: about 2 km
+    rows = ("Activity ID,Activity Date,Activity Name,Activity Type,Distance,Filename,Distance\n"
+            f'1,"Apr 6, 2025",A,Run,{own * 0.97 / 1000:.2f},activities/1.gpx,{own * 0.97:.1f}\n'
+            f'2,"Apr 6, 2025",B,Run,{own * 0.98 / 1609.344:.3f},activities/2.gpx,\n'
+            '3,"Apr 6, 2025",C,Run,9.0,activities/3.gpx,\n')
+    path = tmp_path / "export.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("activities.csv", rows)
+        for i in (1, 2, 3):
+            z.writestr(f"activities/{i}.gpx", gpx(18))
+    acts = {a.id: a for a in ingest.read_export(str(path))[0]}
+    assert acts["1"].recorded_m == pytest.approx(own * 0.97, abs=0.1), "the metres column, nearest of km and m"
+    assert acts["2"].recorded_m == pytest.approx(own * 0.98, rel=1e-3), "a value in miles"
+    assert acts["3"].recorded_m is None, "9 km for a 2 km track is not this track's"
+    es = rows.replace("Distance", "Distancia").replace("Activity ID", "ID de actividad").replace(
+        "Activity Type", "Tipo de actividad").replace("Filename", "Nombre del archivo").replace(
+        f"{own * 0.97 / 1000:.2f}", f'"{own * 0.97 / 1000:.2f}"'.replace(".", ","))
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("activities.csv", es)
+        z.writestr("activities/1.gpx", gpx(18))
+    (es_act,) = ingest.read_export(str(path))[0]
+    assert es_act.recorded_m == pytest.approx(own * 0.97, rel=1e-3), "Spanish headers, a decimal comma"
+    xy = [np.column_stack([np.zeros(19), np.arange(19) * own / 18]) for _ in (1, 2, 3)]
+    st = stats.compute([acts["1"], acts["2"], acts["3"]], xy)
+    assert st["km"] == pytest.approx(own * (0.97 + 0.98 + 1) / 1000, rel=1e-3)
 
 
 def test_a_single_tcx_course_and_a_single_fit_file(tmp_path):

@@ -51,6 +51,11 @@ def track_km(lonlat):
     return float(_hav_km(a[:-1, 1], a[:-1, 0], a[1:, 1], a[1:, 0]).sum()) if len(a) > 1 else 0.0
 
 
+def activity_km(act):
+    """An activity's km as Strava recorded it where the export says (ingest.recorded_distance), else its track's."""
+    return act.recorded_m / 1000 if getattr(act, "recorded_m", None) else track_km(act.lonlat)
+
+
 @dataclass(eq=False)
 class City:
     acts: list = field(repr=False)
@@ -105,7 +110,7 @@ def group_by_city(activities, link_km=30.0):
         pts = np.concatenate([np.asarray(a.lonlat, dtype=float) for a in members])
         lon, lat = np.median(pts, axis=0)
         days = sorted(a.start.date() for a in members if a.start)
-        cities.append(City(acts=members, lat=float(lat), lon=float(lon), km=sum(track_km(a.lonlat) for a in members),
+        cities.append(City(acts=members, lat=float(lat), lon=float(lon), km=sum(activity_km(a) for a in members),
                            first=days[0] if days else None, last=days[-1] if days else None))
     home = max(cities, key=lambda c: c.km)
     rest = sorted((c for c in cities if c is not home), key=lambda c: (c.first or dt.date.max, -c.km))

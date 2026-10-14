@@ -10,6 +10,7 @@ import math
 
 import numpy as np
 
+from .ingest import distance_scale
 from .localtime import local_start
 
 MONTHS = {"en": "JFMAMJJASOND", "es": "EFMAMJJASOND"}
@@ -21,7 +22,8 @@ def km_per_month(activities, tracks_xy):
         t = local_start(a)
         xy = np.asarray(xy)
         if t is not None and len(xy) > 1:
-            km[t.month - 1] += float(np.hypot(*np.diff(xy, axis=0).T).sum()) / 1000
+            own = float(np.hypot(*np.diff(xy, axis=0).T).sum())
+            km[t.month - 1] += own * distance_scale(a, own) / 1000  # as Strava recorded it, where the export says
     return km
 
 

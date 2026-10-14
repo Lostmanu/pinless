@@ -191,6 +191,8 @@ def run(sel, pool, a, log=print):
             "it is drawn as a loop from a public trailhead. If it is not one (a hotel, a friend's home, your own "
             "door), add --zone there.")
 
+    scale = race.distance_scale(route, total, getattr(a, "distance", None), log)
+
     # the map frames the drawn stretch with a margin, or takes the box given with --bbox, which must hold all of it
     aspect = render_trail.map_aspect(a.size, profile=bool(route.ele))
     if getattr(a, "bbox", None):
@@ -234,7 +236,7 @@ def run(sel, pool, a, log=print):
                                dpi=a.dpi, title=title, place=place, name=a.name, date=local_start(route),
                                lang=a.lang, color_by=color_by, pdf_path=a.pdf, svg_path=a.svg,
                                preview_path=a.preview, times=route.times, ele=route.ele, stretch=stretch,
-                               relief=relief_, peaks=peaks, ground=ground_, log=log)
+                               relief=relief_, peaks=peaks, ground=ground_, log=log, scale=scale)
     if info["legend"].get("flat"):
         log(f"[colour] this route climbs less than {render_trail.FLAT_M:.0f} m: drawn in one colour, since colouring "
             f"it by elevation would show only the altimeter's noise")

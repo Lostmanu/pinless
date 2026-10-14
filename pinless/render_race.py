@@ -117,11 +117,12 @@ def vertex_positions(coords, xy, dist, pairs):
 
 def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella", size="A3", dpi=300, title="",
            city="", name="", date=None, lang="en", color_by="pace", pdf_path=None, svg_path=None, preview_path=None,
-           times=None, ele=None, stretch=None, relief=None):
+           times=None, ele=None, stretch=None, relief=None, scale=1.0):
     """activity: the run; track_xy: its (end-cleaned) projected track, with times and ele aligned to it (default: the
     activity's); pieces: the privacy-cut pieces (index, LineString), drawn; stretch: (start_m, end_m) along the track
     that the numbers describe (default: all of it); date: the local datetime of the run; relief: a relief.Relief for
-    the map (relief.prepare_many), drawn under the course."""
+    the map (relief.prepare_many), drawn under the course; scale: the share of the track's own length the course
+    really measured (race.distance_scale), for its distance, pace, splits and the profile's km, never its drawing."""
     S = STYLES[style]
     es = lang == "es"
     wmm, hmm = SIZES[size]
@@ -133,6 +134,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     xy, times, ele = restrict(track_xy, activity.times if times is None else times,
                               activity.ele if ele is None else ele, stretch)
     dist = along(xy)
+    real = dist * scale  # what the course measured, for its numbers; the drawing keeps the track's own metres
     secs = float(times[-1] - times[0]) if times else 0.0
     if not secs > 0:  # a file with no clock, or a broken one: no time, pace or splits rather than nonsense
         times, secs = None, None
@@ -171,7 +173,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
         pairs = {pq: i for i, pq in enumerate(zip(pts[:-1], pts[1:]))}
         at = np.concatenate([(lambda p: (p[:-1] + p[1:]) / 2)(vertex_positions(c, xy, dist, pairs)) for c in coords])
         if color_by == "pace" and times:
-            v = np.interp(at, dist, pace_along(dist, times))
+            v = np.interp(at, dist, pace_along(real, times))
             lo, hi = np.percentile(v, [5, 95])
             values = 1 - np.clip((v - lo) / max(hi - lo, 1e-6), 0, 1)  # faster = stronger
             legend = {"mode": "pace", "lo": lo, "hi": hi}
@@ -192,6 +194,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     ptop = MAP_TOP + MAP_H + 6
     if ele:
         d, e = profile(xy, ele)
+        d = d * scale
         pax = fig.add_axes([18 * k / wmm, 1 - (ptop + 24) * k / hmm, 261 * k / wmm, 24 * k / hmm], zorder=2)
         pax.set_facecolor("none")
         base = e.min() - 0.15 * max(e.max() - e.min(), 10)
@@ -209,7 +212,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     # numbers
     ytop = ptop + 34
     rule(ytop - 3)
-    km = dist[-1] / 1000
+    km = real[-1] / 1000
     cells = [(_num(km, lang, 2 if km < 50 else 1), "km", "DISTANCIA" if es else "DISTANCE"),
              (fmt_time(secs) if secs else "—", "", "TIEMPO" if es else "TIME"),
              (fmt_pace(secs / km)[:-3] if secs and km else "—", "/km", "RITMO" if es else "PACE"),
@@ -225,7 +228,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
         T(x, ytop + 15, label, pt=6.0, color=S["sub"])
 
     # kilometre splits: one bar per full km, the last part (if any) apart and paler; the fastest is a full km
-    full, last = splits(dist, times) if times else (np.empty(0), None)
+    full, last = splits(real, times) if times else (np.empty(0), None)
     fastest = None
     if len(full) and (full > 0).all():
         sp = np.append(full, last[0]) if last and last[0] > 0 else full

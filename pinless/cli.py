@@ -63,6 +63,9 @@ def main(argv=None):
     p.add_argument("--max-cities", type=int, default=9, help="atlas: most cities on the print (1-12)")
     p.add_argument("--activity", default="longest",
                    help="race and trail: longest (default), latest, a date YYYY-MM-DD or an activity id")
+    p.add_argument("--distance", type=float, default=None,
+                   help="race and trail: the official distance in km (21.0975 for a half marathon); distance, pace "
+                        "and splits are measured with it. Default: as Strava recorded it, else the track's own")
     p.add_argument("--allow-private-ends", action="store_true",
                    help="race and trail: draw an activity that starts or ends at a private place, without that end "
                         "and a random stretch more, with its numbers limited to what is drawn")
@@ -165,6 +168,8 @@ def main(argv=None):
         p.error("--svg is available for the editorial, atlas, race and trail layouts")
     if a.relief != "off" and a.layout not in ("editorial", "atlas", "race", "trail"):
         p.error("--relief is available for the editorial, atlas, race and trail layouts")
+    if a.distance is not None and (a.layout not in ("race", "trail") or not 0 < a.distance < 1000):
+        p.error("--distance is the official distance in km (above 0) of the race or trail print's route")
     if (a.activity != "longest" or a.allow_private_ends) and a.layout not in ("race", "trail"):
         p.error("--activity and --allow-private-ends are for the race and trail layouts")
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.activity):
@@ -242,7 +247,8 @@ def main(argv=None):
         arr = np.asarray(x.lonlat)
         xs, ys = tr.transform(arr[:, 0], arr[:, 1])
         xy = np.column_stack([xs, ys])
-        total_m += float(np.hypot(*np.diff(xy, axis=0).T).sum())
+        own = float(np.hypot(*np.diff(xy, axis=0).T).sum())
+        total_m += own * ingest.distance_scale(x, own)  # as Strava recorded it, where the export says
         tracks.append((x.id, xy))
     user_zones = frame.user_zones(a, tr)
     if a.layout == "editorial":

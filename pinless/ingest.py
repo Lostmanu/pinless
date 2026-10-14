@@ -23,6 +23,11 @@ HEADERS = {
     "date": ["Activity Date", "Fecha de la actividad", "Date de l'activité", "Aktivitätsdatum", "Data attività"],
     "name": ["Activity Name", "Nombre de la actividad", "Nom de l'activité", "Aktivitätsname", "Nome attività"],
 }
+# the distance Strava itself measured, as the athlete sees it in the app: in km or miles (the account's units) and, in
+# newer exports, again in metres under the same name
+DISTANCE = ("distance", "distancia", "distanz", "distanza")
+UNITS_M = (1000.0, 1609.344, 1.0)  # km, miles, metres
+RECORDED = (0.80, 1.05)  # a recorded distance this share of the track's own length is the same activity's
 GPX_TYPES = {"running": "Run", "run": "Run", "9": "Run", "cycling": "Ride", "biking": "Ride", "ride": "Ride", "1": "Ride",
              "walking": "Walk", "walk": "Walk", "hiking": "Hike", "hike": "Hike", "10": "Walk"}
 SUFFIXES = (".gpx", ".gpx.gz", ".tcx", ".tcx.gz", ".fit", ".fit.gz")
@@ -38,6 +43,38 @@ class Activity:
     times: list = None  # seconds since the first point, aligned with lonlat (None if unknown)
     ele: list = None  # metres above sea level, aligned with lonlat (None if the file has none)
     name: str = ""  # the activity's title in the export (a race name, or Strava's "Morning Run")
+    recorded_m: float = None  # the distance Strava measured (activities.csv), metres; None when unknown
+
+
+def track_m(lonlat):
+    """Length (m) of a track of (lon, lat), on the sphere."""
+    return sum(_step_m(lonlat[i], lonlat[i + 1]) for i in range(len(lonlat) - 1))
+
+
+def recorded_distance(values, lonlat):
+    """The distance (m) Strava recorded for a track, from the values of its distance columns, or None: each value read
+    in km, miles and metres, the one nearest the track's own length kept if it lies within RECORDED of it. Strava
+    smooths the noise of the fixes that a sum of the steps adds up (a half marathon in Madrid on a watch: 21.9 km
+    summed, 21.1 run)."""
+    own = track_m(lonlat)
+    best = None
+    for v in values:
+        try:
+            x = float(str(v).strip().replace(",", ".")) if str(v).count(",") == 1 and "." not in str(v) \
+                else float(str(v).strip().replace(",", ""))
+        except ValueError:
+            continue
+        for unit in UNITS_M:
+            r = x * unit / own if own > 0 else 0.0
+            if RECORDED[0] <= r <= RECORDED[1] and (best is None or abs(r - 1) < abs(best[1] - 1)):
+                best = (x * unit, r)
+    return best[0] if best else None
+
+
+def distance_scale(act, own_m):
+    """The share of a track's own length (own_m, the same track's length as projected) that it really covered: the
+    distance Strava recorded over it, or 1."""
+    return act.recorded_m / own_m if getattr(act, "recorded_m", None) and own_m > 0 else 1.0
 
 
 def _step_m(p, q):
@@ -317,10 +354,15 @@ def read_export(path: str):
     csv_name = next((n for n in files if n.split("/")[-1].lower() == "activities.csv"), None)
     if csv_name:
         text = files[csv_name]().decode("utf-8-sig", errors="replace")
-        for row in csv.DictReader(io.StringIO(text)):
+        rows = list(csv.reader(io.StringIO(text)))
+        header = rows[0] if rows else []
+        dist_cols = [i for i, h in enumerate(header) if h.strip().casefold() in DISTANCE]  # the same name twice
+        for cells in rows[1:]:
+            row = dict(zip(header, cells))
             fn = (_col(row, "file") or "").strip()
             if fn:
-                meta[fn] = {"id": _col(row, "id"), "type": _col(row, "type"), "name": (_col(row, "name") or "").strip()}
+                meta[fn] = {"id": _col(row, "id"), "type": _col(row, "type"), "name": (_col(row, "name") or "").strip(),
+                            "distance": [cells[i] for i in dist_cols if i < len(cells) and cells[i].strip()]}
             else:
                 rep.skip("no_gps", "", "no GPS file (indoor or manual)")
     acts = []
@@ -358,6 +400,8 @@ def read_export(path: str):
             if act is None:
                 rep.skip("no_gps", name, "only stray GPS fixes")
                 continue
+            if len(tracks) == 1 and m.get("distance"):  # Strava's own distance for the one track of its file
+                act = replace(act, recorded_m=recorded_distance(m["distance"], act.lonlat))
             acts.append(act)
             rep.used += 1
     return acts, rep

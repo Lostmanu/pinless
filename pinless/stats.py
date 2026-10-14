@@ -10,6 +10,7 @@ import numpy as np
 from shapely.geometry import Point
 from shapely.strtree import STRtree
 
+from .ingest import distance_scale
 from .localtime import local_start
 
 
@@ -79,10 +80,14 @@ def compute(activities, tracks_xy, edges_gdf=None, private_pieces_xy=None, piece
     Street stats use ONLY the privacy-cut pieces (private_pieces_xy), never the full tracks: the most-run street of a
     full track is usually the runner's own street. keep_streets: also return the set of street names run
     ("street_names"), in memory only, to count the streets two people both ran."""
-    km = [float(_cum(xy)[-1]) / 1000 for xy in tracks_xy]
+    # distances as Strava recorded them where the export says (ingest.distance_scale): a sum of the steps between fixes
+    # adds their noise, a few percent on a watch in a city
+    own = [float(_cum(xy)[-1]) for xy in tracks_xy]
+    scale = [distance_scale(a, m) for a, m in zip(activities, own)]
+    km = [m * f / 1000 for m, f in zip(own, scale)]
     secs_total = sum((a.times[-1] - a.times[0]) for a in activities if a.times)
-    b5 = [best_effort(xy, a.times, 5000) for a, xy in zip(activities, tracks_xy)]
-    b10 = [best_effort(xy, a.times, 10000) for a, xy in zip(activities, tracks_xy)]
+    b5 = [best_effort(xy, a.times, 5000 / f) for a, xy, f in zip(activities, tracks_xy, scale)]
+    b10 = [best_effort(xy, a.times, 10000 / f) for a, xy, f in zip(activities, tracks_xy, scale)]
     b5 = min([x for x in b5 if x], default=None)
     b10 = min([x for x in b10 if x], default=None)
     local = [local_start(a) for a in activities]  # files store UTC: days and hours are counted where you ran
@@ -135,6 +140,8 @@ def together(acts_a, tracks_a, acts_b, tracks_b, step_s=30.0, min_s=600.0, min_f
     some clock), "no_clock" (activities without a clock: (first person's, second person's))}."""
     ca = [_clock(a, xy) for a, xy in zip(acts_a, tracks_a)]
     cb = [_clock(b, xy) for b, xy in zip(acts_b, tracks_b)]
+    sa = [distance_scale(a, float(_cum(np.asarray(xy, dtype=float))[-1])) for a, xy in zip(acts_a, tracks_a)]
+    sb = [distance_scale(b, float(_cum(np.asarray(xy, dtype=float))[-1])) for b, xy in zip(acts_b, tracks_b)]
     out = {"runs": 0, "km": 0.0, "known": any(c is not None for c in ca) and any(c is not None for c in cb),
            "no_clock": (sum(c is None for c in ca), sum(c is None for c in cb))}
     bs = sorted((c[0][0], j) for j, c in enumerate(cb) if c is not None)
@@ -157,7 +164,8 @@ def together(acts_a, tracks_a, acts_b, tracks_b, step_s=30.0, min_s=600.0, min_f
             d = np.hypot(np.interp(t, a[0], a[1]) - np.interp(t, b[0], b[1]),
                          np.interp(t, a[0], a[2]) - np.interp(t, b[0], b[2]))
             if np.median(d) <= med_m and np.mean(d <= near_m) >= near_frac:
-                along = [np.interp(hi, c[0], c[3]) - np.interp(lo, c[0], c[3]) for c in (a, b)]
+                along = [(np.interp(hi, c[0], c[3]) - np.interp(lo, c[0], c[3])) * f
+                         for c, f in ((a, sa[i]), (b, sb[j]))]
                 pairs.append((ov, i, j, float(np.mean(along))))
     used_a, used_b = set(), set()
     for ov, i, j, m in sorted(pairs, key=lambda p: (-p[0], p[1], p[2])):

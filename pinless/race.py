@@ -181,6 +181,26 @@ def cut(track, others, trim_m, zone_r, user_zones=(), allow_private_ends=False, 
     return [(0, line)], rep, learned, numbers
 
 
+def distance_scale(act, total_m, official_km=None, log=print):
+    """The share of the track's own length (total_m, as projected) that the course really measured: the official
+    distance given with --distance, else the distance Strava recorded (ingest.recorded_distance), else 1. Distance,
+    pace, splits and the profile's kilometres are scaled by it; nothing that is drawn. A watch in a city adds a few
+    percent to the sum of the steps between its fixes (a half marathon in Madrid: 21.9 km summed)."""
+    if total_m <= 0:
+        return 1.0
+    if official_km:
+        log(f"[distance] {official_km:g} km, as given with --distance (the fixes sum {total_m / 1000:.2f} km)")
+        return official_km * 1000 / total_m
+    scale = ingest.distance_scale(act, total_m)
+    if scale != 1.0:
+        log(f"[distance] {total_m * scale / 1000:.2f} km, as Strava recorded it (the fixes sum "
+            f"{total_m / 1000:.2f} km)")
+    else:
+        log("[distance] the sum of the steps between the fixes: GPS noise can add a few percent (3-4 % for a watch "
+            "in a city); for a race, give its official distance with --distance (21.0975 for a half marathon)")
+    return scale
+
+
 def frame_course(pieces, aspect, pad_frac=0.08, min_m=2000.0):
     """The map extent (x0, x1, y0, y1) around the drawn pieces: their box padded by pad_frac of its longer side, at
     least min_m wide and high, grown to the map's aspect (width / height)."""
@@ -257,6 +277,7 @@ def run(sel, pool, a, log=print):
         log("[privacy] this run starts and ends at the same place, and no other run of yours starts there: it is "
             "drawn as a race start. If it is not one (a hotel, a friend's home), add --zone there.")
 
+    scale = distance_scale(race, total, getattr(a, "distance", None), log)
     extent = frame_course(pieces, render_race.map_aspect(a.size))
     inv = Transformer.from_crs(crs, 4326, always_xy=True)
     try:
@@ -282,7 +303,7 @@ def run(sel, pool, a, log=print):
                               dpi=a.dpi, title=title, city=", ".join(v for v in (city, country) if v), name=a.name,
                               date=local_start(race), lang=a.lang, color_by=mode, pdf_path=a.pdf, svg_path=a.svg,
                               preview_path=a.preview, times=race.times, ele=race.ele, stretch=stretch,
-                              relief=relief_)
+                              relief=relief_, scale=scale)
     if info["legend"]["mode"] != mode:
         log(f"[colour] this activity has no {mode} data: drawn in one colour")
     log(f"[render] {a.out} · {title} · {info['km']:.2f} km")

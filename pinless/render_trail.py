@@ -888,13 +888,15 @@ def draw_profile_fill(pax, x, e, base, line, paper):
 
 def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella", size="A3", dpi=300, title="",
            place="", name="", date=None, lang="en", color_by="single", pdf_path=None, svg_path=None, preview_path=None,
-           times=None, ele=None, stretch=None, relief=None, peaks=(), ground=None, log=None):
+           times=None, ele=None, stretch=None, relief=None, peaks=(), ground=None, log=None, scale=1.0):
     """activity: the route; track_xy: its (end-cleaned) projected track, with times and ele aligned to it (default:
     the activity's); pieces: the privacy-cut pieces (index, LineString), drawn; stretch: (start_m, end_m) along the
     track that the numbers describe (default: all of it); place: the subline (region, country); date: the local
     datetime of the activity; relief: a relief.Relief for the map; peaks: (x, y, name, ele) of OSM summits in map
     units, of which place_peaks draws up to six inside the map; ground: a landcover.LandCover for the map (the
-    colours of the land under it); log: where to say which ink the course took over the ground, and why."""
+    colours of the land under it); log: where to say which ink the course took over the ground, and why; scale: the
+    share of the track's own length the route really measured (race.distance_scale), for its length, pace and the
+    profile's km, never its drawing."""
     S = STYLES[style]
     es = lang == "es"
     wmm, hmm = SIZES[size]
@@ -971,7 +973,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
         if color_by == "pace" and times and secs:
             # the pace while moving: a stop takes the pace of the walk around it, and the legend's ends are the
             # fastest and slowest 5 % of the drawn walking, by length (the fixes of a stop crowd the course)
-            v = np.interp(at, dist, moving_pace(dist, times, pauses))
+            v = np.interp(at, dist, moving_pace(dist * scale, times, pauses))
             step = np.clip(np.searchsorted(dist, at, side="right") - 1, 0, len(dist) - 2)
             moving = ~pauses[step] if pauses is not None else np.ones(len(at), dtype=bool)
             lo, hi = weighted_percentiles(v, np.hypot(*(segments[:, 1] - segments[:, 0]).T) * moving, (5, 95))
@@ -999,6 +1001,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     hi_point = None
     if ele:
         d, e = profile(xy, ele)
+        d = d * scale
         span = max(e.max() - e.min(), PROFILE_SPAN_M)  # a flat route stays flat, not a sawtooth of altimeter noise
         base, top = e.min() - 0.08 * span, e.max() + 0.24 * span
         pax = fig.add_axes([LEFT * k / wmm, 1 - (PROFILE_TOP + PROFILE_H) * k / hmm, (RIGHT - LEFT) * k / wmm,
@@ -1011,6 +1014,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
         pax.set_ylim(base, top)
         pax.axis("off")
         hd, he = high_point(xy, ele)
+        hd *= scale
         hi_point = he
         gx = LEFT + hd / d[-1] * (RIGHT - LEFT)
         gy = PROFILE_TOP + (top - he) / (top - base) * PROFILE_H
@@ -1028,7 +1032,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     # numbers
     ytop = NUMBERS_TOP
     rule(ytop - 3)
-    km = dist[-1] / 1000
+    km = dist[-1] * scale / 1000
     kind = route_type(xy)
     cells = [(_num(km, lang, 1), "km", "DISTANCIA" if es else "LENGTH"),
              (f"+{climb(profile(xy, ele)[1]):.0f}" if ele else "—", "m" if ele else "",

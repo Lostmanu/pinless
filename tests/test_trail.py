@@ -858,6 +858,20 @@ def test_a_bbox_frames_the_trail_map_when_it_holds_the_whole_drawn_route(monkeyp
     assert ex.value.code == 2, "the race print still frames its course by itself"
 
 
+def test_a_trail_takes_its_official_distance_for_its_numbers_and_keeps_its_drawing(monkeypatch, tmp_path, capsys):
+    """A trail race's official distance, given with --distance, is the print's length and the scale of its profile's
+    kilometres; the line drawn is the track's own."""
+    walk = _hike(_line((0, 0), (6000, 2000), (12000, 0)), "race")
+    captured = {}
+    _trail_world(monkeypatch, [walk], captured, tmp_path)
+    assert cli.main(["x.gpx", "--layout", "trail", "--distance", "12", "--dpi", "20", "--out",
+                     str(tmp_path / "t.png")]) == 0
+    own = render_trail.along(captured["track"])[-1]
+    assert captured["info"]["km"] == pytest.approx(12.0) and captured["scale"] == pytest.approx(12000 / own)
+    assert f"the fixes sum {own / 1000:.2f} km" in capsys.readouterr().out
+    assert captured["pieces"][0][1].length < own, "trimmed, never stretched"
+
+
 def test_trail_command_line_refusals(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(ingest, "read_export", lambda path: ([], ingest.IngestReport()))
     for bad in (["--place", "Madrid"], ["--cache", "madrid"], ["--fit"], ["--bbox", "41,-4,40,-3"],

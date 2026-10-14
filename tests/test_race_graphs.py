@@ -327,6 +327,41 @@ def test_cli_race_titles_with_the_city_and_refuses_a_run_from_home(monkeypatch, 
     assert captured["title"] == "Sunday long run"
 
 
+def test_the_race_numbers_take_the_official_or_the_recorded_distance_not_the_noise(monkeypatch, tmp_path, capsys):
+    """A real half marathon in Madrid, a fix a second: the steps between the fixes summed 21.91 km, and the print said
+    4:44/km for a 4:55/km race with 22 splits. --distance gives the course its official length; the distance an
+    export recorded (Strava's) does the same unasked; without either, the log says the sum may run high. Only the
+    numbers are scaled: the drawing is the track's own."""
+    from dataclasses import replace
+
+    start = dt.datetime(2025, 4, 27, 7, 15, tzinfo=UTC)
+    course = np.array([20000.0, 20000.0]) + _line((0, 0), (22000, 0))  # the fixes sum 22 km; no place near
+    act = _run_act(course, "rnr", start, pace=6224 / 22000)  # 1:43:44
+    out = ["x.gpx", "--layout", "race", "--dpi", "20", "--out", str(tmp_path / "r.png")]
+    captured = {}
+    _cli_world(monkeypatch, [act], captured)
+    assert cli.main(out + ["--distance", "21.0975"]) == 0
+    info, log = captured["info"], capsys.readouterr().out
+    assert info["km"] == pytest.approx(21.0975) and info["secs"] / info["km"] == pytest.approx(6224 / 21.0975)
+    full, last = info["splits"]
+    assert len(full) == 21 and last is None, "21 full kilometres, and the last 97 m too short for a bar"
+    own = render_race.along(captured["track"])[-1]
+    assert f"[distance] 21.0975 km, as given with --distance (the fixes sum {own / 1000:.2f} km)" in log
+    drawn = sum(p.length for _, p in captured["pieces"])
+    assert drawn == pytest.approx(own - 2 * 300, abs=5), "the drawing keeps the track's own metres"
+    _cli_world(monkeypatch, [replace(act, recorded_m=21300.0)], captured)
+    assert cli.main(out) == 0
+    assert captured["info"]["km"] == pytest.approx(21.3) and "as Strava recorded it" in capsys.readouterr().out
+    _cli_world(monkeypatch, [act], captured)
+    assert cli.main(out) == 0
+    assert captured["info"]["km"] == pytest.approx(own / 1000) and "GPS noise can add" in capsys.readouterr().out
+    for bad in (["--distance", "0"], ["--distance", "-3"]):
+        with pytest.raises(SystemExit):
+            cli.main(out + bad)
+    with pytest.raises(SystemExit):
+        cli.main(["x.zip", "--distance", "21.0975"])  # the city poster sums many activities
+
+
 def test_cli_race_options(monkeypatch, tmp_path, capsys):
     nye = _act("nye", dt.datetime(2024, 12, 31, 23, 30, tzinfo=UTC), _lonlat([[0, 0], [0, 3000]]))  # 00:30 in Madrid
     got = {}

@@ -97,7 +97,7 @@ One small map per city on the same print: the city where you ran most comes firs
 pinless export_12345678.zip --layout race --activity 2025-04-06 --title "Spring Half Marathon" --name "Lucia"
 ```
 
-The course coloured by your pace along it (or `--color-by elevation` or `single`), its elevation profile, distance, time, pace, climb and every kilometre split, with its date. The headline is the city unless you give one with `--title`: the activity's own name is not printed by default, because names often say where a run starts ("from Mum's"). `--activity` takes `longest` (the default), `latest`, a date or an activity id.
+The course coloured by your pace along it (or `--color-by elevation` or `single`), its elevation profile, distance, time, pace, climb and every kilometre split, with its date. The headline is the city unless you give one with `--title`: the activity's own name is not printed by default, because names often say where a run starts ("from Mum's"). `--activity` takes `longest` (the default), `latest`, a date or an activity id. The distance is the one Strava recorded when the export says it (`activities.csv`), as you see it in the app: a sum of the steps between the fixes of a watch adds their noise, a few percent in a city. For a race, `--distance 21.0975` gives the course its official length, and the pace, the splits and the profile's kilometres are measured with it; only the numbers change, never the line.
 
 A run that starts or ends at one of your private places (a long run from home) is refused, since one course drawn from your door points at it. Pick another run, or pass `--allow-private-ends` to draw only a stretch well clear of those places, with numbers for that stretch only ([how](#privacy)).
 
@@ -253,6 +253,7 @@ A map of two people's runs can show both homes, and the visits between them, so:
 | `--bbox S,W,N,E` | Use an exact box; on the trail print, the map's box, which must hold the whole route |
 | `--title`, `--name`, `--headline city\|name` | Headline text and inscription |
 | `--layout editorial\|atlas\|race\|trail`, `--max-cities 9`, `--activity longest`, `--allow-private-ends` | One city, one small map per city, one race, or one route on a topographic map |
+| `--distance 21.0975` | Race and trail print: the official distance in km, for the distance, pace and splits |
 | A single GPX, TCX or FIT file as the export | One hike from a trail app or a watch, on any layout: only `--zone` protects its ends, since a single file has no other activities to learn your places from |
 | `--color-by heat\|single\|month\|pace\|elevation`, `--graphs` | What the line colour says; the band of charts |
 | `--style huella\|carbon\|midnight\|...\|my-style.json`, `--size A4\|A3\|50x70` | One of twelve styles, or your own style file; paper |
