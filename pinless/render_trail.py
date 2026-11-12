@@ -30,6 +30,7 @@ from . import landcover, privacy
 from .atlas import _Page as Page
 from .colouring import fmt_pace
 from .relief import raster_shape as relief_raster_shape
+from .stats import measured_along
 from .render import MAJOR, MINOR, MM, SIZES, _hw
 from .render_editorial import DISPLAY, PRINT_TOL_MM, REGULAR, STYLES, TEXT, _clip_simplify, _keep_alpha, _line_path
 from .render_editorial import RAMP_FULL, RAMP_GAMMA, _lstar, _parts, _poly_path, _relief_alpha, draw_basemap
@@ -908,6 +909,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     xy, times, ele = restrict(track_xy, activity.times if times is None else times,
                               activity.ele if ele is None else ele, stretch)
     dist = along(xy)
+    real = measured_along(xy, times, activity.type) * scale  # its numbers' metres; the drawing keeps dist
     secs, paused = moving_time(xy, times, ele) if times else (None, False)
     pauses = paused_steps(xy, times, ele) if times else None
 
@@ -973,7 +975,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
         if color_by == "pace" and times and secs:
             # the pace while moving: a stop takes the pace of the walk around it, and the legend's ends are the
             # fastest and slowest 5 % of the drawn walking, by length (the fixes of a stop crowd the course)
-            v = np.interp(at, dist, moving_pace(dist * scale, times, pauses))
+            v = np.interp(at, dist, moving_pace(real, times, pauses))
             step = np.clip(np.searchsorted(dist, at, side="right") - 1, 0, len(dist) - 2)
             moving = ~pauses[step] if pauses is not None else np.ones(len(at), dtype=bool)
             lo, hi = weighted_percentiles(v, np.hypot(*(segments[:, 1] - segments[:, 0]).T) * moving, (5, 95))
@@ -1000,8 +1002,8 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     # elevation profile under the map: the course's line over a gradient from it to the paper, the high point marked
     hi_point = None
     if ele:
-        d, e = profile(xy, ele)
-        d = d * scale
+        _, e = profile(xy, ele)
+        d = real
         span = max(e.max() - e.min(), PROFILE_SPAN_M)  # a flat route stays flat, not a sawtooth of altimeter noise
         base, top = e.min() - 0.08 * span, e.max() + 0.24 * span
         pax = fig.add_axes([LEFT * k / wmm, 1 - (PROFILE_TOP + PROFILE_H) * k / hmm, (RIGHT - LEFT) * k / wmm,
@@ -1014,7 +1016,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
         pax.set_ylim(base, top)
         pax.axis("off")
         hd, he = high_point(xy, ele)
-        hd *= scale
+        hd = float(np.interp(hd, dist, real))
         hi_point = he
         gx = LEFT + hd / d[-1] * (RIGHT - LEFT)
         gy = PROFILE_TOP + (top - he) / (top - base) * PROFILE_H
@@ -1032,7 +1034,7 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     # numbers
     ytop = NUMBERS_TOP
     rule(ytop - 3)
-    km = dist[-1] * scale / 1000
+    km = real[-1] / 1000
     kind = route_type(xy)
     cells = [(_num(km, lang, 1), "km", "DISTANCIA" if es else "LENGTH"),
              (f"+{climb(profile(xy, ele)[1]):.0f}" if ele else "—", "m" if ele else "",

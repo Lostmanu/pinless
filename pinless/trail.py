@@ -19,7 +19,7 @@ import numpy as np
 import shapely
 from pyproj import Transformer
 
-from . import area, ingest, landcover, privacy, race, relief, render, render_trail
+from . import area, ingest, landcover, privacy, race, relief, render, render_trail, stats
 from .localtime import local_start
 from .render_race import along
 
@@ -191,7 +191,8 @@ def run(sel, pool, a, log=print):
             "it is drawn as a loop from a public trailhead. If it is not one (a hotel, a friend's home, your own "
             "door), add --zone there.")
 
-    scale = race.distance_scale(route, total, getattr(a, "distance", None), log)
+    measured = float(stats.measured_along(track, route.times, route.type)[-1])  # without the fixes' jumps
+    scale = race.distance_scale(route, measured, getattr(a, "distance", None), log)
 
     # the map frames the drawn stretch with a margin, or takes the box given with --bbox, which must hold all of it
     aspect = render_trail.map_aspect(a.size, profile=bool(route.ele))

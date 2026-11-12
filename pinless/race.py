@@ -33,7 +33,7 @@ from pyproj import Transformer
 from shapely.geometry import LineString, Point
 from shapely.ops import substring
 
-from . import area, ingest, privacy, render, render_race
+from . import area, ingest, privacy, render, render_race, stats
 from . import relief
 from .localtime import local_start
 from .render_race import along
@@ -277,7 +277,8 @@ def run(sel, pool, a, log=print):
         log("[privacy] this run starts and ends at the same place, and no other run of yours starts there: it is "
             "drawn as a race start. If it is not one (a hotel, a friend's home), add --zone there.")
 
-    scale = distance_scale(race, total, getattr(a, "distance", None), log)
+    measured = float(stats.measured_along(track, race.times, race.type)[-1])  # without the fixes' jumps
+    scale = distance_scale(race, measured, getattr(a, "distance", None), log)
     extent = frame_course(pieces, render_race.map_aspect(a.size))
     inv = Transformer.from_crs(crs, 4326, always_xy=True)
     try:

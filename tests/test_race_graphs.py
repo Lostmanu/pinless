@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from shapely.geometry import LineString, MultiLineString, Point
 
-from pinless import atlas, cli, graphs, ingest, privacy, race, render_editorial, render_race
+from pinless import atlas, cli, graphs, ingest, privacy, race, render_editorial, render_race, stats
 from pinless.ingest import Activity
 
 UTC = dt.timezone.utc
@@ -360,6 +360,49 @@ def test_the_race_numbers_take_the_official_or_the_recorded_distance_not_the_noi
             cli.main(out + bad)
     with pytest.raises(SystemExit):
         cli.main(["x.zip", "--distance", "21.0975"])  # the city poster sums many activities
+
+
+def test_the_jumps_of_the_fixes_among_buildings_do_not_make_a_kilometre_fast():
+    """A friend's half marathon in Madrid: the watch jumped 20 to 60 m away and back within seconds among tall
+    buildings, and summed along the track those jumps were metres run: km 10 and 12 printed 10 and 5 s faster than
+    they were, and km 12 as the fastest. measured_along counts only the fixes reachable at the runner's own pace:
+    the true fastest kilometre stays the fastest, the others keep their pace, and a ride down a hill at 15 m/s keeps
+    every metre."""
+    rng = np.random.default_rng(3)
+    pace = np.full(6000, 0.29)  # s per metre: 4:50/km, a fix a metre
+    pace[2000:3000] = 0.27  # km 3 at 4:30, the fastest
+    t = np.concatenate([[0.0], np.cumsum(pace[:-1])])
+    xy = np.column_stack([np.arange(6000.0), np.zeros(6000)]) + rng.normal(0, 0.5, (6000, 2))
+    keep = np.arange(0, 6000, 3)  # a fix every 3 m, about a second apart
+    xy, t = xy[keep], t[keep]
+    jumpy = xy.copy()
+    for i in range(1360, 1660, 50):  # km 5: six jumps of 40 m, out and back in one fix
+        jumpy[i] += (0, 40.0)
+    clean, _ = render_race.splits(stats.measured_along(xy, t, "Run"), t)
+    raw, _ = render_race.splits(render_race.along(jumpy), t)
+    gated, _ = render_race.splits(stats.measured_along(jumpy, t, "Run"), t)
+    assert raw[4] < clean[4] - 30, "summed along the track, the jumps make km 5 look fast"
+    assert np.abs(gated - clean).max() < 1.5 and int(np.argmin(gated)) == 2, "jumps gone; km 3 stays the fastest"
+    ride = np.column_stack([np.arange(0, 9000.0, 15.0), np.zeros(600)])  # 15 m/s down a hill, a fix a second
+    assert stats.measured_along(ride, np.arange(600.0), "Ride")[-1] == pytest.approx(8985.0)
+    assert (stats.measured_along(jumpy, None, "Run") == render_race.along(jumpy)).all(), "no clock: the steps"
+
+
+def test_a_clock_that_jumps_back_does_not_hold_the_rest_of_the_run_out_of_reach():
+    """A watch on battery saving writes a fix every 5 s, 17 m apart, and a file can carry its clock an hour back
+    halfway (summer time written wrong). Measured from the last fix counted, every later fix was an hour short of
+    reach and the gate threw away half the run; the time to reach a fix adds only the steps that go forward. And a
+    gate that would keep less than TRUST of the steps, whatever the cause (a watch left running in a car), gives the
+    steps back: the numbers as before, and as the drawing."""
+    xy = np.column_stack([np.arange(589) * 17.0, np.zeros(589)])  # 3.4 m/s, a fix every 5 s
+    xy[25::50, 1] = 40.0  # twelve jumps of 40 m, out and back in one fix: the sum of the steps runs 6 % long
+    t = np.arange(589) * 5.0
+    t[300:] -= 3600
+    assert render_race.along(xy)[-1] > 588 * 17.0 * 1.05
+    assert stats.measured_along(xy, t, "Run")[-1] == pytest.approx(588 * 17.0, abs=1), "the jumps out, no more"
+    x = np.concatenate([np.arange(700) * 3.0, 2097.0 + np.arange(1, 301) * 30.0])  # 3 m/s, then 30 m/s in a car
+    car = np.column_stack([x, np.zeros(1000)])
+    assert stats.measured_along(car, np.arange(1000.0), "Run")[-1] == pytest.approx(render_race.along(car)[-1])
 
 
 def test_cli_race_options(monkeypatch, tmp_path, capsys):

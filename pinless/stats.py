@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 import datetime as dt
+import math
 from collections import Counter
 
 import numpy as np
@@ -19,11 +20,49 @@ def _cum(xy):
     return np.concatenate([[0.0], np.cumsum(seg)])
 
 
-def best_effort(xy, secs, dist_m):
-    """Fastest time (s) to cover dist_m inside one activity (two-pointer over cumulative distance)."""
+FOOT = {"Run", "TrailRun", "VirtualRun", "Walk", "Hike", "Snowshoe"}
+GATE = {True: (2.0, 6.5), False: (3.0, 25.0)}  # on foot or not: (times the median speed, and at least m/s)
+WANDER_M = 5.0  # a fix wanders this far round where it is, whatever the time between two
+TRUST = 0.9  # the jumps of the fixes are a few percent of a track: a gate that drops more is fighting a broken clock
+
+
+def measured_along(xy, times=None, kind=None):
+    """Metres along a track at each of its fixes, counting only the fixes that can be reached from the last one
+    counted at the activity's own pace: at most GATE times its median speed, and never less than GATE's floor, plus
+    WANDER_M. A watch among tall buildings jumps 20 to 60 m away and back within seconds; summed along the track,
+    those jumps were metres run, and the kilometres with them printed faster than they were (km 10 and 12 of a half
+    marathon in Madrid, by 10 and 5 s). A fix in between is placed by its order between the two counted round it.
+    The time to reach a fix adds only the steps of the clock that go forward: a clock that jumps back once (an hour
+    of summer time written wrong) would otherwise hold every fix after it out of reach for that long. Without a
+    clock, or when the gate would keep less than TRUST of the sum of the steps: the sum of the steps."""
+    xy = np.asarray(xy, dtype=float)
+    raw = _cum(xy)
+    if times is None or len(times) != len(xy) or len(xy) < 3:
+        return raw
+    step, dt = np.hypot(*np.diff(xy, axis=0).T), np.diff(np.asarray(times, dtype=float))
+    speed = step[dt > 0] / dt[dt > 0]
+    moving = speed[speed > 0.5]
+    if not len(moving):
+        return raw
+    times_median, floor = GATE[kind in FOOT]
+    vmax = max(times_median * float(np.median(moving)), floor)
+    clock = np.concatenate([[0.0], np.cumsum(np.maximum(dt, 0.0))])
+    keep = [0]
+    for i in range(1, len(xy)):
+        j = keep[-1]
+        if math.hypot(xy[i, 0] - xy[j, 0], xy[i, 1] - xy[j, 1]) <= vmax * (clock[i] - clock[j]) + WANDER_M:
+            keep.append(i)
+    keep = np.asarray(keep)
+    gated = np.interp(np.arange(len(xy)), keep, _cum(xy[keep]))
+    return gated if gated[-1] >= TRUST * raw[-1] else raw
+
+
+def best_effort(xy, secs, dist_m, cum=None):
+    """Fastest time (s) to cover dist_m inside one activity (two-pointer over cumulative distance: cum, by default
+    the sum of the steps)."""
     if secs is None or len(xy) < 2:
         return None
-    s = _cum(xy)
+    s = _cum(xy) if cum is None else np.asarray(cum, dtype=float)
     t = np.asarray(secs, dtype=float)
     if s[-1] < dist_m:
         return None
@@ -82,12 +121,13 @@ def compute(activities, tracks_xy, edges_gdf=None, private_pieces_xy=None, piece
     ("street_names"), in memory only, to count the streets two people both ran."""
     # distances as Strava recorded them where the export says (ingest.distance_scale): a sum of the steps between fixes
     # adds their noise, a few percent on a watch in a city
-    own = [float(_cum(xy)[-1]) for xy in tracks_xy]
+    cums = [measured_along(xy, a.times, a.type) for a, xy in zip(activities, tracks_xy)]  # no jumps of the fixes
+    own = [float(c[-1]) for c in cums]
     scale = [distance_scale(a, m) for a, m in zip(activities, own)]
     km = [m * f / 1000 for m, f in zip(own, scale)]
     secs_total = sum((a.times[-1] - a.times[0]) for a in activities if a.times)
-    b5 = [best_effort(xy, a.times, 5000 / f) for a, xy, f in zip(activities, tracks_xy, scale)]
-    b10 = [best_effort(xy, a.times, 10000 / f) for a, xy, f in zip(activities, tracks_xy, scale)]
+    b5 = [best_effort(xy, a.times, 5000 / f, c) for a, xy, f, c in zip(activities, tracks_xy, scale, cums)]
+    b10 = [best_effort(xy, a.times, 10000 / f, c) for a, xy, f, c in zip(activities, tracks_xy, scale, cums)]
     b5 = min([x for x in b5 if x], default=None)
     b10 = min([x for x in b10 if x], default=None)
     local = [local_start(a) for a in activities]  # files store UTC: days and hours are counted where you ran

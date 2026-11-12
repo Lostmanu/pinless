@@ -24,7 +24,7 @@ from .render import MM, SIZES
 from .render_editorial import DISPLAY, REGULAR, STYLES, _line_path, draw_basemap, draw_routes, place_text
 from .render_editorial import baseline_of, draw_relief, footer_credits, svg_rc
 from .render_sport import _num
-from .stats import fmt_time
+from .stats import fmt_time, measured_along
 
 MAP_TOP, MAP_H = 90.0, 222.0
 UNIT_PT, UNIT_GAP_MM = 11, 1.2  # the units beside the numbers (pt x k, A3-grid mm), on the numbers' baseline
@@ -134,10 +134,12 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     xy, times, ele = restrict(track_xy, activity.times if times is None else times,
                               activity.ele if ele is None else ele, stretch)
     dist = along(xy)
-    real = dist * scale  # what the course measured, for its numbers; the drawing keeps the track's own metres
     secs = float(times[-1] - times[0]) if times else 0.0
     if not secs > 0:  # a file with no clock, or a broken one: no time, pace or splits rather than nonsense
         times, secs = None, None
+    # what the course measured, for its numbers: the metres without the fixes' jumps (stats.measured_along), scaled to
+    # the official or recorded distance; the drawing keeps the track's own metres
+    real = measured_along(xy, times, activity.type) * scale
 
     # header
     T(18, 13, "P I N L E S S", pt=8.4)
@@ -193,8 +195,8 @@ def render(activity, track_xy, pieces, basemap, extent, out_path, style="huella"
     # elevation profile under the map
     ptop = MAP_TOP + MAP_H + 6
     if ele:
-        d, e = profile(xy, ele)
-        d = d * scale
+        _, e = profile(xy, ele)
+        d = real
         pax = fig.add_axes([18 * k / wmm, 1 - (ptop + 24) * k / hmm, 261 * k / wmm, 24 * k / hmm], zorder=2)
         pax.set_facecolor("none")
         base = e.min() - 0.15 * max(e.max() - e.min(), 10)
