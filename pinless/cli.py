@@ -44,9 +44,19 @@ def _glue_negative_values(argv):
     return out
 
 
-def main(argv=None):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+def version():
+    """The installed version, or "dev" when run from a source tree that was never installed."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version as installed
+        return installed("pinless")
+    except PackageNotFoundError:
+        return "dev"
+
+
+def parser():
+    """Every option of the command (the skill in skills/pinless is checked against it)."""
     p = argparse.ArgumentParser(prog="pinless")
+    p.add_argument("--version", action="version", version=f"pinless {version()}")
     p.add_argument("export")
     p.add_argument("--bbox", default=None, help="south,west,north,east (degrees); default: where you run most; "
                    "trail: the map's box, which must hold the whole drawn route (default: the route and a margin)")
@@ -69,6 +79,10 @@ def main(argv=None):
     p.add_argument("--allow-private-ends", action="store_true",
                    help="race and trail: draw an activity that starts or ends at a private place, without that end "
                         "and a random stretch more, with its numbers limited to what is drawn")
+    p.add_argument("--private-ends", action="store_true",
+                   help="race and trail: the activity's own start and end are private places (a single file that "
+                        "starts at home): it is drawn without them, as with --allow-private-ends, and nobody types "
+                        "the coordinates of a door")
     p.add_argument("--graphs", action="store_true",
                    help="editorial: add km per month, time of day and direction charts under the map")
     p.add_argument("--color-by", default=None, choices=colouring.MODES,
@@ -110,7 +124,16 @@ def main(argv=None):
     p.add_argument("--with-name", default="", help="the second person's name (required with --with)")
     p.add_argument("--with-type", default=None,
                    help="activity type in the second export, when it names the sport differently (default: --type)")
+    return p
+
+
+def main(argv=None):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    p = parser()
     a = p.parse_args(_glue_negative_values(sys.argv[1:] if argv is None else list(argv)))
+    for key in ("export", "with_export", "out", "pdf", "svg", "preview", "style"):  # "~/Pinless/x.png" in quotes,
+        if getattr(a, key):  # which no shell expands: the home folder all the same
+            setattr(a, key, os.path.expanduser(getattr(a, key)))
     # a trail can be any activity (a hike, a walk, a trail run), and so can a single file: a GPX from a trail app or
     # a route planner often names no type at all
     if a.type is None and (a.with_export or (a.layout != "trail" and not ingest.is_activity_file(a.export))):
@@ -170,8 +193,8 @@ def main(argv=None):
         p.error("--relief is available for the editorial, atlas, race and trail layouts")
     if a.distance is not None and (a.layout not in ("race", "trail") or not 0 < a.distance < 1000):
         p.error("--distance is the official distance in km (above 0) of the race or trail print's route")
-    if (a.activity != "longest" or a.allow_private_ends) and a.layout not in ("race", "trail"):
-        p.error("--activity and --allow-private-ends are for the race and trail layouts")
+    if (a.activity != "longest" or a.allow_private_ends or a.private_ends) and a.layout not in ("race", "trail"):
+        p.error("--activity, --allow-private-ends and --private-ends are for the race and trail layouts")
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.activity):
         try:
             dt.date.fromisoformat(a.activity)
@@ -198,6 +221,9 @@ def main(argv=None):
     if a.preview and (a.layout not in ("editorial", "atlas", "race", "trail") or
                       os.path.splitext(a.preview)[1].lower() not in (".jpg", ".jpeg")):
         p.error("--preview requires the editorial, atlas, race or trail layout and a .jpg or .jpeg filename")
+    for path in (a.out, a.pdf, a.svg, a.preview):  # an output folder that does not exist yet is made, not a failure
+        if path:  # at the very end, after minutes of downloading and drawing
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     t0 = time.time()
 
     if a.with_export:
@@ -208,7 +234,7 @@ def main(argv=None):
     if rep.no_clock:
         print(f"[ingest] {rep.no_clock} activit{'y has' if rep.no_clock == 1 else 'ies have'} a made-up clock (a route "
               f"saved from a planner moves hundreds of metres a second): read without time, pace or date")
-    if len(acts) == 1 and a.layout != "trail":  # the trail print says it where it learns its places
+    if len(acts) == 1 and a.layout != "trail" and not a.private_ends:  # the trail print says it where it learns
         print(trail.ONE_ACTIVITY)
     sel = _select(acts, a.type, a.year)
     if not sel:

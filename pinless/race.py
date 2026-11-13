@@ -128,6 +128,15 @@ def _runs(ok):
     return list(zip(edges[::2], edges[1::2] - 1))
 
 
+def own_ends(track, a):
+    """--private-ends: the activity's first and last fix as private places of the usual radius, (x, y, r) in the
+    track's own metres. A single file that starts at home has no other activities to learn that home from, and
+    asking for a --zone there means typing the coordinates of the door; this takes them from the track, in memory."""
+    if not getattr(a, "private_ends", False) or len(track) < 2:
+        return []
+    return [(float(track[i][0]), float(track[i][1]), float(a.zone_radius)) for i in (0, -1)]
+
+
 def cut(track, others, trim_m, zone_r, user_zones=(), allow_private_ends=False, rng=None):
     """Privacy for one end-cleaned track. others: every OTHER activity of its type, projected and cleaned.
     Returns (pieces, report, places learned from the others, (start_m, end_m)): at most one piece, and the
@@ -252,10 +261,11 @@ def run(sel, pool, a, log=print):
         zx, zy = tr.transform(zlo, zla)
         zones.append((zx, zy, zr))
     track = project(race)
+    zones += own_ends(track, a)
+    allow = a.allow_private_ends or getattr(a, "private_ends", False)
     others = [project(c) for x in pool if x is not chosen for c in [ingest.clean(x)] if c and len(c.lonlat) > 1]
     try:
-        pieces, rep, learned, stretch = cut(track, others, a.trim, a.zone_radius, zones,
-                                             allow_private_ends=a.allow_private_ends)
+        pieces, rep, learned, stretch = cut(track, others, a.trim, a.zone_radius, zones, allow_private_ends=allow)
     except PrivateEnds as ex:
         log(f"[privacy] STOP: {ex}. One course drawn from there would point at it. Pick another run, or pass "
             f"--allow-private-ends to draw it without that end (and a random stretch more), with its numbers "
@@ -275,7 +285,7 @@ def run(sel, pool, a, log=print):
         f"leak check {rep.leak_check}")
     if whole and np.hypot(*(track[0] - track[-1])) < LOOP_M:
         log("[privacy] this run starts and ends at the same place, and no other run of yours starts there: it is "
-            "drawn as a race start. If it is not one (a hotel, a friend's home), add --zone there.")
+            "drawn as a race start. If it is not one (a hotel, a friend's home), add --private-ends.")
 
     measured = float(stats.measured_along(track, race.times, race.type)[-1])  # without the fixes' jumps
     scale = distance_scale(race, measured, getattr(a, "distance", None), log)

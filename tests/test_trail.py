@@ -647,6 +647,18 @@ def test_the_place_is_looked_up_from_the_middle_of_the_drawn_stretch(monkeypatch
     assert round(lat_w, 2) != round(lat, 2), "not the middle of the whole walk, which reaches towards home"
 
 
+def test_private_ends_keeps_a_single_walk_from_home_well_clear_of_both_of_its_ends(monkeypatch, tmp_path):
+    xy = _line((0, 0), (0, 12000), step=20.0)  # from home, straight north, ending at a friend's door
+    captured = {}
+    _trail_world(monkeypatch, [_hike(xy, "north")], captured, tmp_path)
+    assert cli.main(["x.gpx", "--layout", "trail", "--private-ends", "--dpi", "20",
+                     "--out", str(tmp_path / "t.png")]) == 0
+    piece = np.vstack([np.asarray(g.coords) for _, g in captured["pieces"]])
+    track = np.asarray(captured["track"])
+    for end in (track[0], track[-1]):
+        assert np.hypot(*(piece - end).T).min() >= 1.6 * 500 - 25, "no drawn point within the keep-away of an end"
+
+
 def test_a_middle_in_the_sea_is_looked_up_again_at_the_nearest_drawn_point(monkeypatch, tmp_path):
     """A walk round a bay: the middle of the drawn stretch lies in the sea, where the answer is the country alone. The
     drawn point nearest to it that rounds to another point is asked next, rounded the same way, and its place names

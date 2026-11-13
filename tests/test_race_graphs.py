@@ -327,6 +327,29 @@ def test_cli_race_titles_with_the_city_and_refuses_a_run_from_home(monkeypatch, 
     assert captured["title"] == "Sunday long run"
 
 
+def test_a_single_file_from_home_hides_its_own_ends_without_anyone_typing_the_door(monkeypatch, tmp_path, capsys):
+    """A race downloaded as one GPX starts at the runner's door, and there are no other runs to learn that door from.
+    Asking for a --zone there put the coordinates of the door in the conversation with the assistant that made the
+    poster. --private-ends takes both ends from the track itself: the print starts and ends well clear of them, and
+    its numbers are those of the drawn part."""
+    away = _run_act(_line((0, 0), (7000, 2500)), "solo", dt.datetime(2025, 3, 2, 8, tzinfo=UTC))
+    captured = {}
+    _cli_world(monkeypatch, [away], captured)
+    base = ["x.gpx", "--layout", "race", "--dpi", "20", "--out", str(tmp_path / "race.png")]
+    assert cli.main(base) == 0 and captured["stretch"][0] < 800, "a single file alone: only the trim"
+    assert "add --private-ends" in capsys.readouterr().out, "and the log says how to hide its ends"
+    assert cli.main(base + ["--private-ends"]) == 0
+    lo, hi = captured["stretch"]
+    total = render_race.along(captured["track"])[-1]
+    assert lo >= 1.6 * 500 - 20 and hi <= total - (1.6 * 500 - 20), "well clear of both ends, at a random distance"
+    assert captured["info"]["km"] == pytest.approx((hi - lo) / 1000, rel=0.01), "numbers of the drawn part"
+    assert "add --private-ends" not in capsys.readouterr().out
+    with pytest.raises(SystemExit) as ex:
+        cli.main(["x.zip", "--private-ends"])
+    assert ex.value.code == 2, "one activity's ends: race and trail only"
+    capsys.readouterr()
+
+
 def test_the_race_numbers_take_the_official_or_the_recorded_distance_not_the_noise(monkeypatch, tmp_path, capsys):
     """A real half marathon in Madrid, a fix a second: the steps between the fixes summed 21.91 km, and the print said
     4:44/km for a 4:55/km race with 22 splits. --distance gives the course its official length; the distance an

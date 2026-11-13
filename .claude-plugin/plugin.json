@@ -1,0 +1,11 @@
+{
+  "name": "pinless",
+  "description": "Turn your Strava export or a GPX into a print-ready poster of your runs, rides or hikes. Claude installs it, asks which poster, colours, size and words you want, shows you a preview and makes the print files, all on your computer with privacy built in.",
+  "author": {
+    "name": "Lostmanu"
+  },
+  "homepage": "https://github.com/Lostmanu/pinless",
+  "repository": "https://github.com/Lostmanu/pinless",
+  "license": "MIT",
+  "keywords": ["strava", "gpx", "running", "poster", "map", "openstreetmap", "print"]
+}

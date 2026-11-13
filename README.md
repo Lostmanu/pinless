@@ -8,6 +8,16 @@
 </p>
 <p align="center"><sub>A3 prints in 40x50 cm frames hung in real room photos (<code>tools/mockup_photo.py</code>; photos from Unsplash, credited in <a href="tools/rooms/CREDITS.md">tools/rooms/CREDITS.md</a>). Demo posters made from a synthetic runner (<code>tools/simulate_runner.py</code>), not from a real person.</sub></p>
 
+**The easy way: ask Claude.** In [Claude Code](https://claude.com/claude-code), type this once:
+
+```
+/plugin install pinless --marketplace Lostmanu/pinless
+```
+
+Then ask for your poster (*"make me a poster of my runs"*) or type `/pinless`. Claude installs what Pinless needs on its own, in a folder of its own (and Python itself if you have none, after asking you). Then it asks a few questions with the answers ready to pick: which poster, which colours (with the twelve styles in front of you, or your own, like *"green and gold"*), what size and what name to print. It opens a preview and changes whatever you want. The PNG and PDF for printing go in a `Pinless` folder in your home folder. Your export never enters the conversation: Claude only passes its path to Pinless. From a terminal, the same install is `claude plugin install pinless --marketplace Lostmanu/pinless`.
+
+**Without Claude**, two commands:
+
 ```bash
 pip install https://github.com/Lostmanu/pinless/archive/refs/heads/main.zip
 pinless export_12345678.zip --name "Lucia" --year 2025 --pdf poster.pdf
@@ -141,7 +151,7 @@ The map's ground takes the colours of the land (`--ground nature`, on by default
 
 The export can be a Strava export or a single GPX, TCX or FIT file, as a trail app, a route planner or a watch downloads it. A route saved from a planner often carries a made-up clock (hundreds of metres a second) and heights of 0 m: Pinless reads it without time, pace, date or heights, says so, and prints a dash where they would go. Every activity type counts for this print (`--type Hike` narrows the choice), and `--activity` picks one as for the race print. The headline is the place unless you give one with `--title`: the activity's own name is not printed by default, because names often say where a walk starts. The map frames the route with a margin round it; `--bbox S,W,N,E` frames it yourself, with a box that holds the whole route (the Lac Blanc print takes in the Mont Blanc massif across the valley that way).
 
-The privacy rules are the race print's, with your private places learned from every other activity in the export ([how](#privacy)). A single file holds no other activities to learn them from, so only `--zone` protects its ends: if the route starts at your door, add `--zone` there.
+The privacy rules are the race print's, with your private places learned from every other activity in the export ([how](#privacy)). A single file holds no other activities to learn them from: if the route starts or ends at your door, add `--private-ends`, which makes its own start and end private places, without you typing where they are, and draws only a stretch well clear of them.
 
 ## For two: one map, one ink each
 
@@ -172,7 +182,7 @@ It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros
 
 ## Install, step by step
 
-You need Python (free) and two commands. Nothing to sign up for.
+With Claude Code, the line at the top does all of this for you. By hand, you need Python (free) and two commands. Nothing to sign up for.
 
 **Windows**
 
@@ -228,7 +238,7 @@ A heatmap of your runs shows where you live. Pinless removes that before drawing
 4. It never prints coordinates or start points, and nothing outside the visible map is written into the PNG, PDF or SVG. The edges of an area Pinless finds from your runs, and the crop of `--fit`, are rounded outward to a grid of about 1 km, so the map's frame does not mark where a run at the edge of the area started (a partner's lodging, a hotel). Dates are printed only on the race and trail prints, where they are the point, and never an activity's own name: their headline is the place or what you write with `--title`. The favourite street is never one within 1 km of a private zone.
 5. Your files never leave your computer. Only the area is sent out: its bounding box (on that 1 km grid, when Pinless finds the area) to OpenStreetMap's Overpass service for the streets, and its centre, rounded to about 1 km, to OpenStreetMap's Nominatim for the city name (in the atlas, the same for each city; on the trail print, the middle of the drawn route, and where that names no place, as in the sea of a bay the route goes round, the drawn point nearest to it that rounds to another point; a point at sea, where the answer is the country alone, is asked once more at street level for the nearest place on land, the same rounded point). A second export (`--with`) adds no request. When the main Overpass server is busy, Pinless tries the public mirror overpass.private.coffee; to use another server, set `PINLESS_OVERPASS` to its API address. With `--relief shade` (on by default for the trail print), Pinless also downloads elevation data from the Copernicus DEM on Amazon S3, which learns which 1-degree cell, and which blocks of about 30 km inside it, cover your map and a margin of about 2 km around it, set by the size of the map and of the paper alone; never your routes. Without it nothing is sent there. With the trail print's ground (`--ground nature`, on by default for it), Pinless also downloads the ESA WorldCover land cover from Amazon S3, which learns which 3-degree tiles around the map, and which blocks inside them, your map covers: blocks of about 9 km north to south and 7 km east to west at 40 degrees of latitude (narrower nearer the poles, larger for a large map); never your routes. With `--ground style` nothing is sent there. Downloaded elevation and land cover are cached next to the map data. Like the map data, that cache shows on your computer which areas you made posters of; delete the cache folder (`~/.cache/pinless`, or the folder in `PINLESS_CACHE`) to remove it.
 
-A single GPX, TCX or FIT file of one activity holds no other activities to learn your places from, whatever the layout: only `--zone` protects its ends (every print still trims its first and last 300 m), and Pinless says so. If it starts at your door, add `--zone` there. A file that holds many tracks is read as one activity per track, so their places are learned as usual.
+A single GPX, TCX or FIT file of one activity holds no other activities to learn your places from, whatever the layout: every print still trims its first and last 300 m, and Pinless says so. On the race and trail prints, `--private-ends` makes the file's own start and end private places, hidden like learned ones, and draws only a stretch well clear of them, without anyone typing the coordinates of a door; on any layout, `--zone` hides a point you give. A file that holds many tracks is read as one activity per track, so their places are learned as usual.
 
 Stray GPS fixes at the start or end of a file (a watch that opens with yesterday's position, then jumps) are dropped on import. A run that starts in one place and ends in another, once, only has its ends trimmed. This reduces the risk; it is not a guarantee of anonymity. A map of where you run still says something about you. Look at the poster before you share it, and hide more places with `--zone LAT,LON,RADIUS_M` (repeatable).
 
@@ -253,8 +263,9 @@ A map of two people's runs can show both homes, and the visits between them, so:
 | `--bbox S,W,N,E` | Use an exact box; on the trail print, the map's box, which must hold the whole route |
 | `--title`, `--name`, `--headline city\|name` | Headline text and inscription |
 | `--layout editorial\|atlas\|race\|trail`, `--max-cities 9`, `--activity longest`, `--allow-private-ends` | One city, one small map per city, one race, or one route on a topographic map |
+| `--private-ends` | Race and trail print: the activity's own start and end are private places (a single file that starts at home) |
 | `--distance 21.0975` | Race and trail print: the official distance in km, for the distance, pace and splits |
-| A single GPX, TCX or FIT file as the export | One hike from a trail app or a watch, on any layout: only `--zone` protects its ends, since a single file has no other activities to learn your places from |
+| A single GPX, TCX or FIT file as the export | One hike from a trail app or a watch, on any layout: a single file has no other activities to learn your places from, so `--private-ends` (race and trail) or `--zone` protects its ends |
 | `--color-by heat\|single\|month\|pace\|elevation`, `--graphs` | What the line colour says; the band of charts |
 | `--style huella\|carbon\|midnight\|...\|my-style.json`, `--size A4\|A3\|50x70` | One of twelve styles, or your own style file; paper |
 | `--relief off\|shade` | Terrain relief under the map where the land is hilly (off by default, on for the trail print) |
@@ -265,9 +276,11 @@ A map of two people's runs can show both homes, and the visits between them, so:
 | `--with EXPORT`, `--with-name NAME` | A second person's export and name: one poster for two, one ink each |
 | `--with-type Run` | Activity type in the second export, when it names the sport differently (default: `--type`) |
 
-## Use it from a coding agent
+## Use it from Claude or another agent
 
-`skills/pinless/SKILL.md` lets any coding agent that reads Agent Skills make the poster for you. The skill only runs the command above. It tells the agent not to open your export, so your GPS points stay out of the conversation.
+This repo is also a Claude Code plugin (`.claude-plugin/`), installed with the line at the top. Its skill, [`skills/pinless/`](skills/pinless/SKILL.md), sets Pinless up in its own Python environment (in the plugin's data folder, or `~/.pinless`, never in your own Python). It asks you what you want in a few multiple-choice questions, runs the command and shows you the preview. It tells the agent never to open, read or search for your export, so your GPS points stay out of the conversation. A test checks that every option and style the skill names exists in the command.
+
+Other agents that read Agent Skills can use the same folder. With any other assistant, give it this repo's link and ask for a poster: it can follow `skills/pinless/SKILL.md`.
 
 ## How it compares
 

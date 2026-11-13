@@ -1,0 +1,16 @@
+{
+  "name": "pinless",
+  "description": "Pinless: print-ready posters of your runs, made on your own computer.",
+  "owner": {
+    "name": "Lostmanu"
+  },
+  "plugins": [
+    {
+      "name": "pinless",
+      "source": "./",
+      "description": "Turn your Strava export or a GPX into a print-ready poster of your runs, rides or hikes, with Claude asking what you want.",
+      "category": "productivity",
+      "tags": ["strava", "gpx", "running", "poster", "map"]
+    }
+  ]
+}

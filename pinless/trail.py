@@ -24,8 +24,8 @@ from .localtime import local_start
 from .render_race import along
 
 ONE_ACTIVITY = ("[privacy] this export holds one activity (a single file): no private places can be learned from "
-                "other activities, so only --zone protects where it starts and ends. If it starts at home, add --zone "
-                "there.")
+                "other activities, so only --private-ends or --zone protects where it starts and ends. If it starts "
+                "or ends at home, add --private-ends.")
 PAD = 0.10  # the map reaches this share of the route's longer side beyond it: room for the hills around it
 KINDS = {"Run", "TrailRun", "Walk", "Hike", "Ride", "MountainBikeRide", "GravelRide", "EBikeRide", "BackcountrySki",
          "NordicSki", "AlpineSki", "Snowshoe", "RockClimbing", "Swim", "Unknown"}
@@ -162,12 +162,13 @@ def run(sel, pool, a, log=print):
         zx, zy = tr.transform(zlo, zla)
         zones.append((zx, zy, zr))
     track = project(route)
+    zones += race.own_ends(track, a)
+    allow = a.allow_private_ends or getattr(a, "private_ends", False)
     others = [project(c) for x in pool if x is not chosen for c in [ingest.clean(x)] if c and len(c.lonlat) > 1]
-    if not others:
+    if not others and not getattr(a, "private_ends", False):
         log(ONE_ACTIVITY)
     try:
-        pieces, rep, learned, stretch = race.cut(track, others, a.trim, a.zone_radius, zones,
-                                                 allow_private_ends=a.allow_private_ends)
+        pieces, rep, learned, stretch = race.cut(track, others, a.trim, a.zone_radius, zones, allow_private_ends=allow)
     except race.PrivateEnds:
         log("[privacy] STOP: this route starts or ends at a private place (where your other activities start or "
             "end: home, work, a regular meeting point) or at a --zone. One route drawn from there would point at "
@@ -189,7 +190,7 @@ def run(sel, pool, a, log=print):
     if whole and np.hypot(*(track[0] - track[-1])) < race.LOOP_M:
         log("[privacy] this route starts and ends at the same place, and no other activity of yours starts there: "
             "it is drawn as a loop from a public trailhead. If it is not one (a hotel, a friend's home, your own "
-            "door), add --zone there.")
+            "door), add --private-ends.")
 
     measured = float(stats.measured_along(track, route.times, route.type)[-1])  # without the fixes' jumps
     scale = race.distance_scale(route, measured, getattr(a, "distance", None), log)
