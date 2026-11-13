@@ -8,22 +8,36 @@
 </p>
 <p align="center"><sub>A3 prints in 40x50 cm frames hung in real room photos (<code>tools/mockup_photo.py</code>; photos from Unsplash, credited in <a href="tools/rooms/CREDITS.md">tools/rooms/CREDITS.md</a>). Demo posters made from a synthetic runner (<code>tools/simulate_runner.py</code>), not from a real person.</sub></p>
 
-**The easy way: ask Claude.** In [Claude Code](https://claude.com/claude-code), type this once:
+## Make yours in three steps
 
-```
-/plugin install pinless --marketplace Lostmanu/pinless
-```
+1. Open [Claude Code](https://claude.com/claude-code).
+2. Paste this line and press Enter:
 
-Then ask for your poster (*"make me a poster of my runs"*) or type `/pinless`. Claude installs what Pinless needs on its own, in a folder of its own (and Python itself if you have none, after asking you). Then it asks a few questions with the answers ready to pick: which poster, which colours (with the twelve styles in front of you, or your own, like *"green and gold"*), what size and what name to print. It opens a preview and changes whatever you want. The PNG and PDF for printing go in a `Pinless` folder in your home folder. Your export never enters the conversation: Claude only passes its path to Pinless. From a terminal, the same install is `claude plugin install pinless --marketplace Lostmanu/pinless`.
+   ```
+   /plugin install pinless --marketplace Lostmanu/pinless
+   ```
 
-**Without Claude**, two commands:
+3. Write: **make me a poster of my runs**
+
+That is all. Claude installs what it needs and asks you a few questions with the answers ready to pick: which poster, which colours, what size, what name. It shows you a preview, changes whatever you want and saves the files for printing in a `Pinless` folder. You only need your [Strava export](#get-your-strava-export) or a GPX file.
+
+Your export stays on your computer: Claude never opens it, and Pinless removes the places that would give away where you live.
+
+<details>
+<summary>Without Claude: two commands</summary>
+
+<br>
+
+With Python 3.10 or newer ([step by step](#install-without-claude)):
 
 ```bash
 pip install https://github.com/Lostmanu/pinless/archive/refs/heads/main.zip
 pinless export_12345678.zip --name "Lucia" --year 2025 --pdf poster.pdf
 ```
 
-That is the whole thing. Pinless finds the area where you run most, downloads that area's streets from OpenStreetMap once (cached), removes the places that would give away where you live, and writes `poster.png` and a vector `poster.pdf` ready for a print shop. It is free, it needs no account, and everything happens on your computer. New to the command line? See [Install, step by step](#install-step-by-step).
+Pinless finds the area where you run most, downloads its streets from OpenStreetMap once, removes the places that would give away where you live, and writes `poster.png` and a vector `poster.pdf` ready for a print shop. It is free, it needs no account, and everything happens on your computer.
+
+</details>
 
 Five prints from the same export: [a year in your city](#what-you-get), [an atlas of every city you ran in](#atlas-every-city-you-ran-in), [one race](#race-one-run-as-a-finisher-print), [one trail or hike](#trail-one-route-as-a-print) and [a poster for two](#for-two-one-map-one-ink-each), in [twelve styles](#styles) or [one of your own](#your-own-style).
 
@@ -180,9 +194,9 @@ On strava.com: **Settings > My Account > Download or Delete Your Account > Reque
 
 It also works with a folder of GPX, TCX or FIT files exported from Garmin, Coros, Suunto, Komoot or any app that exports GPX, or with a single such file: one hike downloaded from a trail app, a route planner or a watch is an export of one activity, and a file that holds several tracks (an app's export of all your walks) is read as one activity per track, so the places where they start and end are learned as in a folder of files.
 
-## Install, step by step
+## Install without Claude
 
-With Claude Code, the line at the top does all of this for you. By hand, you need Python (free) and two commands. Nothing to sign up for.
+The [three steps at the top](#make-yours-in-three-steps) do all of this for you. By hand, you need Python (free) and two commands. Nothing to sign up for.
 
 **Windows**
 
@@ -278,7 +292,7 @@ A map of two people's runs can show both homes, and the visits between them, so:
 
 ## Use it from Claude or another agent
 
-This repo is also a Claude Code plugin (`.claude-plugin/`), installed with the line at the top. Its skill, [`skills/pinless/`](skills/pinless/SKILL.md), sets Pinless up in its own Python environment (in the plugin's data folder, or `~/.pinless`, never in your own Python). It asks you what you want in a few multiple-choice questions, runs the command and shows you the preview. It tells the agent never to open, read or search for your export, so your GPS points stay out of the conversation. A test checks that every option and style the skill names exists in the command.
+This repo is also a Claude Code plugin (`.claude-plugin/`), installed with the line at the top (from a terminal: `claude plugin install pinless --marketplace Lostmanu/pinless`). Type `/pinless` to start it directly. Its skill, [`skills/pinless/`](skills/pinless/SKILL.md), sets Pinless up in its own Python environment (in the plugin's data folder, or `~/.pinless`, never in your own Python). It asks you what you want in a few multiple-choice questions, runs the command and shows you the preview. It tells the agent never to open, read or search for your export, so your GPS points stay out of the conversation. A test checks that every option and style the skill names exists in the command.
 
 Other agents that read Agent Skills can use the same folder. With any other assistant, give it this repo's link and ask for a poster: it can follow `skills/pinless/SKILL.md`.
 
