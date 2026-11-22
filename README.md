@@ -6,7 +6,7 @@
   <img src="docs/wall-huella.jpg" width="49%" alt="The warm paper poster of a year of runs in Madrid, in a thin oak frame on a pale panelled wall above a white sectional sofa">
   <img src="docs/wall-carbon.jpg" width="49%" alt="The same poster in the dark carbon style, in a black frame on a white wall above a black sofa, between a potted tree and a vase of dried grass">
 </p>
-<p align="center"><sub>A3 prints in 40x50 cm frames hung in real room photos (<code>tools/mockup_photo.py</code>; photos from Unsplash, credited in <a href="tools/rooms/CREDITS.md">tools/rooms/CREDITS.md</a>). Demo posters made from a synthetic runner (<code>tools/simulate_runner.py</code>), not from a real person.</sub></p>
+<p align="center"><sub>Demo posters of a made-up runner on real Madrid streets, framed in real room photos (<a href="tools/rooms/CREDITS.md">credits</a>).</sub></p>
 
 ## Make yours in three steps
 
